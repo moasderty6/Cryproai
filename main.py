@@ -200,4 +200,29 @@ async def handle_webhook(req):
     await dp.feed_update(bot=bot, update=types.Update(**update))
     return web.Response()
 
-async def on
+async def on_startup(app):
+    await bot.set_webhook(WEBHOOK_URL)
+    print(f"📡 Webhook set to {WEBHOOK_URL}")
+
+async def on_shutdown(app):
+    await bot.delete_webhook()
+    await bot.session.close()
+
+async def main():
+    app = web.Application()
+    app.router.add_post("/", handle_webhook)
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    print("✅ Webhook server is running...")
+
+    # Keep the process alive
+    while True:
+        await asyncio.sleep(3600)
+
+if __name__ == "__main__":
+    asyncio.run(main())
