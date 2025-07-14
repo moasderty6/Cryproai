@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.enums.parse_mode import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -9,7 +9,7 @@ from aiohttp import web
 from dotenv import load_dotenv
 import httpx
 
-# تحميل متغيرات البيئة
+# تحميل المتغيرات من .env
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -17,10 +17,11 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8000))
 
-GROQ_MODEL = "mixtral-8x7b-32768"
+# أفضل موديل مجاني حاليًا في Groq
+GROQ_MODEL = "llama3-70b-8192"
 CHANNEL_USERNAME = "p2p_LRN"
 
-# إعدادات البوت
+# إعداد البوت
 bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
 
@@ -30,7 +31,7 @@ subscribe_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="✅ تم الاشتراك", callback_data="check_sub")]
 ])
 
-# دالة سؤال Groq API
+# تحليل العملة باستخدام Groq
 async def ask_groq(prompt: str) -> str:
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -40,10 +41,17 @@ async def ask_groq(prompt: str) -> str:
         "model": GROQ_MODEL,
         "messages": [{"role": "user", "content": prompt}]
     }
+
     async with httpx.AsyncClient(timeout=60) as client:
         response = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=json_data)
         result = response.json()
-        return result["choices"][0]["message"]["content"]
+
+        if "choices" in result and result["choices"]:
+            return result["choices"][0]["message"]["content"]
+        elif "error" in result:
+            return f"❌ خطأ من Groq: {result['error'].get('message', 'غير معروف')}"
+        else:
+            return "⚠️ لم يتم الحصول على رد صالح من النموذج."
 
 # /start
 @dp.message(F.text == "/start")
@@ -54,7 +62,7 @@ async def start_handler(message: types.Message):
         reply_markup=subscribe_keyboard
     )
 
-# تحليل العملة
+# تحليل العملة عند إرسال الاسم
 @dp.message(F.text)
 async def handle_coin(message: types.Message):
     user_id = message.from_user.id
@@ -64,17 +72,19 @@ async def handle_coin(message: types.Message):
         return
 
     coin = message.text.strip().upper()
-    await message.answer(f"🔍 تحليل العملة {coin} قيد المعالجة...")
+    await message.answer(f"🔍 جاري تحليل {coin} باستخدام الذكاء الاصطناعي...")
+
     prompt = f"""
-قم بتحليل العملة الرقمية {coin}، واذكر وضعها الحالي في السوق، أهم نقاط الدعم والمقاومة، احتمالية صعودها خلال الأسبوعين القادمين، وهل يُنصح بشرائها الآن أم لا؟ بصيغة تقرير واضح ومختصر.
+قم بتحليل العملة الرقمية {coin}، واذكر وضعها الحالي في السوق، أهم نقاط الدعم والمقاومة، احتمالية صعودها خلال الأسبوعين القادمين، وهل يُنصح بشرائها الآن أم لا؟ التحليل يجب أن يكون بصيغة تقرير مختصر وواضح.
 """
+
     try:
         reply = await ask_groq(prompt)
         await message.answer(reply)
     except Exception as e:
         await message.answer(f"❌ حدث خطأ أثناء التحليل: {e}")
 
-# التحقق من الاشتراك
+# تحقق الاشتراك
 @dp.callback_query(F.data == "check_sub")
 async def check_subscription(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -106,10 +116,10 @@ async def main():
     app.router.add_post("/", handle_webhook)
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
-    
+
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
+    site = web.TCPSite(runner, "0.0.0.0", port=PORT)
     await site.start()
 
     print(f"🚀 Running on port {PORT}")
