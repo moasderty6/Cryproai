@@ -74,8 +74,10 @@ async def check_subscription(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     member = await bot.get_chat_member(chat_id=f"@{CHANNEL_USERNAME}", user_id=user_id)
     if member.status in ("member", "administrator", "creator"):
-        await callback.message.edit_text("✅ تم التحقق من الاشتراك.
-الآن أرسل اسم العملة الرقمية التي تريد تحليلها.")
+        await callback.message.edit_text(
+            "✅ تم التحقق من الاشتراك.\n\n"
+            "📩 الآن أرسل اسم العملة الرقمية التي تريد تحليلها (مثال: BTC أو ETH):"
+        )
     else:
         await callback.answer("❌ لم يتم الاشتراك بعد.", show_alert=True)
 
