@@ -16,7 +16,6 @@ CMC_KEY = os.getenv("CMC_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8000))
-
 GROQ_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
 CHANNEL_USERNAME = "p2p_LRN"
 
@@ -92,7 +91,14 @@ async def set_lang(cb: types.CallbackQuery):
 
 @dp.callback_query(F.data == "check_sub")
 async def check_sub(cb: types.CallbackQuery):
-    await set_lang(cb)
+    uid = cb.from_user.id
+    lang = user_lang.get(uid, "ar")
+    member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", uid)
+    if member.status in ("member", "administrator", "creator"):
+        await cb.message.edit_text("✅ مشترك. أرسل رمز العملة:" if lang == "ar" else "✅ Subscribed. Send coin symbol:")
+    else:
+        kb = subscribe_ar if lang == "ar" else subscribe_en
+        await cb.message.edit_text("❗ الرجاء الاشتراك أولاً" if lang == "ar" else "❗ Please subscribe first", reply_markup=kb)
 
 @dp.message(F.text)
 async def handle_symbol(m: types.Message):
@@ -147,6 +153,8 @@ Then provide:
     await m.answer(analysis)
 
 async def handle_webhook(req):
+    if req.method == "GET":
+        return web.Response(text="✅ Bot is alive.")
     update = await req.json()
     await dp.feed_update(bot=bot, update=types.Update(**update))
     return web.Response()
@@ -162,6 +170,7 @@ async def on_shutdown(app):
 async def main():
     app = web.Application()
     app.router.add_post("/", handle_webhook)
+    app.router.add_get("/", handle_webhook)  # Uptime check
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
     runner = web.AppRunner(app)
