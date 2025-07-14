@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.enums.parse_mode import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web
@@ -42,6 +42,14 @@ async def ask_groq(prompt: str) -> str:
         result = response.json()
         return result["choices"][0]["message"]["content"]
 
+@dp.message(F.text == "/start")
+async def start_handler(message: types.Message):
+    await message.answer(
+        "👋 مرحبًا بك في بوت تحليل العملات الرقمية.\n\n"
+        "🔐 لتحصل على تحليل لأي عملة رقمية، الرجاء الاشتراك أولًا في القناة ثم أرسل اسم العملة مثل: <b>BTC</b> أو <b>ETH</b>.",
+        reply_markup=subscribe_keyboard
+    )
+
 @dp.message(F.text)
 async def handle_text(message: types.Message):
     user_id = message.from_user.id
@@ -61,14 +69,6 @@ async def handle_text(message: types.Message):
     except Exception as e:
         await message.answer(f"❌ خطأ أثناء التحليل: {e}")
 
-@dp.message(F.text == "/start")
-async def start_handler(message: types.Message):
-    await message.answer(
-        "👋 مرحبًا بك في بوت تحليل العملات الرقمية.\n\n"
-        "🔐 لتحصل على تحليل لأي عملة رقمية، الرجاء الاشتراك أولًا في القناة ثم أرسل اسم العملة مثل: <b>BTC</b> أو <b>ETH</b>.",
-        reply_markup=subscribe_keyboard
-    )
-
 @dp.callback_query(F.data == "check_sub")
 async def check_subscription(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -81,22 +81,30 @@ async def check_subscription(callback: types.CallbackQuery):
     else:
         await callback.answer("❌ لم يتم الاشتراك بعد.", show_alert=True)
 
-async def on_startup(app: web.Application):
+# ---------------- WEBHOOK HANDLING ----------------
+
+async def handle_webhook(request):
+    body = await request.read()
+    await dp.feed_webhook_update(bot=bot, update=body, headers=request.headers)
+    return web.Response()
+
+async def on_startup(app):
     await bot.set_webhook(WEBHOOK_URL)
 
-async def on_shutdown(app: web.Application):
+async def on_shutdown(app):
     await bot.delete_webhook()
 
 async def main():
     app = web.Application()
-    app.router.add_post("/", dp.webhook_handler())
+    app.router.add_post("/", handle_webhook)
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
+
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, host="0.0.0.0", port=WEBHOOK_PORT)
+    site = web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT)
     await site.start()
-    print(f"🚀 Bot is running on port {WEBHOOK_PORT}...")
+    print(f"🚀 Webhook bot running on port {WEBHOOK_PORT}")
     while True:
         await asyncio.sleep(3600)
 
