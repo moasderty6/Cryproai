@@ -16,18 +16,16 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8000))
 
-GROQ_MODEL = "deepseek-llm-7b-instruct"  # نموذج مدعوم وحديث من Groq
+GROQ_MODEL = "deepseek-llm-7b-instruct"
 CHANNEL_USERNAME = "p2p_LRN"
 
 bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
 user_lang = {}
 
-# الخرائط التي سنخزن فيها العملات
 symbol_to_id_map = {}
 name_to_id_map = {}
 
-# واجهات اللغة
 language_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")],
     [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]
@@ -44,8 +42,7 @@ subscribe_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[
 ])
 
 def clean_html(raw_html):
-    cleanr = re.compile('<.*?>')
-    return re.sub(cleanr, '', raw_html)
+    return re.sub(r"<.*?>", "", raw_html)
 
 async def ask_groq(prompt: str) -> str:
     headers = {
@@ -73,8 +70,10 @@ async def get_price_from_id(coin_id):
         try:
             res = await client.get(price_url)
             data = res.json()
+            print(f"🔍 Response from CoinGecko for {coin_id}: {data}")
             return data.get(coin_id, {}).get("usd")
-        except Exception:
+        except Exception as e:
+            print(f"❌ Exception while fetching price: {e}")
             return None
 
 async def load_coin_list():
@@ -86,10 +85,6 @@ async def load_coin_list():
             coin_list = res.json()
         except Exception as e:
             print(f"❌ Failed to load coin list: {e}")
-            return
-
-        if not isinstance(coin_list, list):
-            print("❌ Unexpected response format from CoinGecko!")
             return
 
         for coin in coin_list:
@@ -142,6 +137,7 @@ async def handle_coin(message: types.Message):
     user_id = message.from_user.id
     lang = user_lang.get(user_id, "ar")
     coin_input = message.text.strip().lower()
+    print(f"🟡 User input: {coin_input}")
 
     member = await bot.get_chat_member(chat_id=f"@{CHANNEL_USERNAME}", user_id=user_id)
     if member.status not in ("member", "administrator", "creator"):
@@ -152,6 +148,7 @@ async def handle_coin(message: types.Message):
     coin_data = symbol_to_id_map.get(coin_input) or name_to_id_map.get(coin_input)
     if not coin_data:
         await message.answer("❌ لم أتمكن من العثور على هذه العملة." if lang == "ar" else "❌ Coin not found.")
+        print(f"❌ Coin not found in list: {coin_input}")
         return
 
     coin_id, coin_name = coin_data
@@ -163,29 +160,25 @@ async def handle_coin(message: types.Message):
     await message.answer(f"🔍 تم العثور على العملة: {coin_name}" if lang == "ar" else f"🔍 Found coin: {coin_name}")
     await message.answer("📊 جاري التحليل..." if lang == "ar" else "📊 Analyzing...")
 
-    prompt_ar = f"""الرجاء تحليل العملة التالية بشكل مختصر واحترافي:
+    prompt_ar = f"""الرجاء تحليل العملة التالية:
 - الاسم: {coin_name}
 - السعر الحالي: {price} دولار
-
-المطلوب:
-1. الوضع الحالي للعملة.
-2. نقاط الدعم والمقاومة.
+1. الوضع الحالي.
+2. الدعم والمقاومة.
 3. احتمالية الصعود.
-4. هل يُنصح بالشراء الآن؟
-5. تحذير من المخاطر إن وُجد.
-الرجاء الرد باللغة العربية فقط، وبدون مقدمات عامة."""
+4. هل يُنصح بالشراء؟
+5. التحذيرات.
+رد باللغة العربية فقط."""
 
-    prompt_en = f"""Please analyze the following cryptocurrency concisely and professionally:
+    prompt_en = f"""Analyze this cryptocurrency:
 - Name: {coin_name}
 - Current Price: {price} USD
-
-Requirements:
 1. Current situation.
-2. Support and resistance levels.
+2. Support & resistance.
 3. Upside potential.
-4. Is it a good time to buy?
-5. Warn about risks if needed.
-Please reply only in English and avoid any generic introduction."""
+4. Is it good to buy?
+5. Warnings.
+Reply only in English."""
 
     prompt = prompt_ar if lang == "ar" else prompt_en
 
@@ -194,10 +187,9 @@ Please reply only in English and avoid any generic introduction."""
         clean_response = clean_html(response)
         await message.answer(clean_response, parse_mode=None)
     except Exception as e:
+        print(f"❌ AI Error: {e}")
         await message.answer("❌ حدث خطأ أثناء التحليل." if lang == "ar" else "❌ Error during analysis.")
-        print("❌ ERROR:", e)
 
-# Webhook handler
 async def handle_webhook(request):
     data = await request.json()
     await dp.feed_webhook_update(bot=bot, update=data, headers=request.headers)
