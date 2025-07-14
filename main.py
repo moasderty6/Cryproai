@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.enums.parse_mode import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -15,7 +16,6 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8000))
 
-# تغيير النموذج هنا:
 GROQ_MODEL = "deepseek-r1-distill-llama-70b"
 CHANNEL_USERNAME = "p2p_LRN"
 
@@ -37,6 +37,10 @@ subscribe_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="📢 Subscribe to channel", url=f"https://t.me/{CHANNEL_USERNAME}")],
     [InlineKeyboardButton(text="✅ I have subscribed", callback_data="check_sub")]
 ])
+
+def clean_html(raw_html):
+    cleanr = re.compile('<.*?>')
+    return re.sub(cleanr, '', raw_html)
 
 async def ask_groq(prompt: str) -> str:
     headers = {
@@ -176,19 +180,23 @@ Provide a brief, professional summary
 
     try:
         result = await ask_groq(prompt)
-        await message.answer(result)
+        clean_result = clean_html(result)
+        await message.answer(clean_result, parse_mode=None)
     except Exception as e:
         error_msg = "❌ حدث خطأ أثناء التحليل." if lang == "ar" else "❌ Error during analysis."
         await message.answer(f"{error_msg}\n{str(e)}")
 
-# Webhook
+# Webhook handler
 async def handle_webhook(request):
     data = await request.json()
     await dp.feed_webhook_update(bot=bot, update=data, headers=request.headers)
     return web.Response()
 
-async def on_startup(app): await bot.set_webhook(WEBHOOK_URL)
-async def on_shutdown(app): await bot.delete_webhook()
+async def on_startup(app):
+    await bot.set_webhook(WEBHOOK_URL)
+
+async def on_shutdown(app):
+    await bot.delete_webhook()
 
 async def main():
     app = web.Application()
