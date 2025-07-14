@@ -12,6 +12,7 @@ import httpx
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+MORALIS_KEY = os.getenv("MORALIS_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8000))
@@ -23,198 +24,134 @@ bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
 user_lang = {}
 
-symbol_to_id_map = {}
-name_to_id_map = {}
+symbol_to_contract = {
+    # مثال لخريطة للعملة الرمزية إلى عنوان العقد
+    "eth": "0x0000000000000000000000000000000000000000",  # ETH placeholder
+    "harrypotterobamasonic10inu": "0xABCDEF1234567890ABCDEF1234567890ABCDEF12"
+    # أضف رموزًا وعناوين العقود حسب الحاجة
+}
 
-language_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")],
-    [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]
-])
+def clean_html(txt):
+    return re.sub(r"<.*?>", "", txt)
 
-subscribe_keyboard_ar = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="📢 اشترك في القناة", url=f"https://t.me/{CHANNEL_USERNAME}")],
-    [InlineKeyboardButton(text="✅ تحققت من الاشتراك", callback_data="check_sub")]
-])
-
-subscribe_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="📢 Subscribe to the channel", url=f"https://t.me/{CHANNEL_USERNAME}")],
-    [InlineKeyboardButton(text="✅ I have subscribed", callback_data="check_sub")]
-])
-
-def clean_html(raw_html):
-    return re.sub(r"<.*?>", "", raw_html)
-
-async def ask_groq(prompt: str) -> str:
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    json_data = {
-        "model": GROQ_MODEL,
-        "messages": [{"role": "user", "content": prompt}]
-    }
-
+async def ask_groq(prompt):
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    json_data = {"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}]}
     async with httpx.AsyncClient(timeout=60) as client:
         res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=json_data)
         result = res.json()
         if "choices" in result and result["choices"]:
             return result["choices"][0]["message"]["content"]
-        elif "error" in result:
-            return f"❌ API Error: {result['error'].get('message', 'Unknown')}"
-        else:
-            return "❌ Unexpected response."
+        return f"❌ API Error: {result.get('error', {}).get('message', 'Unknown')}"
 
-async def get_price_from_id(coin_id):
-    price_url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
+async def get_price_moralis(addr, chain="eth"):
+    url = f"https://deep-index.moralis.io/api/v2/erc20/{addr}/price?chain={chain}"
+    headers = {"X-API-Key": MORALIS_KEY}
     async with httpx.AsyncClient() as client:
-        try:
-            res = await client.get(price_url)
-            data = res.json()
-            print(f"🔍 Response from CoinGecko for {coin_id}: {data}")
-            return data.get(coin_id, {}).get("usd")
-        except Exception as e:
-            print(f"❌ Exception while fetching price: {e}")
-            return None
+        res = await client.get(url, headers=headers)
+        data = res.json()
+        print(f"🔍 Moralis response for {addr}: {data}")
+        return data.get("usdPrice")
 
-async def load_coin_list():
-    global symbol_to_id_map, name_to_id_map
-    print("🔁 Loading coin list from CoinGecko...")
-    async with httpx.AsyncClient() as client:
-        try:
-            res = await client.get("https://api.coingecko.com/api/v3/coins/list")
-            coin_list = res.json()
-        except Exception as e:
-            print(f"❌ Failed to load coin list: {e}")
-            return
-
-        for coin in coin_list:
-            if isinstance(coin, dict) and "symbol" in coin and "id" in coin and "name" in coin:
-                symbol = coin["symbol"].lower()
-                name = coin["name"].lower()
-                coin_id = coin["id"]
-                symbol_to_id_map[symbol] = (coin_id, coin["name"])
-                name_to_id_map[name] = (coin_id, coin["symbol"])
-    print(f"✅ Loaded {len(symbol_to_id_map)} coins.")
+language_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🇸🇦 العربية", callback_data="lang_ar")],
+                                          [InlineKeyboardButton("🇺🇸 English", callback_data="lang_en")]])
+subscribe_ar = InlineKeyboardMarkup([[InlineKeyboardButton("📢 اشترك بالقناة", url=f"https://t.me/{CHANNEL_USERNAME}")],
+                                     [InlineKeyboardButton("✅ تحققت", callback_data="check_sub")]])
+subscribe_en = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Subscribe channel", url=f"https://t.me/{CHANNEL_USERNAME}")],
+                                     [InlineKeyboardButton("✅ I subscribed", callback_data="check_sub")]])
 
 @dp.message(F.text == "/start")
-async def start_handler(message: types.Message):
-    await message.answer("👋 Please select your language:\n👋 الرجاء اختيار لغتك:", reply_markup=language_keyboard)
+async def start(m: types.Message):
+    await m.answer("👋 اختر لغتك:\n👋 Please select your language:", reply_markup=language_keyboard)
 
 @dp.callback_query(F.data.startswith("lang_"))
-async def set_language(callback: types.CallbackQuery):
-    lang = callback.data.split("_")[1]
-    user_id = callback.from_user.id
-    user_lang[user_id] = lang
-
-    member = await bot.get_chat_member(chat_id=f"@{CHANNEL_USERNAME}", user_id=user_id)
-    if member.status in ("member", "administrator", "creator"):
-        msg = "✅ تم التحقق من الاشتراك.\n\n✍️ أرسل اسم العملة الرقمية (مثل: BTC أو ETH):" if lang == "ar" else \
-              "✅ Subscription verified.\n\n✍️ Send the cryptocurrency name (e.g., BTC or ETH):"
-        await callback.message.edit_text(msg)
+async def set_lang(cb: types.CallbackQuery):
+    lang = cb.data.split("_")[1]
+    user_lang[cb.from_user.id] = lang
+    member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", cb.from_user.id)
+    if member.status in ("member","administrator","creator"):
+        await cb.message.edit_text("✅ مشترك. أرسل رمز العملة:" if lang=="ar" else "✅ Subscribed. Send coin symbol:")
     else:
-        kb = subscribe_keyboard_ar if lang == "ar" else subscribe_keyboard_en
-        msg = "❗ لم يتم التحقق من الاشتراك. يرجى الاشتراك أولاً:" if lang == "ar" else \
-              "❗ Subscription not verified. Please subscribe first:"
-        await callback.message.edit_text(msg, reply_markup=kb)
+        kb = subscribe_ar if lang=="ar" else subscribe_en
+        await cb.message.edit_text("❗ اشترك أولاً" if lang=="ar" else "❗ Subscribe first", reply_markup=kb)
 
-@dp.callback_query(F.data == "check_sub")
-async def check_subscription(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    lang = user_lang.get(user_id, "ar")
-    member = await bot.get_chat_member(chat_id=f"@{CHANNEL_USERNAME}", user_id=user_id)
-    if member.status in ("member", "administrator", "creator"):
-        msg = "✅ تم التحقق من الاشتراك.\n\n✍️ أرسل اسم العملة الرقمية (مثل: BTC أو ETH):" if lang == "ar" else \
-              "✅ Subscription verified.\n\n✍️ Send the cryptocurrency name (e.g., BTC or ETH):"
-        await callback.message.edit_text(msg)
-    else:
-        kb = subscribe_keyboard_ar if lang == "ar" else subscribe_keyboard_en
-        msg = "❗ لم يتم التحقق من الاشتراك. يرجى الاشتراك أولاً:" if lang == "ar" else \
-              "❗ Subscription not verified. Please subscribe first:"
-        await callback.message.edit_text(msg, reply_markup=kb)
+@dp.callback_query(F.data=="check_sub")
+async def check(cb: types.CallbackQuery):
+    await set_lang(cb)
 
 @dp.message(F.text)
-async def handle_coin(message: types.Message):
-    user_id = message.from_user.id
-    lang = user_lang.get(user_id, "ar")
-    coin_input = message.text.strip().lower()
-    print(f"🟡 User input: {coin_input}")
-
-    member = await bot.get_chat_member(chat_id=f"@{CHANNEL_USERNAME}", user_id=user_id)
-    if member.status not in ("member", "administrator", "creator"):
-        kb = subscribe_keyboard_ar if lang == "ar" else subscribe_keyboard_en
-        await message.answer("⚠️ اشترك في القناة أولاً." if lang == "ar" else "⚠️ Please subscribe first.", reply_markup=kb)
+async def anal(m: types.Message):
+    uid = m.from_user.id
+    lang = user_lang.get(uid, "ar")
+    sym = m.text.strip().lower()
+    print("🟡 Input:", sym)
+    member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", uid)
+    if member.status not in ("member","administrator","creator"):
+        await m.answer("⚠️ اشترك بقناتنا." if lang=="ar" else "⚠️ Please subscribe.", reply_markup=(subscribe_ar if lang=="ar" else subscribe_en))
         return
 
-    coin_data = symbol_to_id_map.get(coin_input) or name_to_id_map.get(coin_input)
-    if not coin_data:
-        await message.answer("❌ لم أتمكن من العثور على هذه العملة." if lang == "ar" else "❌ Coin not found.")
-        print(f"❌ Coin not found in list: {coin_input}")
+    contract = symbol_to_contract.get(sym)
+    if not contract:
+        await m.answer("❌ لم أجد العقد لهذه العملة." if lang=="ar" else "❌ Token contract not found.")
         return
 
-    coin_id, coin_name = coin_data
-    price = await get_price_from_id(coin_id)
+    price = await get_price_moralis(contract)
     if not price:
-        await message.answer("❌ لم أتمكن من جلب السعر الحالي للعملة.")
+        await m.answer("❌ لم أتمكن من جلب السعر من Moralis." if lang=="ar" else "❌ Can't fetch price from Moralis.")
         return
 
-    await message.answer(f"🔍 تم العثور على العملة: {coin_name}" if lang == "ar" else f"🔍 Found coin: {coin_name}")
-    await message.answer("📊 جاري التحليل..." if lang == "ar" else "📊 Analyzing...")
+    await m.answer(f"🔍 السعر الحالي: ${price:.6f}")
+    await m.answer("📊 جاري التحليل..." if lang=="ar" else "📊 Analyzing...")
 
-    prompt_ar = f"""الرجاء تحليل العملة التالية:
-- الاسم: {coin_name}
-- السعر الحالي: {price} دولار
-1. الوضع الحالي.
+    prompt_ar = f"""الرجاء تحليل التالي:
+- اسم الرمز: {sym}
+- السعر الحالي: {price:.6f} دولار
+1. الحالة الراهنة.
 2. الدعم والمقاومة.
-3. احتمالية الصعود.
+3. احتمالات الصعود.
 4. هل يُنصح بالشراء؟
-5. التحذيرات.
-رد باللغة العربية فقط."""
-
-    prompt_en = f"""Analyze this cryptocurrency:
-- Name: {coin_name}
-- Current Price: {price} USD
-1. Current situation.
-2. Support & resistance.
+5. تنويه المخاطر.
+رد بالعربية فقط."""
+    prompt_en = f"""Please analyze:
+- Symbol: {sym}
+- Price: {price:.6f} USD
+1. Situation.
+2. Support/Resistance.
 3. Upside potential.
-4. Is it good to buy?
-5. Warnings.
-Reply only in English."""
+4. Should one buy now?
+5. Risk warning.
+Reply in English only."""
 
-    prompt = prompt_ar if lang == "ar" else prompt_en
+    prompt = prompt_ar if lang=="ar" else prompt_en
 
     try:
-        response = await ask_groq(prompt)
-        clean_response = clean_html(response)
-        await message.answer(clean_response, parse_mode=None)
+        resp = await ask_groq(prompt)
+        await m.answer(clean_html(resp), parse_mode=None)
     except Exception as e:
-        print(f"❌ AI Error: {e}")
-        await message.answer("❌ حدث خطأ أثناء التحليل." if lang == "ar" else "❌ Error during analysis.")
+        print("❌ AI error:", e)
+        await m.answer("❌ خطأ أثناء التحليل" if lang=="ar" else "❌ Analysis error")
 
-async def handle_webhook(request):
-    data = await request.json()
-    await dp.feed_webhook_update(bot=bot, update=data, headers=request.headers)
+async def webhook(req):
+    d = await req.json()
+    await dp.feed_webhook_update(bot=bot, update=d, headers=req.headers)
     return web.Response()
 
 async def on_startup(app):
-    await load_coin_list()
     await bot.set_webhook(WEBHOOK_URL)
-
 async def on_shutdown(app):
     await bot.delete_webhook()
 
 async def main():
     app = web.Application()
-    app.router.add_post("/", handle_webhook)
+    app.router.add_post("/", webhook)
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
-
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-    print(f"🚀 Running on port {PORT}")
+    await web.TCPSite(runner, "0.0.0.0", PORT).start()
+    print("🚀 Running")
     while True:
         await asyncio.sleep(3600)
 
-if __name__ == "__main__":
+if __name__=="__main__":
     asyncio.run(main())
