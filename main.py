@@ -68,6 +68,7 @@ async def get_price_from_coingecko(symbol: str):
         try:
             search_res = await client.get(search_url)
             search_data = search_res.json()
+            print("🔍 DEBUG Search Data:", search_data)
         except Exception:
             return None, None
 
@@ -82,15 +83,19 @@ async def get_price_from_coingecko(symbol: str):
             coin_id = coin["id"]
             coin_name = coin["name"]
             break
-    if not coin_id:
+    if not coin_id and coins:
         coin_id = coins[0]["id"]
         coin_name = coins[0]["name"]
+
+    if not coin_id:
+        return None, None
 
     price_url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
     async with httpx.AsyncClient() as client:
         try:
             price_res = await client.get(price_url)
             price_data = price_res.json()
+            print("💰 DEBUG Price Data:", price_data)
             price = price_data.get(coin_id, {}).get("usd")
             return price, coin_name
         except Exception:
@@ -154,6 +159,8 @@ async def handle_coin(message: types.Message):
         await message.answer("❌ لم أتمكن من جلب السعر الحالي للعملة.")
         return
 
+    notify = f"🔍 تم العثور على العملة: {name}" if lang == "ar" else f"🔍 Found coin: {name}"
+    await message.answer(notify)
     await message.answer("🔍 جاري التحليل..." if lang == "ar" else "🔍 Analyzing...")
 
     prompt_ar = f"""
@@ -186,17 +193,14 @@ Provide a brief, professional summary
         error_msg = "❌ حدث خطأ أثناء التحليل." if lang == "ar" else "❌ Error during analysis."
         await message.answer(f"{error_msg}\n{str(e)}")
 
-# Webhook handler
+# Webhook
 async def handle_webhook(request):
     data = await request.json()
     await dp.feed_webhook_update(bot=bot, update=data, headers=request.headers)
     return web.Response()
 
-async def on_startup(app):
-    await bot.set_webhook(WEBHOOK_URL)
-
-async def on_shutdown(app):
-    await bot.delete_webhook()
+async def on_startup(app): await bot.set_webhook(WEBHOOK_URL)
+async def on_shutdown(app): await bot.delete_webhook()
 
 async def main():
     app = web.Application()
