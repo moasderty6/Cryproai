@@ -23,6 +23,10 @@ bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
 user_lang = {}
 
+# سنقوم بتحميل قائمة العملات هنا عند بدء البوت
+symbol_to_id_map = {}
+name_to_id_map = {}
+
 language_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")],
     [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]
@@ -62,39 +66,26 @@ async def ask_groq(prompt: str) -> str:
         else:
             return "❌ Unexpected response."
 
-async def get_price_from_coingecko(symbol: str):
-    url = f"https://api.coingecko.com/api/v3/search?query={symbol.lower()}"
-    async with httpx.AsyncClient() as client:
-        try:
-            res = await client.get(url)
-            data = res.json()
-            coins = data.get("coins", [])
-        except Exception:
-            return None, None
-
-    if not coins:
-        return None, None
-
-    # بحث دقيق حسب الرمز
-    for coin in coins:
-        if coin["symbol"].lower() == symbol.lower():
-            coin_id = coin["id"]
-            coin_name = coin["name"]
-            break
-    else:
-        coin_id = coins[0]["id"]
-        coin_name = coins[0]["name"]
-
-    # الحصول على السعر
+async def get_price_from_id(coin_id):
     price_url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
     async with httpx.AsyncClient() as client:
         try:
             res = await client.get(price_url)
-            price_data = res.json()
-            price = price_data.get(coin_id, {}).get("usd")
-            return price, coin_name
+            data = res.json()
+            return data.get(coin_id, {}).get("usd")
         except Exception:
-            return None, coin_name
+            return None
+
+async def load_coin_list():
+    global symbol_to_id_map, name_to_id_map
+    print("🔁 Loading coin list from CoinGecko...")
+    async with httpx.AsyncClient() as client:
+        res = await client.get("https://api.coingecko.com/api/v3/coins/list")
+        coin_list = res.json()
+        for coin in coin_list:
+            symbol_to_id_map[coin["symbol"].lower()] = (coin["id"], coin["name"])
+            name_to_id_map[coin["name"].lower()] = (coin["id"], coin["symbol"])
+    print(f"✅ Loaded {len(coin_list)} coins.")
 
 @dp.message(F.text == "/start")
 async def start_handler(message: types.Message):
@@ -135,12 +126,8 @@ async def check_subscription(callback: types.CallbackQuery):
 @dp.message(F.text)
 async def handle_coin(message: types.Message):
     user_id = message.from_user.id
-    if user_id not in user_lang:
-        await message.answer("❗ الرجاء استخدام /start لاختيار اللغة.")
-        return
-
-    lang = user_lang[user_id]
-    symbol = message.text.strip().upper()
+    lang = user_lang.get(user_id, "ar")
+    coin_input = message.text.strip().lower()
 
     member = await bot.get_chat_member(chat_id=f"@{CHANNEL_USERNAME}", user_id=user_id)
     if member.status not in ("member", "administrator", "creator"):
@@ -148,16 +135,23 @@ async def handle_coin(message: types.Message):
         await message.answer("⚠️ اشترك في القناة أولاً." if lang == "ar" else "⚠️ Please subscribe first.", reply_markup=kb)
         return
 
-    price, name = await get_price_from_coingecko(symbol)
+    # البحث باستخدام الرمز أو الاسم
+    coin_data = symbol_to_id_map.get(coin_input) or name_to_id_map.get(coin_input)
+    if not coin_data:
+        await message.answer("❌ لم أتمكن من العثور على هذه العملة." if lang == "ar" else "❌ Coin not found.")
+        return
+
+    coin_id, coin_name = coin_data
+    price = await get_price_from_id(coin_id)
     if not price:
         await message.answer("❌ لم أتمكن من جلب السعر الحالي للعملة.")
         return
 
-    await message.answer(f"🔍 تم العثور على العملة: {name}" if lang == "ar" else f"🔍 Found coin: {name}")
+    await message.answer(f"🔍 تم العثور على العملة: {coin_name}" if lang == "ar" else f"🔍 Found coin: {coin_name}")
     await message.answer("📊 جاري التحليل..." if lang == "ar" else "📊 Analyzing...")
 
     prompt_ar = f"""الرجاء تحليل العملة التالية بشكل مختصر واحترافي:
-- الاسم: {name}
+- الاسم: {coin_name}
 - السعر الحالي: {price} دولار
 
 المطلوب:
@@ -169,7 +163,7 @@ async def handle_coin(message: types.Message):
 الرجاء الرد باللغة العربية فقط، وبدون مقدمات عامة."""
 
     prompt_en = f"""Please analyze the following cryptocurrency concisely and professionally:
-- Name: {name}
+- Name: {coin_name}
 - Current Price: {price} USD
 
 Requirements:
@@ -196,8 +190,12 @@ async def handle_webhook(request):
     await dp.feed_webhook_update(bot=bot, update=data, headers=request.headers)
     return web.Response()
 
-async def on_startup(app): await bot.set_webhook(WEBHOOK_URL)
-async def on_shutdown(app): await bot.delete_webhook()
+async def on_startup(app):
+    await load_coin_list()
+    await bot.set_webhook(WEBHOOK_URL)
+
+async def on_shutdown(app):
+    await bot.delete_webhook()
 
 async def main():
     app = web.Application()
