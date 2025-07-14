@@ -22,12 +22,13 @@ bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
 user_lang = {}
 
-# لوحات التحكم
+# كيبورد اللغة
 language_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")],
     [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]
 ])
 
+# كيبورد الاشتراك
 subscribe_keyboard_ar = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="📢 اشترك الآن في القناة", url=f"https://t.me/{CHANNEL_USERNAME}")],
     [InlineKeyboardButton(text="✅ تحققت من الاشتراك", callback_data="check_sub")]
@@ -42,6 +43,9 @@ subscribe_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[
 async def ask_groq(prompt: str) -> str:
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     json_data = {"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}]}
+
+    print(f"[DEBUG] Sending prompt to Groq:\n{prompt}\n")
+
     async with httpx.AsyncClient(timeout=60) as client:
         res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=json_data)
         result = res.json()
@@ -52,12 +56,12 @@ async def ask_groq(prompt: str) -> str:
         else:
             return "❌ Unexpected response."
 
-# بدء البوت
+# /start
 @dp.message(F.text == "/start")
 async def start_handler(message: types.Message):
     await message.answer("👋 Please select your language:\n👋 الرجاء اختيار لغتك:", reply_markup=language_keyboard)
 
-# تعيين اللغة والتحقق من الاشتراك
+# اللغة والتحقق
 @dp.callback_query(F.data.startswith("lang_"))
 async def set_language(callback: types.CallbackQuery):
     lang = callback.data.split("_")[1]
@@ -67,23 +71,16 @@ async def set_language(callback: types.CallbackQuery):
     member = await bot.get_chat_member(chat_id=f"@{CHANNEL_USERNAME}", user_id=user_id)
 
     if member.status in ("member", "administrator", "creator"):
-        if lang == "ar":
-            await callback.message.edit_text("✅ تم التحقق من الاشتراك.\n\n✍️ أرسل اسم العملة الرقمية (مثل: BTC أو ETH):")
-        else:
-            await callback.message.edit_text("✅ Subscription verified.\n\n✍️ Send the cryptocurrency name (e.g., BTC or ETH):")
+        msg = "✅ تم التحقق من الاشتراك.\n\n✍️ أرسل اسم العملة الرقمية (مثل: BTC أو ETH):" if lang == "ar" \
+            else "✅ Subscription verified.\n\n✍️ Send the cryptocurrency name (e.g., BTC or ETH):"
+        await callback.message.edit_text(msg)
     else:
-        if lang == "ar":
-            await callback.message.edit_text(
-                "❗ لم يتم التحقق من الاشتراك.\n\nيرجى الاشتراك أولاً في القناة:",
-                reply_markup=subscribe_keyboard_ar
-            )
-        else:
-            await callback.message.edit_text(
-                "❗ Subscription not verified.\n\nPlease subscribe to the channel first:",
-                reply_markup=subscribe_keyboard_en
-            )
+        kb = subscribe_keyboard_ar if lang == "ar" else subscribe_keyboard_en
+        msg = "❗ لم يتم التحقق من الاشتراك. يرجى الاشتراك أولاً:" if lang == "ar" \
+            else "❗ Subscription not verified. Please subscribe first:"
+        await callback.message.edit_text(msg, reply_markup=kb)
 
-# زر التحقق اليدوي من الاشتراك
+# التحقق اليدوي
 @dp.callback_query(F.data == "check_sub")
 async def check_subscription(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -95,16 +92,20 @@ async def check_subscription(callback: types.CallbackQuery):
             else "✅ Subscription verified.\n\n✍️ Send the cryptocurrency name (e.g., BTC or ETH):"
         await callback.message.edit_text(text)
     else:
-        keyboard = subscribe_keyboard_ar if lang == "ar" else subscribe_keyboard_en
-        text = "❗ لم يتم التحقق من الاشتراك. الرجاء الاشتراك في القناة:" if lang == "ar" \
-            else "❗ Subscription not verified. Please subscribe to the channel:"
-        await callback.message.edit_text(text, reply_markup=keyboard)
+        kb = subscribe_keyboard_ar if lang == "ar" else subscribe_keyboard_en
+        msg = "❗ لم يتم التحقق من الاشتراك. يرجى الاشتراك أولاً:" if lang == "ar" \
+            else "❗ Subscription not verified. Please subscribe first:"
+        await callback.message.edit_text(msg, reply_markup=kb)
 
 # تحليل العملة
 @dp.message(F.text)
 async def handle_coin(message: types.Message):
     user_id = message.from_user.id
-    lang = user_lang.get(user_id, "ar")
+    if user_id not in user_lang:
+        await message.answer("❗ الرجاء استخدام /start لاختيار اللغة.")
+        return
+
+    lang = user_lang[user_id]
     coin = message.text.strip().upper()
 
     member = await bot.get_chat_member(chat_id=f"@{CHANNEL_USERNAME}", user_id=user_id)
