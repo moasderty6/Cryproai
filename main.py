@@ -19,8 +19,7 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8000))
 
 CHANNEL_USERNAME = "p2p_LRN"
-# استخدم هذا الموديل مع openrouter.ai API لأنه مستقر أكثر:
-GROQ_MODEL = "mistralai/mixtral-8x7b-instruct:nitro"
+GROQ_MODEL = "deepseek-r1-distill-llama-70b"
 
 bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
@@ -34,7 +33,21 @@ symbol_to_contract = {
 def clean_html(txt):
     return re.sub(r"<.*?>", "", txt)
 
-async def ask_groq(prompt: str) -> str:
+def clean_response_text(text, lang):
+    if lang == "ar":
+        # في الرد العربي، نحذف الأسطر التي تحتوي حروف لاتينية أو صينية أو رموز غير عربية
+        lines = text.splitlines()
+        arabic_only_lines = []
+        for line in lines:
+            # نسمح فقط بالأسطر التي تحتوي حروف عربية أو أرقام أو علامات ترقيم عربية بسيطة
+            if re.search(r"[\u0600-\u06FF]", line):
+                arabic_only_lines.append(line)
+        return "\n".join(arabic_only_lines).strip()
+    else:
+        # للإنجليزية، نعيد النص كما هو
+        return text.strip()
+
+async def ask_groq(prompt):
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
@@ -44,18 +57,19 @@ async def ask_groq(prompt: str) -> str:
         "messages": [{"role": "user", "content": prompt}]
     }
     async with httpx.AsyncClient(timeout=60) as client:
+        res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=json_data)
         try:
-            res = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=json_data)
-            res.raise_for_status()
             result = res.json()
-            if "choices" in result and len(result["choices"]) > 0:
-                return result["choices"][0]["message"]["content"]
-            else:
-                print(f"❌ استجابة Groq غير صالحة:\n{result}")
-                return "❌ الذكاء الاصطناعي لم يرجع تحليلاً. حاول مجددًا."
         except Exception as e:
-            print(f"❌ خطأ أثناء استدعاء Groq API: {e}\nالرد: {res.text if 'res' in locals() else 'لا يوجد رد'}")
-            return "❌ حدث خطأ أثناء التحليل."
+            print(f"❌ JSON decode error: {e}\nRaw response: {res.text}")
+            return "❌ خطأ داخلي أثناء تحليل الذكاء الاصطناعي."
+
+        if "choices" in result and result["choices"]:
+            content = result["choices"][0]["message"]["content"]
+            return content
+        else:
+            print(f"❌ استجابة Groq غير صالحة:\n{result}")
+            return "❌ الذكاء الاصطناعي لم يرجع تحليلاً. حاول مجددًا."
 
 async def get_price_native(chain="eth"):
     url = f"https://deep-index.moralis.io/api/v2/native/prices?chain={chain}"
@@ -174,7 +188,9 @@ Is this coin worth investing in? What are the chances of it going up? Should I b
     await m.answer("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
     try:
         analysis = await ask_groq(prompt)
-        await m.answer(clean_html(analysis), parse_mode=None)
+        cleaned = clean_html(analysis)
+        cleaned = clean_response_text(cleaned, lang)
+        await m.answer(cleaned, parse_mode=None)
     except Exception as e:
         print("❌ Error:", e)
         await m.answer("❌ حدث خطأ أثناء التحليل." if lang == "ar" else "❌ Analysis failed.")
@@ -184,25 +200,4 @@ async def handle_webhook(req):
     await dp.feed_update(bot=bot, update=types.Update(**update))
     return web.Response()
 
-async def on_startup(app):
-    await bot.set_webhook(WEBHOOK_URL)
-    print(f"📡 Webhook set to {WEBHOOK_URL}")
-
-async def on_shutdown(app):
-    await bot.delete_webhook()
-    await bot.session.close()
-
-async def main():
-    app = web.Application()
-    app.router.add_post("/", handle_webhook)
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", PORT).start()
-    print("✅ Webhook running...")
-    while True:
-        await asyncio.sleep(3600)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+async def on
