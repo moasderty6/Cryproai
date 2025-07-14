@@ -47,13 +47,14 @@ async def ask_groq(prompt):
         try:
             result = res.json()
         except Exception as e:
-            print(f"❌ Failed to parse Groq response: {e}\nRaw: {res.text}")
-            return "❌ خطأ في تحليل الذكاء الاصطناعي."
+            print(f"❌ JSON decode error: {e}\nRaw response: {res.text}")
+            return "❌ خطأ داخلي أثناء تحليل الذكاء الاصطناعي."
+
         if "choices" in result and result["choices"]:
             return result["choices"][0]["message"]["content"]
         else:
-            print(f"❌ Unexpected Groq output: {result}")
-            return "❌ لم أستطع توليد التحليل من الذكاء الاصطناعي."
+            print(f"❌ استجابة Groq غير صالحة:\n{result}")
+            return "❌ الذكاء الاصطناعي لم يرجع تحليلاً. حاول مجددًا."
 
 async def get_price_native(chain="eth"):
     url = f"https://deep-index.moralis.io/api/v2/native/prices?chain={chain}"
@@ -160,28 +161,16 @@ async def handle_symbol(m: types.Message):
     await m.answer(f"💵 السعر الحالي: ${price:.6f}")
 
     prompt = (
-        f"""الرجاء تحليل العملة التالية:
-- الرمز: {sym}
-- السعر الحالي: {price:.6f} دولار
-
-1. ما هي الحالة الحالية؟
-2. ما هي نقاط الدعم والمقاومة؟
-3. هل من المتوقع أن يرتفع السعر؟
-4. هل تنصح بالشراء؟
-5. تنبيه عن المخاطر. رد باللغة العربية فقط."""
+        f"""رمز العملة: {sym.upper()}
+سعر العملة الآن: ${price:.6f}
+هل هذه العملة جيدة للاستثمار؟ ما احتمالات ارتفاعها؟ هل تنصح بشرائها الآن؟ استخدم اللغة العربية فقط."""
         if lang == "ar" else
-        f"""Please analyze the following coin:
-- Symbol: {sym}
-- Current price: ${price:.6f}
-
-1. What's the current situation?
-2. Support/resistance levels?
-3. Is it likely to go up?
-4. Is it advisable to buy now?
-5. Risk warning. Respond in English only."""
+        f"""Coin symbol: {sym.upper()}
+Current price: ${price:.6f}
+Is this coin worth investing in? What are the chances of it going up? Should I buy now? Answer in English only."""
     )
 
-    await m.answer("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing with AI...")
+    await m.answer("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
     try:
         analysis = await ask_groq(prompt)
         await m.answer(clean_html(analysis), parse_mode=None)
