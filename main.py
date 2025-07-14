@@ -33,20 +33,6 @@ symbol_to_contract = {
 def clean_html(txt):
     return re.sub(r"<.*?>", "", txt)
 
-def clean_response_text(text, lang):
-    if lang == "ar":
-        # في الرد العربي، نحذف الأسطر التي تحتوي حروف لاتينية أو صينية أو رموز غير عربية
-        lines = text.splitlines()
-        arabic_only_lines = []
-        for line in lines:
-            # نسمح فقط بالأسطر التي تحتوي حروف عربية أو أرقام أو علامات ترقيم عربية بسيطة
-            if re.search(r"[\u0600-\u06FF]", line):
-                arabic_only_lines.append(line)
-        return "\n".join(arabic_only_lines).strip()
-    else:
-        # للإنجليزية، نعيد النص كما هو
-        return text.strip()
-
 async def ask_groq(prompt):
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -56,20 +42,19 @@ async def ask_groq(prompt):
         "model": GROQ_MODEL,
         "messages": [{"role": "user", "content": prompt}]
     }
-    async with httpx.AsyncClient(timeout=60) as client:
-        res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=json_data)
-        try:
-            result = res.json()
-        except Exception as e:
-            print(f"❌ JSON decode error: {e}\nRaw response: {res.text}")
-            return "❌ خطأ داخلي أثناء تحليل الذكاء الاصطناعي."
 
-        if "choices" in result and result["choices"]:
-            content = result["choices"][0]["message"]["content"]
-            return content
-        else:
-            print(f"❌ استجابة Groq غير صالحة:\n{result}")
-            return "❌ الذكاء الاصطناعي لم يرجع تحليلاً. حاول مجددًا."
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=json_data)
+            result = res.json()
+
+            text = result["choices"][0]["message"]["content"]
+            # إزالة الرموز أو الأحرف الغريبة غير العربية أو الإنجليزية
+            filtered_text = re.sub(r'[^\u0600-\u06FF0-9A-Za-z.,:%$؟! \n\-]+', '', text)
+            return filtered_text.strip()
+    except Exception as e:
+        print("❌ AI Error:", e)
+        return "❌ حدث خطأ أثناء تحليل التشارت."
 
 async def get_price_native(chain="eth"):
     url = f"https://deep-index.moralis.io/api/v2/native/prices?chain={chain}"
@@ -176,26 +161,38 @@ async def handle_symbol(m: types.Message):
     await m.answer(f"💵 السعر الحالي: ${price:.6f}")
 
     prompt = (
-    f"""افترض أن لديك بيانات كاملة عن حركة السعر التاريخية للعملة {sym.upper()} وسعرها الحالي هو {price:.6f}$.
-بناءً على تحليل الرسم البياني (التشارت) فقط، هل تتوقع أن يرتفع السعر خلال الأيام القادمة أم سينخفض؟ 
-لا تشرح تفاصيل عامة عن المشروع ولا تكتب بالإنجليزية، فقط أعطني توقعًا واضحًا لمسار السعر بالأيام القادمة.
-اكتب الإجابة باللغة العربية فقط وبدون أي رموز غريبة."""
-    if lang == "ar" else
-    f"""Assume you have access to full historical chart data of the coin {sym.upper()} and its current price is ${price:.6f}.
-Based on chart (technical) analysis only, do you expect the price to go up or down in the coming days?
-Don't give general explanations about the project. Just give a clear short answer.
-Answer in English only."""
-)
+        f"""سعر العملة {sym.upper()} الآن هو {price:.6f}$.
+قم بتحليل التشارت الأسبوعي فقط للعملة اعتمادًا على:
+- خطوط الدعم والمقاومة.
+- مؤشرات RSI و MACD و المتوسطات المتحركة MA.
+- سلوك السعر السابق خلال الأسابيع الماضية.
+ثم قدّم:
+1. تقييم عام لاتجاه العملة (صعود أم هبوط؟).
+2. توقع دقيق للأسعار المحتملة (أقرب مقاومة – أقرب دعم – السعر المستهدف).
+✅ استخدم اللغة العربية الفصحى فقط.
+🚫 لا تكتب رموز غريبة أو كلمات بلغة أخرى مثل الصينية أو الإنجليزية.
+❌ لا تقدم وصفًا عامًا عن المشروع – فقط تحليل التشارت الفني.
+""" if lang == "ar" else
+        f"""The current price of {sym.upper()} is ${price:.6f}.
+Please analyze only the weekly chart using:
+- Support and resistance levels.
+- RSI, MACD, and Moving Averages (MA).
+- Price behavior over the past few weeks.
+Then provide:
+1. A general trend (bullish or bearish).
+2. Specific price levels (next resistance, support, price target).
+✅ Respond in professional English only.
+🚫 Avoid any unrelated symbols or foreign languages.
+❌ Do NOT explain the coin or its project – focus only on technical chart analysis."""
+    )
 
     await m.answer("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
     try:
         analysis = await ask_groq(prompt)
-        cleaned = clean_html(analysis)
-        cleaned = clean_response_text(cleaned, lang)
-        await m.answer(cleaned, parse_mode=None)
+        await m.answer(analysis, parse_mode=None)
     except Exception as e:
         print("❌ Error:", e)
-        await m.answer("❌ حدث خطأ أثناء التحليل." if lang == "ar" else "❌ Analysis failed.")
+        await m.answer("❌ حدث خطأ أثناء تحليل التشارت." if lang == "ar" else "❌ Analysis failed.")
 
 async def handle_webhook(req):
     update = await req.json()
@@ -215,14 +212,10 @@ async def main():
     app.router.add_post("/", handle_webhook)
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
-
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-    print("✅ Webhook server is running...")
-
-    # Keep the process alive
+    await web.TCPSite(runner, "0.0.0.0", PORT).start()
+    print("✅ Webhook running...")
     while True:
         await asyncio.sleep(3600)
 
