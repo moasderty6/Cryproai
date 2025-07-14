@@ -2,9 +2,9 @@ import asyncio
 import os
 import re
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.enums.parse_mode import ParseMode
+from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiohttp import web
 from dotenv import load_dotenv
 import httpx
@@ -17,149 +17,175 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8000))
 
-GROQ_MODEL = "deepseek-llm-7b-instruct"
 CHANNEL_USERNAME = "p2p_LRN"
+GROQ_MODEL = "deepseek-llm-7b-instruct"
 
 bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
 user_lang = {}
 
+# رموز → عقود ERC20 (للتوسع لاحقًا)
 symbol_to_contract = {
-    # مثال لخريطة للعملة الرمزية إلى عنوان العقد
-    "eth": "0x0000000000000000000000000000000000000000",  # ETH placeholder
-    "harrypotterobamasonic10inu": "0xABCDEF1234567890ABCDEF1234567890ABCDEF12"
-    # أضف رموزًا وعناوين العقود حسب الحاجة
+    "shiba": "0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE",
+    "pepe": "0x6982508145454ce325ddbe47a25d4ec3d2311933",
+    # أضف حسب الحاجة
 }
 
 def clean_html(txt):
     return re.sub(r"<.*?>", "", txt)
 
 async def ask_groq(prompt):
-    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-    json_data = {"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}]}
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    json_data = {
+        "model": GROQ_MODEL,
+        "messages": [{"role": "user", "content": prompt}]
+    }
     async with httpx.AsyncClient(timeout=60) as client:
         res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=json_data)
         result = res.json()
-        if "choices" in result and result["choices"]:
-            return result["choices"][0]["message"]["content"]
-        return f"❌ API Error: {result.get('error', {}).get('message', 'Unknown')}"
+        return result["choices"][0]["message"]["content"] if "choices" in result else "❌ AI error"
 
-async def get_price_moralis(addr, chain="eth"):
+async def get_price_native(chain="eth"):
+    url = f"https://deep-index.moralis.io/api/v2/native/prices?chain={chain}"
+    headers = {"X-API-Key": MORALIS_KEY}
+    async with httpx.AsyncClient() as client:
+        res = await client.get(url, headers=headers)
+        data = res.json()
+        print(f"🟢 Native price response: {data}")
+        return data.get("nativePrice", {}).get("usdPrice")
+
+async def get_price_erc20(addr, chain="eth"):
     url = f"https://deep-index.moralis.io/api/v2/erc20/{addr}/price?chain={chain}"
     headers = {"X-API-Key": MORALIS_KEY}
     async with httpx.AsyncClient() as client:
         res = await client.get(url, headers=headers)
         data = res.json()
-        print(f"🔍 Moralis response for {addr}: {data}")
+        print(f"🟡 ERC20 price response: {data}")
         return data.get("usdPrice")
 
+async def fetch_price(symbol):
+    symbol = symbol.lower()
+    if symbol in ["eth", "ethereum", "إيثريوم"]:
+        return await get_price_native("eth")
+    elif symbol in ["btc", "bitcoin", "بتكوين"]:
+        return await get_price_native("btc")
+    elif symbol in symbol_to_contract:
+        return await get_price_erc20(symbol_to_contract[symbol])
+    else:
+        return None
+
+# لوحات اللغة والاشتراك
 language_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")],
     [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]
 ])
-
 subscribe_ar = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="📢 اشترك بالقناة", url=f"https://t.me/{CHANNEL_USERNAME}")],
     [InlineKeyboardButton(text="✅ تحققت", callback_data="check_sub")]
 ])
-
 subscribe_en = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="📢 Subscribe channel", url=f"https://t.me/{CHANNEL_USERNAME}")],
-    [InlineKeyboardButton(text="✅ I subscribed", callback_data="check_sub")]
+    [InlineKeyboardButton(text="📢 Subscribe", url=f"https://t.me/{CHANNEL_USERNAME}")],
+    [InlineKeyboardButton(text="✅ I've joined", callback_data="check_sub")]
 ])
 
 @dp.message(F.text == "/start")
 async def start(m: types.Message):
-    await m.answer("👋 اختر لغتك:\n👋 Please select your language:", reply_markup=language_keyboard)
+    await m.answer("👋 اختر لغتك:\nChoose your language:", reply_markup=language_keyboard)
 
 @dp.callback_query(F.data.startswith("lang_"))
 async def set_lang(cb: types.CallbackQuery):
     lang = cb.data.split("_")[1]
     user_lang[cb.from_user.id] = lang
     member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", cb.from_user.id)
-    if member.status in ("member","administrator","creator"):
-        await cb.message.edit_text("✅ مشترك. أرسل رمز العملة:" if lang=="ar" else "✅ Subscribed. Send coin symbol:")
+    if member.status in ("member", "administrator", "creator"):
+        await cb.message.edit_text("✅ مشترك. أرسل رمز العملة:" if lang == "ar" else "✅ Subscribed. Send coin symbol:")
     else:
-        kb = subscribe_ar if lang=="ar" else subscribe_en
-        await cb.message.edit_text("❗ اشترك أولاً" if lang=="ar" else "❗ Subscribe first", reply_markup=kb)
+        kb = subscribe_ar if lang == "ar" else subscribe_en
+        await cb.message.edit_text("❗ الرجاء الاشتراك أولاً" if lang == "ar" else "❗ Please subscribe first", reply_markup=kb)
 
-@dp.callback_query(F.data=="check_sub")
-async def check(cb: types.CallbackQuery):
+@dp.callback_query(F.data == "check_sub")
+async def check_sub(cb: types.CallbackQuery):
     await set_lang(cb)
 
 @dp.message(F.text)
-async def anal(m: types.Message):
+async def handle_symbol(m: types.Message):
     uid = m.from_user.id
     lang = user_lang.get(uid, "ar")
     sym = m.text.strip().lower()
-    print("🟡 Input:", sym)
+
+    # تحقق من الاشتراك
     member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", uid)
-    if member.status not in ("member","administrator","creator"):
-        await m.answer("⚠️ اشترك بقناتنا." if lang=="ar" else "⚠️ Please subscribe.", reply_markup=(subscribe_ar if lang=="ar" else subscribe_en))
+    if member.status not in ("member", "administrator", "creator"):
+        await m.answer("⚠️ اشترك بالقناة أولاً." if lang == "ar" else "⚠️ Please join the channel first.",
+                       reply_markup=subscribe_ar if lang == "ar" else subscribe_en)
         return
 
-    contract = symbol_to_contract.get(sym)
-    if not contract:
-        await m.answer("❌ لم أجد العقد لهذه العملة." if lang=="ar" else "❌ Token contract not found.")
-        return
+    await m.answer("⏳ جاري جلب السعر..." if lang == "ar" else "⏳ Fetching price...")
 
-    price = await get_price_moralis(contract)
+    price = await fetch_price(sym)
     if not price:
-        await m.answer("❌ لم أتمكن من جلب السعر من Moralis." if lang=="ar" else "❌ Can't fetch price from Moralis.")
+        await m.answer("❌ لم أتمكن من جلب السعر الحالي للعملة." if lang == "ar"
+                       else "❌ Couldn't fetch current price.")
         return
 
-    await m.answer(f"🔍 السعر الحالي: ${price:.6f}")
-    await m.answer("📊 جاري التحليل..." if lang=="ar" else "📊 Analyzing...")
+    await m.answer(f"💵 السعر الحالي: ${price:.6f}")
 
-    prompt_ar = f"""الرجاء تحليل التالي:
-- اسم الرمز: {sym}
+    prompt = (
+        f"""الرجاء تحليل العملة التالية:
+- الرمز: {sym}
 - السعر الحالي: {price:.6f} دولار
-1. الحالة الراهنة.
-2. الدعم والمقاومة.
-3. احتمالات الصعود.
-4. هل يُنصح بالشراء؟
-5. تنويه المخاطر.
-رد بالعربية فقط."""
-    prompt_en = f"""Please analyze:
+
+1. ما هي الحالة الحالية؟
+2. ما هي نقاط الدعم والمقاومة؟
+3. هل من المتوقع أن يرتفع السعر؟
+4. هل تنصح بالشراء؟
+5. تنبيه عن المخاطر. رد باللغة العربية فقط."""
+        if lang == "ar" else
+        f"""Please analyze the following coin:
 - Symbol: {sym}
-- Price: {price:.6f} USD
-1. Situation.
-2. Support/Resistance.
-3. Upside potential.
-4. Should one buy now?
-5. Risk warning.
-Reply in English only."""
+- Current price: ${price:.6f}
 
-    prompt = prompt_ar if lang=="ar" else prompt_en
+1. What's the current situation?
+2. Support/resistance levels?
+3. Is it likely to go up?
+4. Is it advisable to buy now?
+5. Risk warning. Respond in English only."""
+    )
 
+    await m.answer("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing with AI...")
     try:
-        resp = await ask_groq(prompt)
-        await m.answer(clean_html(resp), parse_mode=None)
+        analysis = await ask_groq(prompt)
+        await m.answer(clean_html(analysis), parse_mode=None)
     except Exception as e:
-        print("❌ AI error:", e)
-        await m.answer("❌ خطأ أثناء التحليل" if lang=="ar" else "❌ Analysis error")
+        print("❌ Error:", e)
+        await m.answer("❌ حدث خطأ أثناء التحليل." if lang == "ar" else "❌ Analysis failed.")
 
-async def webhook(req):
-    d = await req.json()
-    await dp.feed_webhook_update(bot=bot, update=d, headers=req.headers)
+# Webhook setup
+async def handle_webhook(req):
+    update = await req.json()
+    await dp.feed_webhook_update(bot=bot, update=update, headers=req.headers)
     return web.Response()
 
 async def on_startup(app):
     await bot.set_webhook(WEBHOOK_URL)
+
 async def on_shutdown(app):
     await bot.delete_webhook()
 
 async def main():
     app = web.Application()
-    app.router.add_post("/", webhook)
+    app.router.add_post("/", handle_webhook)
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
-    print("🚀 Running")
+    print("✅ Webhook server running...")
     while True:
         await asyncio.sleep(3600)
 
-if __name__=="__main__":
+if __name__ == "__main__":
     asyncio.run(main())
