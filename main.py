@@ -13,6 +13,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MORALIS_KEY = os.getenv("MORALIS_API_KEY")
+CMC_KEY = os.getenv("CMC_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8000))
@@ -24,11 +25,9 @@ bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
 user_lang = {}
 
-# رموز → عقود ERC20 (للتوسع لاحقًا)
 symbol_to_contract = {
     "shiba": "0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE",
     "pepe": "0x6982508145454ce325ddbe47a25d4ec3d2311933",
-    # أضف حسب الحاجة
 }
 
 def clean_html(txt):
@@ -48,36 +47,67 @@ async def ask_groq(prompt):
         result = res.json()
         return result["choices"][0]["message"]["content"] if "choices" in result else "❌ AI error"
 
+# ✅ Get Native Price from Moralis
 async def get_price_native(chain="eth"):
     url = f"https://deep-index.moralis.io/api/v2/native/prices?chain={chain}"
     headers = {"X-API-Key": MORALIS_KEY}
     async with httpx.AsyncClient() as client:
         res = await client.get(url, headers=headers)
-        data = res.json()
-        print(f"🟢 Native price response: {data}")
-        return data.get("nativePrice", {}).get("usdPrice")
+        if res.status_code != 200:
+            print(f"❌ Moralis native error [{res.status_code}]: {res.text}")
+            return None
+        try:
+            data = res.json()
+            return data.get("nativePrice", {}).get("usdPrice")
+        except Exception as e:
+            print("❌ Failed to parse native price:", e)
+            return None
 
+# ✅ Get ERC20 token price from Moralis
 async def get_price_erc20(addr, chain="eth"):
     url = f"https://deep-index.moralis.io/api/v2/erc20/{addr}/price?chain={chain}"
     headers = {"X-API-Key": MORALIS_KEY}
     async with httpx.AsyncClient() as client:
         res = await client.get(url, headers=headers)
-        data = res.json()
-        print(f"🟡 ERC20 price response: {data}")
-        return data.get("usdPrice")
+        if res.status_code != 200:
+            print(f"❌ Moralis ERC20 error [{res.status_code}]: {res.text}")
+            return None
+        try:
+            data = res.json()
+            return data.get("usdPrice")
+        except Exception as e:
+            print("❌ Failed to parse ERC20 price:", e)
+            return None
 
+# ✅ CoinMarketCap fallback
+async def get_price_cmc(symbol):
+    url = f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={symbol.upper()}"
+    headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
+    async with httpx.AsyncClient() as client:
+        res = await client.get(url, headers=headers)
+        if res.status_code != 200:
+            print(f"❌ CMC error [{res.status_code}]: {res.text}")
+            return None
+        try:
+            data = res.json()
+            return data["data"][symbol.upper()]["quote"]["USD"]["price"]
+        except Exception as e:
+            print("❌ Failed to parse CMC:", e)
+            return None
+
+# ✅ Unified price fetcher
 async def fetch_price(symbol):
     symbol = symbol.lower()
     if symbol in ["eth", "ethereum", "إيثريوم"]:
-        return await get_price_native("eth")
+        return await get_price_native("eth") or await get_price_cmc("ETH")
     elif symbol in ["btc", "bitcoin", "بتكوين"]:
-        return await get_price_native("btc")
+        return await get_price_native("btc") or await get_price_cmc("BTC")
     elif symbol in symbol_to_contract:
-        return await get_price_erc20(symbol_to_contract[symbol])
+        return await get_price_erc20(symbol_to_contract[symbol]) or await get_price_cmc(symbol.upper())
     else:
-        return None
+        return await get_price_cmc(symbol.upper())
 
-# لوحات اللغة والاشتراك
+# ✅ لوحات
 language_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")],
     [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]
@@ -116,7 +146,6 @@ async def handle_symbol(m: types.Message):
     lang = user_lang.get(uid, "ar")
     sym = m.text.strip().lower()
 
-    # تحقق من الاشتراك
     member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", uid)
     if member.status not in ("member", "administrator", "creator"):
         await m.answer("⚠️ اشترك بالقناة أولاً." if lang == "ar" else "⚠️ Please join the channel first.",
@@ -124,8 +153,8 @@ async def handle_symbol(m: types.Message):
         return
 
     await m.answer("⏳ جاري جلب السعر..." if lang == "ar" else "⏳ Fetching price...")
-
     price = await fetch_price(sym)
+
     if not price:
         await m.answer("❌ لم أتمكن من جلب السعر الحالي للعملة." if lang == "ar"
                        else "❌ Couldn't fetch current price.")
@@ -163,17 +192,14 @@ async def handle_symbol(m: types.Message):
         print("❌ Error:", e)
         await m.answer("❌ حدث خطأ أثناء التحليل." if lang == "ar" else "❌ Analysis failed.")
 
-# Webhook setup
+# ✅ Webhook
 async def handle_webhook(req):
     update = await req.json()
     await dp.feed_webhook_update(bot=bot, update=update, headers=req.headers)
     return web.Response()
 
-async def on_startup(app):
-    await bot.set_webhook(WEBHOOK_URL)
-
-async def on_shutdown(app):
-    await bot.delete_webhook()
+async def on_startup(app): await bot.set_webhook(WEBHOOK_URL)
+async def on_shutdown(app): await bot.delete_webhook()
 
 async def main():
     app = web.Application()
@@ -183,7 +209,7 @@ async def main():
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
-    print("✅ Webhook server running...")
+    print("✅ Webhook running...")
     while True:
         await asyncio.sleep(3600)
 
