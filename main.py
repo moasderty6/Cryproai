@@ -19,7 +19,8 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8000))
 
 CHANNEL_USERNAME = "p2p_LRN"
-GROQ_MODEL = "deepseek-r1-distill-llama-70b"
+# استخدم هذا الموديل مع openrouter.ai API لأنه مستقر أكثر:
+GROQ_MODEL = "mistralai/mixtral-8x7b-instruct:nitro"
 
 bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
@@ -33,7 +34,7 @@ symbol_to_contract = {
 def clean_html(txt):
     return re.sub(r"<.*?>", "", txt)
 
-async def ask_groq(prompt):
+async def ask_groq(prompt: str) -> str:
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
@@ -43,18 +44,18 @@ async def ask_groq(prompt):
         "messages": [{"role": "user", "content": prompt}]
     }
     async with httpx.AsyncClient(timeout=60) as client:
-        res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=json_data)
         try:
+            res = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=json_data)
+            res.raise_for_status()
             result = res.json()
+            if "choices" in result and len(result["choices"]) > 0:
+                return result["choices"][0]["message"]["content"]
+            else:
+                print(f"❌ استجابة Groq غير صالحة:\n{result}")
+                return "❌ الذكاء الاصطناعي لم يرجع تحليلاً. حاول مجددًا."
         except Exception as e:
-            print(f"❌ JSON decode error: {e}\nRaw response: {res.text}")
-            return "❌ خطأ داخلي أثناء تحليل الذكاء الاصطناعي."
-
-        if "choices" in result and result["choices"]:
-            return result["choices"][0]["message"]["content"]
-        else:
-            print(f"❌ استجابة Groq غير صالحة:\n{result}")
-            return "❌ الذكاء الاصطناعي لم يرجع تحليلاً. حاول مجددًا."
+            print(f"❌ خطأ أثناء استدعاء Groq API: {e}\nالرد: {res.text if 'res' in locals() else 'لا يوجد رد'}")
+            return "❌ حدث خطأ أثناء التحليل."
 
 async def get_price_native(chain="eth"):
     url = f"https://deep-index.moralis.io/api/v2/native/prices?chain={chain}"
