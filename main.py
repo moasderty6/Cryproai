@@ -58,26 +58,38 @@ async def ask_groq(prompt: str) -> str:
             return "❌ Unexpected response."
 
 async def get_price_from_coingecko(symbol: str):
-    # البحث عن اسم العملة الصحيح في CoinGecko
-    search_url = f"https://api.coingecko.com/api/v3/search?query={symbol}"
+    search_url = f"https://api.coingecko.com/api/v3/search?query={symbol.lower()}"
     async with httpx.AsyncClient() as client:
-        search_res = await client.get(search_url)
-        search_data = search_res.json()
-    
+        try:
+            search_res = await client.get(search_url)
+            search_data = search_res.json()
+        except Exception as e:
+            return None, None
+
     coins = search_data.get("coins", [])
     if not coins:
         return None, None
 
-    coin_id = coins[0]["id"]
-    coin_name = coins[0]["name"]
+    coin_id = None
+    coin_name = None
+    for coin in coins:
+        if coin["symbol"].lower() == symbol.lower():
+            coin_id = coin["id"]
+            coin_name = coin["name"]
+            break
+    if not coin_id:
+        coin_id = coins[0]["id"]
+        coin_name = coins[0]["name"]
 
     price_url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
     async with httpx.AsyncClient() as client:
-        price_res = await client.get(price_url)
-        price_data = price_res.json()
-
-    price = price_data.get(coin_id, {}).get("usd")
-    return price, coin_name
+        try:
+            price_res = await client.get(price_url)
+            price_data = price_res.json()
+            price = price_data.get(coin_id, {}).get("usd")
+            return price, coin_name
+        except Exception:
+            return None, coin_name
 
 @dp.message(F.text == "/start")
 async def start_handler(message: types.Message):
@@ -91,13 +103,13 @@ async def set_language(callback: types.CallbackQuery):
 
     member = await bot.get_chat_member(chat_id=f"@{CHANNEL_USERNAME}", user_id=user_id)
     if member.status in ("member", "administrator", "creator"):
-        msg = "✅ تم التحقق من الاشتراك.\n\n✍️ أرسل اسم العملة الرقمية (مثل: BTC أو ETH):" if lang == "ar" \
-            else "✅ Subscription verified.\n\n✍️ Send the cryptocurrency name (e.g., BTC or ETH):"
+        msg = "✅ تم التحقق من الاشتراك.\n\n✍️ أرسل اسم العملة الرقمية (مثل: BTC أو ETH):" if lang == "ar" else \
+              "✅ Subscription verified.\n\n✍️ Send the cryptocurrency name (e.g., BTC or ETH):"
         await callback.message.edit_text(msg)
     else:
         kb = subscribe_keyboard_ar if lang == "ar" else subscribe_keyboard_en
-        msg = "❗ لم يتم التحقق من الاشتراك. يرجى الاشتراك أولاً:" if lang == "ar" \
-            else "❗ Subscription not verified. Please subscribe first:"
+        msg = "❗ لم يتم التحقق من الاشتراك. يرجى الاشتراك أولاً:" if lang == "ar" else \
+              "❗ Subscription not verified. Please subscribe first:"
         await callback.message.edit_text(msg, reply_markup=kb)
 
 @dp.callback_query(F.data == "check_sub")
@@ -106,13 +118,13 @@ async def check_subscription(callback: types.CallbackQuery):
     lang = user_lang.get(user_id, "ar")
     member = await bot.get_chat_member(chat_id=f"@{CHANNEL_USERNAME}", user_id=user_id)
     if member.status in ("member", "administrator", "creator"):
-        msg = "✅ تم التحقق من الاشتراك.\n\n✍️ أرسل اسم العملة الرقمية (مثل: BTC أو ETH):" if lang == "ar" \
-            else "✅ Subscription verified.\n\n✍️ Send the cryptocurrency name (e.g., BTC or ETH):"
+        msg = "✅ تم التحقق من الاشتراك.\n\n✍️ أرسل اسم العملة الرقمية (مثل: BTC أو ETH):" if lang == "ar" else \
+              "✅ Subscription verified.\n\n✍️ Send the cryptocurrency name (e.g., BTC or ETH):"
         await callback.message.edit_text(msg)
     else:
         kb = subscribe_keyboard_ar if lang == "ar" else subscribe_keyboard_en
-        msg = "❗ لم يتم التحقق من الاشتراك. يرجى الاشتراك أولاً:" if lang == "ar" \
-            else "❗ Subscription not verified. Please subscribe first:"
+        msg = "❗ لم يتم التحقق من الاشتراك. يرجى الاشتراك أولاً:" if lang == "ar" else \
+              "❗ Subscription not verified. Please subscribe first:"
         await callback.message.edit_text(msg, reply_markup=kb)
 
 @dp.message(F.text)
@@ -123,7 +135,7 @@ async def handle_coin(message: types.Message):
         return
 
     lang = user_lang[user_id]
-    coin = message.text.strip()
+    coin = message.text.strip().upper()
 
     member = await bot.get_chat_member(chat_id=f"@{CHANNEL_USERNAME}", user_id=user_id)
     if member.status not in ("member", "administrator", "creator"):
@@ -137,8 +149,7 @@ async def handle_coin(message: types.Message):
         await message.answer("❌ لم أتمكن من جلب السعر الحالي للعملة.")
         return
 
-    loading = f"🔍 جاري تحليل {coin}..." if lang == "ar" else f"🔍 Analyzing {coin}..."
-    await message.answer(loading)
+    await message.answer("🔍 جاري التحليل..." if lang == "ar" else "🔍 Analyzing...")
 
     prompt_ar = f"""
 تحليل للعملة {name}:
@@ -169,7 +180,7 @@ Provide a brief, professional summary
         error_msg = "❌ حدث خطأ أثناء التحليل." if lang == "ar" else "❌ Error during analysis."
         await message.answer(f"{error_msg}\n{str(e)}")
 
-# Webhook handlers
+# Webhook
 async def handle_webhook(request):
     data = await request.json()
     await dp.feed_webhook_update(bot=bot, update=data, headers=request.headers)
