@@ -12,23 +12,17 @@ import httpx
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-MORALIS_KEY = os.getenv("MORALIS_API_KEY")
 CMC_KEY = os.getenv("CMC_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8000))
 
-CHANNEL_USERNAME = "p2p_LRN"
 GROQ_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
+CHANNEL_USERNAME = "p2p_LRN"
 
 bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
 user_lang = {}
-
-symbol_to_contract = {
-    "shiba": "0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE",
-    "pepe": "0x6982508145454ce325ddbe47a25d4ec3d2311933",
-}
 
 def clean_response(text, lang="ar"):
     if lang == "ar":
@@ -41,70 +35,32 @@ async def ask_groq(prompt, lang="ar"):
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
-    json_data = {
+    data = {
         "model": GROQ_MODEL,
         "messages": [{"role": "user", "content": prompt}]
     }
-
     try:
         async with httpx.AsyncClient(timeout=60) as client:
-            res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=json_data)
+            res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data)
             result = res.json()
-            text = result["choices"][0]["message"]["content"]
-            return clean_response(text, lang=lang).strip()
+            content = result["choices"][0]["message"]["content"]
+            return clean_response(content, lang=lang).strip()
     except Exception as e:
-        print("❌ AI Error:", e)
+        print("❌ Error from AI:", e)
         return "❌ حدث خطأ أثناء تحليل التشارت." if lang == "ar" else "❌ Analysis failed."
-
-async def get_price_native(chain="eth"):
-    url = f"https://deep-index.moralis.io/api/v2/native/prices?chain={chain}"
-    headers = {"X-API-Key": MORALIS_KEY}
-    async with httpx.AsyncClient() as client:
-        res = await client.get(url, headers=headers)
-        if res.status_code != 200:
-            return None
-        try:
-            data = res.json()
-            return data.get("nativePrice", {}).get("usdPrice")
-        except:
-            return None
-
-async def get_price_erc20(addr, chain="eth"):
-    url = f"https://deep-index.moralis.io/api/v2/erc20/{addr}/price?chain={chain}"
-    headers = {"X-API-Key": MORALIS_KEY}
-    async with httpx.AsyncClient() as client:
-        res = await client.get(url, headers=headers)
-        if res.status_code != 200:
-            return None
-        try:
-            data = res.json()
-            return data.get("usdPrice")
-        except:
-            return None
 
 async def get_price_cmc(symbol):
     url = f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={symbol.upper()}"
     headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
-    async with httpx.AsyncClient() as client:
-        res = await client.get(url, headers=headers)
-        if res.status_code != 200:
-            return None
-        try:
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.get(url, headers=headers)
+            if res.status_code != 200:
+                return None
             data = res.json()
             return data["data"][symbol.upper()]["quote"]["USD"]["price"]
-        except:
-            return None
-
-async def fetch_price(symbol):
-    symbol = symbol.lower()
-    if symbol in ["eth", "ethereum", "إيثريوم"]:
-        return await get_price_native("eth") or await get_price_cmc("ETH")
-    elif symbol in ["btc", "bitcoin", "بتكوين"]:
-        return await get_price_native("btc") or await get_price_cmc("BTC")
-    elif symbol in symbol_to_contract:
-        return await get_price_erc20(symbol_to_contract[symbol]) or await get_price_cmc(symbol.upper())
-    else:
-        return await get_price_cmc(symbol.upper())
+    except:
+        return None
 
 language_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")],
@@ -151,48 +107,44 @@ async def handle_symbol(m: types.Message):
         return
 
     await m.answer("⏳ جاري جلب السعر..." if lang == "ar" else "⏳ Fetching price...")
-    price = await fetch_price(sym)
-
+    price = await get_price_cmc(sym)
     if not price:
         await m.answer("❌ لم أتمكن من جلب السعر الحالي للعملة." if lang == "ar"
                        else "❌ Couldn't fetch current price.")
         return
 
-    await m.answer(f"💵 السعر الحالي: ${price:.6f}" if lang == "en" else f"💵 السعر الحالي: ${price:.6f}")
+    await m.answer(f"💵 السعر الحالي: ${price:.6f}" if lang == "ar" else f"💵 Current price: ${price:.6f}")
 
     prompt = (
         f"""سعر العملة {sym.upper()} الآن هو {price:.6f}$.
 قم بتحليل التشارت الأسبوعي فقط للعملة اعتمادًا على:
 - خطوط الدعم والمقاومة.
-- مؤشرات RSI و MACD و المتوسطات المتحركة MA.
+- مؤشرات RSI و MACD و MA.
 - سلوك السعر السابق خلال الأسابيع الماضية.
 ثم قدّم:
-1. تقييم عام لاتجاه العملة (صعود أم هبوط؟).
-2. توقع دقيق للأسعار المحتملة (أقرب مقاومة – أقرب دعم – السعر المستهدف).
-✅ استخدم اللغة العربية فقط.
+1. تقييم عام (صعود أم هبوط؟).
+2. أقرب مقاومة ودعم.
+3. السعر المستهدف المتوقع.
+✅ استخدم العربية فقط.
 🚫 لا تكتب رموز أو كلمات بلغة أخرى.
-❌ لا تقدم وصفًا عامًا عن المشروع – فقط تحليل التشارت الفني.
-""" if lang == "ar" else
+❌ لا تشرح المشروع، فقط تحليل التشارت."""
+        if lang == "ar" else
         f"""The current price of {sym.upper()} is ${price:.6f}.
 Analyze only the weekly chart using:
 - Support and resistance levels.
-- RSI, MACD, Moving Averages (MA).
-- Past weekly price behavior.
-Provide:
-1. General trend (up or down).
-2. Precise predictions: resistance, support, and target price.
-✅ Respond in clear English only.
-🚫 Avoid foreign symbols or unrelated languages.
-❌ Do not describe the coin project – focus on technical chart analysis only."""
+- RSI, MACD, MA indicators.
+- Weekly price behavior.
+Then provide:
+1. General trend (up/down).
+2. Nearest resistance/support.
+3. Target price.
+✅ Answer in English only.
+❌ Don't explain the project, only chart analysis."""
     )
 
     await m.answer("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
-    try:
-        analysis = await ask_groq(prompt, lang=lang)
-        await m.answer(analysis, parse_mode=None)
-    except Exception as e:
-        print("❌ Error:", e)
-        await m.answer("❌ حدث خطأ أثناء تحليل التشارت." if lang == "ar" else "❌ Analysis failed.")
+    analysis = await ask_groq(prompt, lang=lang)
+    await m.answer(analysis)
 
 async def handle_webhook(req):
     update = await req.json()
@@ -201,7 +153,7 @@ async def handle_webhook(req):
 
 async def on_startup(app):
     await bot.set_webhook(WEBHOOK_URL)
-    print(f"📡 Webhook set to {WEBHOOK_URL}")
+    print(f"✅ Webhook set to {WEBHOOK_URL}")
 
 async def on_shutdown(app):
     await bot.delete_webhook()
@@ -215,7 +167,7 @@ async def main():
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
-    print("✅ Webhook running...")
+    print("✅ Bot is running...")
     while True:
         await asyncio.sleep(3600)
 
