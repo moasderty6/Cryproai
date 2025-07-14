@@ -9,6 +9,10 @@ from aiohttp import web
 from dotenv import load_dotenv
 import httpx
 
+import matplotlib.pyplot as plt
+import pandas as pd
+import ccxt
+
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -56,31 +60,36 @@ async def ask_groq(prompt, lang="ar"):
         print("❌ AI Error:", e)
         return "❌ حدث خطأ أثناء تحليل التشارت." if lang == "ar" else "❌ Analysis failed."
 
-async def get_price_native(chain="eth"):
-    url = f"https://deep-index.moralis.io/api/v2/native/prices?chain={chain}"
-    headers = {"X-API-Key": MORALIS_KEY}
-    async with httpx.AsyncClient() as client:
-        res = await client.get(url, headers=headers)
-        if res.status_code != 200:
-            return None
-        try:
-            data = res.json()
-            return data.get("nativePrice", {}).get("usdPrice")
-        except:
-            return None
+async def generate_chart(symbol: str):
+    exchange = ccxt.binance()
+    pair = symbol.upper() + "/USDT"
+    try:
+        ohlcv = exchange.fetch_ohlcv(pair, timeframe='1d', limit=100)
+    except:
+        return None
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
-async def get_price_erc20(addr, chain="eth"):
-    url = f"https://deep-index.moralis.io/api/v2/erc20/{addr}/price?chain={chain}"
-    headers = {"X-API-Key": MORALIS_KEY}
-    async with httpx.AsyncClient() as client:
-        res = await client.get(url, headers=headers)
-        if res.status_code != 200:
-            return None
-        try:
-            data = res.json()
-            return data.get("usdPrice")
-        except:
-            return None
+    support = df['close'].min()
+    resistance = df['close'].max()
+    target = (resistance + support) / 2 + (resistance - support) * 0.25
+
+    plt.figure(figsize=(10, 5))
+    plt.plot(df['timestamp'], df['close'], label='Close', color='blue')
+    plt.axhline(support, color='green', linestyle='--', label=f'Support ~${support:.5f}')
+    plt.axhline(resistance, color='red', linestyle='--', label=f'Resistance ~${resistance:.5f}')
+    plt.axhline(target, color='orange', linestyle=':', label=f'Target ~${target:.5f}')
+    plt.title(f"{symbol.upper()} Weekly Chart")
+    plt.xlabel("Date")
+    plt.ylabel("USD")
+    plt.legend()
+    plt.grid(True)
+
+    path = f"{symbol.lower()}_chart.png"
+    plt.tight_layout()
+    plt.savefig(path)
+    plt.close()
+    return path
 
 async def get_price_cmc(symbol):
     url = f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={symbol.upper()}"
@@ -96,15 +105,7 @@ async def get_price_cmc(symbol):
             return None
 
 async def fetch_price(symbol):
-    symbol = symbol.lower()
-    if symbol in ["eth", "ethereum", "إيثريوم"]:
-        return await get_price_native("eth") or await get_price_cmc("ETH")
-    elif symbol in ["btc", "bitcoin", "بتكوين"]:
-        return await get_price_native("btc") or await get_price_cmc("BTC")
-    elif symbol in symbol_to_contract:
-        return await get_price_erc20(symbol_to_contract[symbol]) or await get_price_cmc(symbol.upper())
-    else:
-        return await get_price_cmc(symbol.upper())
+    return await get_price_cmc(symbol.upper())
 
 language_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")],
@@ -154,11 +155,14 @@ async def handle_symbol(m: types.Message):
     price = await fetch_price(sym)
 
     if not price:
-        await m.answer("❌ لم أتمكن من جلب السعر الحالي للعملة." if lang == "ar"
-                       else "❌ Couldn't fetch current price.")
+        await m.answer("❌ لم أتمكن من جلب السعر الحالي للعملة." if lang == "ar" else "❌ Couldn't fetch current price.")
         return
 
-    await m.answer(f"💵 السعر الحالي: ${price:.6f}" if lang == "en" else f"💵 السعر الحالي: ${price:.6f}")
+    await m.answer(f"💵 السعر الحالي: ${price:.6f}")
+
+    chart_path = await generate_chart(sym)
+    if chart_path:
+        await m.answer_photo(types.FSInputFile(chart_path), caption="📊 التحليل الفني حسب التشارت:")
 
     prompt = (
         f"""سعر العملة {sym.upper()} الآن هو {price:.6f}$.
