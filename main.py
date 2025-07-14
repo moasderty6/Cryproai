@@ -19,7 +19,7 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8000))
 
 CHANNEL_USERNAME = "p2p_LRN"
-GROQ_MODEL = "deepseek-llm-7b-instruct"
+GROQ_MODEL = "deepseek-r1-distill-llama-70b"
 
 bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
@@ -44,58 +44,56 @@ async def ask_groq(prompt):
     }
     async with httpx.AsyncClient(timeout=60) as client:
         res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=json_data)
-        result = res.json()
-        return result["choices"][0]["message"]["content"] if "choices" in result else "❌ AI error"
+        try:
+            result = res.json()
+        except Exception as e:
+            print(f"❌ Failed to parse Groq response: {e}\nRaw: {res.text}")
+            return "❌ خطأ في تحليل الذكاء الاصطناعي."
+        if "choices" in result and result["choices"]:
+            return result["choices"][0]["message"]["content"]
+        else:
+            print(f"❌ Unexpected Groq output: {result}")
+            return "❌ لم أستطع توليد التحليل من الذكاء الاصطناعي."
 
-# ✅ Get Native Price from Moralis
 async def get_price_native(chain="eth"):
     url = f"https://deep-index.moralis.io/api/v2/native/prices?chain={chain}"
     headers = {"X-API-Key": MORALIS_KEY}
     async with httpx.AsyncClient() as client:
         res = await client.get(url, headers=headers)
         if res.status_code != 200:
-            print(f"❌ Moralis native error [{res.status_code}]: {res.text}")
             return None
         try:
             data = res.json()
             return data.get("nativePrice", {}).get("usdPrice")
-        except Exception as e:
-            print("❌ Failed to parse native price:", e)
+        except:
             return None
 
-# ✅ Get ERC20 token price from Moralis
 async def get_price_erc20(addr, chain="eth"):
     url = f"https://deep-index.moralis.io/api/v2/erc20/{addr}/price?chain={chain}"
     headers = {"X-API-Key": MORALIS_KEY}
     async with httpx.AsyncClient() as client:
         res = await client.get(url, headers=headers)
         if res.status_code != 200:
-            print(f"❌ Moralis ERC20 error [{res.status_code}]: {res.text}")
             return None
         try:
             data = res.json()
             return data.get("usdPrice")
-        except Exception as e:
-            print("❌ Failed to parse ERC20 price:", e)
+        except:
             return None
 
-# ✅ CoinMarketCap fallback
 async def get_price_cmc(symbol):
     url = f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={symbol.upper()}"
     headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
     async with httpx.AsyncClient() as client:
         res = await client.get(url, headers=headers)
         if res.status_code != 200:
-            print(f"❌ CMC error [{res.status_code}]: {res.text}")
             return None
         try:
             data = res.json()
             return data["data"][symbol.upper()]["quote"]["USD"]["price"]
-        except Exception as e:
-            print("❌ Failed to parse CMC:", e)
+        except:
             return None
 
-# ✅ Unified price fetcher
 async def fetch_price(symbol):
     symbol = symbol.lower()
     if symbol in ["eth", "ethereum", "إيثريوم"]:
@@ -107,7 +105,6 @@ async def fetch_price(symbol):
     else:
         return await get_price_cmc(symbol.upper())
 
-# ✅ لوحات
 language_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")],
     [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]
@@ -192,7 +189,6 @@ async def handle_symbol(m: types.Message):
         print("❌ Error:", e)
         await m.answer("❌ حدث خطأ أثناء التحليل." if lang == "ar" else "❌ Analysis failed.")
 
-# ✅ Webhook
 async def handle_webhook(req):
     update = await req.json()
     await dp.feed_webhook_update(bot=bot, update=update, headers=req.headers)
