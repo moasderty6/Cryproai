@@ -29,12 +29,12 @@ language_keyboard = InlineKeyboardMarkup(inline_keyboard=[
 ])
 
 subscribe_keyboard_ar = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="📢 اشترك الآن في القناة", url=f"https://t.me/{CHANNEL_USERNAME}")],
+    [InlineKeyboardButton(text="📢 اشترك في القناة", url=f"https://t.me/{CHANNEL_USERNAME}")],
     [InlineKeyboardButton(text="✅ تحققت من الاشتراك", callback_data="check_sub")]
 ])
 
 subscribe_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="📢 Subscribe to channel", url=f"https://t.me/{CHANNEL_USERNAME}")],
+    [InlineKeyboardButton(text="📢 Subscribe to the channel", url=f"https://t.me/{CHANNEL_USERNAME}")],
     [InlineKeyboardButton(text="✅ I have subscribed", callback_data="check_sub")]
 ])
 
@@ -63,39 +63,34 @@ async def ask_groq(prompt: str) -> str:
             return "❌ Unexpected response."
 
 async def get_price_from_coingecko(symbol: str):
-    search_url = f"https://api.coingecko.com/api/v3/search?query={symbol.lower()}"
+    url = f"https://api.coingecko.com/api/v3/search?query={symbol.lower()}"
     async with httpx.AsyncClient() as client:
         try:
-            search_res = await client.get(search_url)
-            search_data = search_res.json()
-            print("🔍 DEBUG Search Data:", search_data)
+            res = await client.get(url)
+            data = res.json()
+            coins = data.get("coins", [])
         except Exception:
             return None, None
 
-    coins = search_data.get("coins", [])
     if not coins:
         return None, None
 
-    coin_id = None
-    coin_name = None
+    # بحث دقيق حسب الرمز
     for coin in coins:
         if coin["symbol"].lower() == symbol.lower():
             coin_id = coin["id"]
             coin_name = coin["name"]
             break
-    if not coin_id and coins:
+    else:
         coin_id = coins[0]["id"]
         coin_name = coins[0]["name"]
 
-    if not coin_id:
-        return None, None
-
+    # الحصول على السعر
     price_url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
     async with httpx.AsyncClient() as client:
         try:
-            price_res = await client.get(price_url)
-            price_data = price_res.json()
-            print("💰 DEBUG Price Data:", price_data)
+            res = await client.get(price_url)
+            price_data = res.json()
             price = price_data.get(coin_id, {}).get("usd")
             return price, coin_name
         except Exception:
@@ -145,53 +140,55 @@ async def handle_coin(message: types.Message):
         return
 
     lang = user_lang[user_id]
-    coin = message.text.strip().upper()
+    symbol = message.text.strip().upper()
 
     member = await bot.get_chat_member(chat_id=f"@{CHANNEL_USERNAME}", user_id=user_id)
     if member.status not in ("member", "administrator", "creator"):
         kb = subscribe_keyboard_ar if lang == "ar" else subscribe_keyboard_en
-        txt = "⚠️ يرجى الاشتراك أولاً." if lang == "ar" else "⚠️ Please subscribe first."
-        await message.answer(txt, reply_markup=kb)
+        await message.answer("⚠️ اشترك في القناة أولاً." if lang == "ar" else "⚠️ Please subscribe first.", reply_markup=kb)
         return
 
-    price, name = await get_price_from_coingecko(coin)
+    price, name = await get_price_from_coingecko(symbol)
     if not price:
         await message.answer("❌ لم أتمكن من جلب السعر الحالي للعملة.")
         return
 
-    notify = f"🔍 تم العثور على العملة: {name}" if lang == "ar" else f"🔍 Found coin: {name}"
-    await message.answer(notify)
-    await message.answer("🔍 جاري التحليل..." if lang == "ar" else "🔍 Analyzing...")
+    await message.answer(f"🔍 تم العثور على العملة: {name}" if lang == "ar" else f"🔍 Found coin: {name}")
+    await message.answer("📊 جاري التحليل..." if lang == "ar" else "📊 Analyzing...")
 
-    prompt_ar = f"""
-تحليل للعملة {name}:
+    prompt_ar = f"""الرجاء تحليل العملة التالية بشكل مختصر واحترافي:
+- الاسم: {name}
 - السعر الحالي: {price} دولار
-- الوضع الحالي
-- نقاط الدعم والمقاومة
-- احتمالية الصعود
-- هل يُنصح بالشراء الآن؟
-باختصار واحترافية
-"""
 
-    prompt_en = f"""
-Analyze the cryptocurrency {name}:
-- Current price: {price} USD
-- Current status
-- Support and resistance levels
-- Growth potential
-- Is it a good time to buy?
-Provide a brief, professional summary
-"""
+المطلوب:
+1. الوضع الحالي للعملة.
+2. نقاط الدعم والمقاومة.
+3. احتمالية الصعود.
+4. هل يُنصح بالشراء الآن؟
+5. تحذير من المخاطر إن وُجد.
+الرجاء الرد باللغة العربية فقط، وبدون مقدمات عامة."""
+
+    prompt_en = f"""Please analyze the following cryptocurrency concisely and professionally:
+- Name: {name}
+- Current Price: {price} USD
+
+Requirements:
+1. Current situation.
+2. Support and resistance levels.
+3. Upside potential.
+4. Is it a good time to buy?
+5. Warn about risks if needed.
+Please reply only in English and avoid any generic introduction."""
 
     prompt = prompt_ar if lang == "ar" else prompt_en
 
     try:
-        result = await ask_groq(prompt)
-        clean_result = clean_html(result)
-        await message.answer(clean_result, parse_mode=None)
+        response = await ask_groq(prompt)
+        clean_response = clean_html(response)
+        await message.answer(clean_response, parse_mode=None)
     except Exception as e:
-        error_msg = "❌ حدث خطأ أثناء التحليل." if lang == "ar" else "❌ Error during analysis."
-        await message.answer(f"{error_msg}\n{str(e)}")
+        await message.answer("❌ حدث خطأ أثناء التحليل." if lang == "ar" else "❌ Error during analysis.")
+        print("❌ ERROR:", e)
 
 # Webhook
 async def handle_webhook(request):
