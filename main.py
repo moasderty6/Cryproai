@@ -53,12 +53,20 @@ async def get_price_moralis(addr, chain="eth"):
         print(f"🔍 Moralis response for {addr}: {data}")
         return data.get("usdPrice")
 
-language_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🇸🇦 العربية", callback_data="lang_ar")],
-                                          [InlineKeyboardButton("🇺🇸 English", callback_data="lang_en")]])
-subscribe_ar = InlineKeyboardMarkup([[InlineKeyboardButton("📢 اشترك بالقناة", url=f"https://t.me/{CHANNEL_USERNAME}")],
-                                     [InlineKeyboardButton("✅ تحققت", callback_data="check_sub")]])
-subscribe_en = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Subscribe channel", url=f"https://t.me/{CHANNEL_USERNAME}")],
-                                     [InlineKeyboardButton("✅ I subscribed", callback_data="check_sub")]])
+language_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")],
+    [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]
+])
+
+subscribe_ar = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="📢 اشترك بالقناة", url=f"https://t.me/{CHANNEL_USERNAME}")],
+    [InlineKeyboardButton(text="✅ تحققت", callback_data="check_sub")]
+])
+
+subscribe_en = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="📢 Subscribe channel", url=f"https://t.me/{CHANNEL_USERNAME}")],
+    [InlineKeyboardButton(text="✅ I subscribed", callback_data="check_sub")]
+])
 
 @dp.message(F.text == "/start")
 async def start(m: types.Message):
