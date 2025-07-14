@@ -176,14 +176,16 @@ async def handle_symbol(m: types.Message):
     await m.answer(f"💵 السعر الحالي: ${price:.6f}")
 
     prompt = (
-        f"""رمز العملة: {sym.upper()}
-سعر العملة الآن: ${price:.6f}
-هل هذه العملة جيدة للاستثمار؟ ما احتمالات ارتفاعها؟ هل تنصح بشرائها الآن؟ استخدم اللغة العربية فقط."""
-        if lang == "ar" else
-        f"""Coin symbol: {sym.upper()}
-Current price: ${price:.6f}
-Is this coin worth investing in? What are the chances of it going up? Should I buy now? Answer in English only."""
-    )
+    f"""افترض أن لديك بيانات كاملة عن حركة السعر التاريخية للعملة {sym.upper()} وسعرها الحالي هو {price:.6f}$.
+بناءً على تحليل الرسم البياني (التشارت) فقط، هل تتوقع أن يرتفع السعر خلال الأيام القادمة أم سينخفض؟ 
+لا تشرح تفاصيل عامة عن المشروع ولا تكتب بالإنجليزية، فقط أعطني توقعًا واضحًا لمسار السعر بالأيام القادمة.
+اكتب الإجابة باللغة العربية فقط وبدون أي رموز غريبة."""
+    if lang == "ar" else
+    f"""Assume you have access to full historical chart data of the coin {sym.upper()} and its current price is ${price:.6f}.
+Based on chart (technical) analysis only, do you expect the price to go up or down in the coming days?
+Don't give general explanations about the project. Just give a clear short answer.
+Answer in English only."""
+)
 
     await m.answer("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
     try:
