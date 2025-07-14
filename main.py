@@ -185,7 +185,6 @@ async def on_startup(app):
 
 async def main():
     app = web.Application()
-    dp.include_router(dp)
     app["bot"] = bot
     app["dispatcher"] = dp
     SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/")
