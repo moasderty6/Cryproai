@@ -15,7 +15,8 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8000))
 
-GROQ_MODEL = "mixtral-8x7b-32768"
+# تغيير النموذج هنا:
+GROQ_MODEL = "deepseek-r1-distill-llama-70b"
 CHANNEL_USERNAME = "p2p_LRN"
 
 bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
@@ -63,7 +64,7 @@ async def get_price_from_coingecko(symbol: str):
         try:
             search_res = await client.get(search_url)
             search_data = search_res.json()
-        except Exception as e:
+        except Exception:
             return None, None
 
     coins = search_data.get("coins", [])
