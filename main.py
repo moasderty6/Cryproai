@@ -81,11 +81,20 @@ async def load_coin_list():
     print("🔁 Loading coin list from CoinGecko...")
     async with httpx.AsyncClient() as client:
         res = await client.get("https://api.coingecko.com/api/v3/coins/list")
-        coin_list = res.json()
+        coin_list = await res.json()  # ✅ هذا السطر كان فيه الخطأ
+
+        if not isinstance(coin_list, list):
+            print("❌ Unexpected response format from CoinGecko!")
+            return
+
         for coin in coin_list:
-            symbol_to_id_map[coin["symbol"].lower()] = (coin["id"], coin["name"])
-            name_to_id_map[coin["name"].lower()] = (coin["id"], coin["symbol"])
-    print(f"✅ Loaded {len(coin_list)} coins.")
+            if isinstance(coin, dict) and "symbol" in coin and "id" in coin and "name" in coin:
+                symbol = coin["symbol"].lower()
+                name = coin["name"].lower()
+                coin_id = coin["id"]
+                symbol_to_id_map[symbol] = (coin_id, coin["name"])
+                name_to_id_map[name] = (coin_id, coin["symbol"])
+    print(f"✅ Loaded {len(symbol_to_id_map)} coins.")
 
 @dp.message(F.text == "/start")
 async def start_handler(message: types.Message):
