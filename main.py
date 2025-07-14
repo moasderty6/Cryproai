@@ -58,23 +58,26 @@ async def ask_groq(prompt: str) -> str:
             return "❌ Unexpected response."
 
 async def get_price_from_coingecko(symbol: str):
-    mapping = {
-        "BTC": "bitcoin",
-        "ETH": "ethereum",
-        "BNB": "binancecoin",
-        "PEPE": "pepe",
-        "FLOKI": "floki",
-    }
-
-    coin_id = mapping.get(symbol.upper())
-    if not coin_id:
-        return None
-
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
+    # البحث عن اسم العملة الصحيح في CoinGecko
+    search_url = f"https://api.coingecko.com/api/v3/search?query={symbol}"
     async with httpx.AsyncClient() as client:
-        r = await client.get(url)
-        data = r.json()
-        return data.get(coin_id, {}).get("usd")
+        search_res = await client.get(search_url)
+        search_data = search_res.json()
+    
+    coins = search_data.get("coins", [])
+    if not coins:
+        return None, None
+
+    coin_id = coins[0]["id"]
+    coin_name = coins[0]["name"]
+
+    price_url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
+    async with httpx.AsyncClient() as client:
+        price_res = await client.get(price_url)
+        price_data = price_res.json()
+
+    price = price_data.get(coin_id, {}).get("usd")
+    return price, coin_name
 
 @dp.message(F.text == "/start")
 async def start_handler(message: types.Message):
@@ -120,7 +123,7 @@ async def handle_coin(message: types.Message):
         return
 
     lang = user_lang[user_id]
-    coin = message.text.strip().upper()
+    coin = message.text.strip()
 
     member = await bot.get_chat_member(chat_id=f"@{CHANNEL_USERNAME}", user_id=user_id)
     if member.status not in ("member", "administrator", "creator"):
@@ -129,7 +132,7 @@ async def handle_coin(message: types.Message):
         await message.answer(txt, reply_markup=kb)
         return
 
-    price = await get_price_from_coingecko(coin)
+    price, name = await get_price_from_coingecko(coin)
     if not price:
         await message.answer("❌ لم أتمكن من جلب السعر الحالي للعملة.")
         return
@@ -138,7 +141,7 @@ async def handle_coin(message: types.Message):
     await message.answer(loading)
 
     prompt_ar = f"""
-تحليل للعملة {coin}:
+تحليل للعملة {name}:
 - السعر الحالي: {price} دولار
 - الوضع الحالي
 - نقاط الدعم والمقاومة
@@ -148,7 +151,7 @@ async def handle_coin(message: types.Message):
 """
 
     prompt_en = f"""
-Analyze the cryptocurrency {coin}:
+Analyze the cryptocurrency {name}:
 - Current price: {price} USD
 - Current status
 - Support and resistance levels
@@ -166,7 +169,7 @@ Provide a brief, professional summary
         error_msg = "❌ حدث خطأ أثناء التحليل." if lang == "ar" else "❌ Error during analysis."
         await message.answer(f"{error_msg}\n{str(e)}")
 
-# Webhook setup
+# Webhook handlers
 async def handle_webhook(request):
     data = await request.json()
     await dp.feed_webhook_update(bot=bot, update=data, headers=request.headers)
