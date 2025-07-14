@@ -16,17 +16,18 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8000))
 
-GROQ_MODEL = "deepseek-r1-distill-llama-70b"
+GROQ_MODEL = "deepseek-llm-7b-instruct"  # نموذج مدعوم وحديث من Groq
 CHANNEL_USERNAME = "p2p_LRN"
 
 bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
 user_lang = {}
 
-# سنقوم بتحميل قائمة العملات هنا عند بدء البوت
+# الخرائط التي سنخزن فيها العملات
 symbol_to_id_map = {}
 name_to_id_map = {}
 
+# واجهات اللغة
 language_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")],
     [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]
@@ -80,8 +81,12 @@ async def load_coin_list():
     global symbol_to_id_map, name_to_id_map
     print("🔁 Loading coin list from CoinGecko...")
     async with httpx.AsyncClient() as client:
-        res = await client.get("https://api.coingecko.com/api/v3/coins/list")
-        coin_list = await res.json()  # ✅ هذا السطر كان فيه الخطأ
+        try:
+            res = await client.get("https://api.coingecko.com/api/v3/coins/list")
+            coin_list = res.json()
+        except Exception as e:
+            print(f"❌ Failed to load coin list: {e}")
+            return
 
         if not isinstance(coin_list, list):
             print("❌ Unexpected response format from CoinGecko!")
@@ -144,7 +149,6 @@ async def handle_coin(message: types.Message):
         await message.answer("⚠️ اشترك في القناة أولاً." if lang == "ar" else "⚠️ Please subscribe first.", reply_markup=kb)
         return
 
-    # البحث باستخدام الرمز أو الاسم
     coin_data = symbol_to_id_map.get(coin_input) or name_to_id_map.get(coin_input)
     if not coin_data:
         await message.answer("❌ لم أتمكن من العثور على هذه العملة." if lang == "ar" else "❌ Coin not found.")
@@ -193,7 +197,7 @@ Please reply only in English and avoid any generic introduction."""
         await message.answer("❌ حدث خطأ أثناء التحليل." if lang == "ar" else "❌ Error during analysis.")
         print("❌ ERROR:", e)
 
-# Webhook
+# Webhook handler
 async def handle_webhook(request):
     data = await request.json()
     await dp.feed_webhook_update(bot=bot, update=data, headers=request.headers)
