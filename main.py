@@ -1,199 +1,184 @@
-const express = require("express");
-const app = express();
-const axios = require("axios");
-const dns = require("dns");
-const fs = require("fs");
-const csv = require("csv-parser");
-const requestIp = require("request-ip");
+import asyncio
+import os
+import re
+from aiogram import Bot, Dispatcher, F, types
+from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiohttp import web
+from dotenv import load_dotenv
+import httpx
 
-const PORT = process.env.PORT || 10000;
-const SAFE_PAGE = process.env.SAFE_PAGE || "https://yasislandemiratis.wixstudio.com/website-3/seaha";
-const GRAY_PAGE = process.env.GRAY_PAGE || "https://yasislandemiratis.wixstudio.com/website-3/emaratise";
-const UAE_COUNTRY_CODE = "AE";
+load_dotenv()
 
-app.set("trust proxy", true);
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CMC_KEY = os.getenv("CMC_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+PORT = int(os.getenv("PORT", 8000))
+GROQ_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
+CHANNEL_USERNAME = "p2p_LRN"
 
-const BOT_KEYWORDS = [
-  "adsbot", "googlebot", "mediapartners-google", "bingbot", "yandexbot", "baiduspider",
-  "crawler", "spider", "render", "wget", "curl", "python-requests", "node-fetch",
-  "monitor", "uptimerobot", "pingdom", "gtmetrix", "lighthouse", "facebookexternalhit",
-  "slackbot", "telegrambot", "discordbot", "preview", "ahrefsbot", "semrushbot", "mj12bot",
-  "dotbot", "petalbot", "rogerbot", "exabot", "sitecheckerbot", "screaming frog",
-  "netcraftsurvey", "prerender", "headlesschrome", "bot", "scanner", "analyzer",
-  "validator", "parser", "scraper"
-];
+bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+dp = Dispatcher(storage=MemoryStorage())
+user_lang = {}
 
-const SUSPICIOUS_AGENTS = [
-  "headlesschrome", "phantomjs", "puppeteer", "axios", "curl", "fetch", "python"
-];
+def clean_response(text, lang="ar"):
+    if lang == "ar":
+        return re.sub(r'[^\u0600-\u06FF0-9A-Za-z.,:%$؟! \n\-]+', '', text)
+    else:
+        return re.sub(r'[^\w\s.,:%$!?$-]+', '', text)
 
-// --- Load Blocked ASN List from CSV ---
-let blockedASNList = [];
-fs.createReadStream("vpn_asn_blocklist_full.csv")
-  .pipe(csv())
-  .on("data", (row) => {
-    blockedASNList.push({
-      asn: row["ASN"].trim().toUpperCase(),
-      orgName: row["OrgName"].toLowerCase(),
-      type: (row["Type"] || "").toLowerCase()
-    });
-  })
-  .on("end", () => {
-    console.log(`✅ Loaded ${blockedASNList.length} ASN entries`);
-  });
-
-function isBlockedASN(asn, orgName) {
-  if (!asn || !orgName) return false;
-  const cleanASN = String(asn).trim().toUpperCase();
-  const cleanOrg = orgName.toLowerCase();
-  return blockedASNList.some(entry => {
-    const asnMatch = entry.asn === cleanASN;
-    const orgMatch = cleanOrg.includes(entry.orgName);
-    const typeMatch = true;
-    return (asnMatch || orgMatch) && typeMatch;
-  });
-}
-
-async function isBot(req) {
-  const ua = (req.headers["user-agent"] || "").toLowerCase();
-  const ip = req.clientIp || req.ip;
-  if (BOT_KEYWORDS.some(bot => ua.includes(bot))) return true;
-  const hasHeaders = req.headers["accept"] && req.headers["accept-language"] && req.headers["accept-encoding"];
-  if (!hasHeaders) return true;
-  return await isGoogleRelatedIP(ip);
-}
-
-async function isGoogleRelatedIP(ip) {
-  return new Promise(resolve => {
-    if (!ip) return resolve(false);
-    dns.reverse(ip, (err, hostnames) => {
-      if (err) return resolve(false);
-      resolve(hostnames.some(h =>
-        h.endsWith(".googlebot.com") || h.endsWith(".google.com") || h.endsWith(".googleusercontent.com")
-      ));
-    });
-  });
-}
-
-function isLikelyRealUser(req) {
-  const ua = (req.headers["user-agent"] || "").toLowerCase();
-  const headers = req.headers;
-  const basicHeaders = headers["accept"] && headers["accept-language"] && headers["accept-encoding"];
-  const isSuspicious = SUSPICIOUS_AGENTS.some(key => ua.includes(key));
-  const hasReferrer = headers["referer"] || headers["referrer"];
-  return (
-    ua.includes("mozilla") &&
-    basicHeaders &&
-    !ua.includes("bot") &&
-    !ua.includes("google") &&
-    !isSuspicious &&
-    hasReferrer
-  );
-}
-
-async function proxyContent(targetUrl, req, res) {
-  try {
-    const headersToForward = {
-      "User-Agent": req.headers["user-agent"] || "Mozilla/5.0",
-      "Accept": req.headers["accept"] || "*/*",
-      "Accept-Encoding": req.headers["accept-encoding"] || "gzip, deflate, br",
-      "Accept-Language": req.headers["accept-language"] || "en-US,en;q=0.9"
-    };
-
-    const axiosConfig = {
-      method: req.method,
-      url: targetUrl + req.url,
-      responseType: "stream",
-      headers: headersToForward,
-      validateStatus: () => true
-    };
-
-    if (["POST", "PUT", "PATCH"].includes(req.method)) {
-      axiosConfig.data = req.body;
+async def ask_groq(prompt, lang="ar"):
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
     }
-
-    const response = await axios(axiosConfig);
-
-    for (const key in response.headers) {
-      if (!["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade", "host"].includes(key.toLowerCase())) {
-        res.setHeader(key, response.headers[key]);
-      }
+    data = {
+        "model": GROQ_MODEL,
+        "messages": [{"role": "user", "content": prompt}]
     }
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data)
+            result = res.json()
+            content = result["choices"][0]["message"]["content"]
+            return clean_response(content, lang=lang).strip()
+    except Exception as e:
+        print("❌ Error from AI:", e)
+        return "❌ حدث خطأ أثناء تحليل التشارت." if lang == "ar" else "❌ Analysis failed."
 
-    res.status(response.status);
-    response.data.pipe(res);
-  } catch (error) {
-    console.error(`❌ Proxy error to ${targetUrl}:`, error.message);
-    res.status(500).send("Internal Server Error");
-  }
-}
+async def get_price_cmc(symbol):
+    url = f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={symbol.upper()}"
+    headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.get(url, headers=headers)
+            if res.status_code != 200:
+                return None
+            data = res.json()
+            return data["data"][symbol.upper()]["quote"]["USD"]["price"]
+    except:
+        return None
 
-// --- Middleware ---
-app.use(requestIp.mw());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+language_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")],
+    [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]
+])
+subscribe_ar = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="📢 اشترك بالقناة", url=f"https://t.me/{CHANNEL_USERNAME}")],
+    [InlineKeyboardButton(text="✅ تحققت", callback_data="check_sub")]
+])
+subscribe_en = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="📢 Subscribe", url=f"https://t.me/{CHANNEL_USERNAME}")],
+    [InlineKeyboardButton(text="✅ I've joined", callback_data="check_sub")]
+])
 
-// --- Main Route Handler ---
-app.all("*", async (req, res) => {
-  const ip = req.clientIp || req.ip || "no-ip";
-  const ua = req.headers["user-agent"] || "no-agent";
-  const referrer = req.headers["referer"] || req.headers["referrer"] || "none";
+@dp.message(F.text == "/start")
+async def start(m: types.Message):
+    await m.answer("👋 اختر لغتك:\nChoose your language:", reply_markup=language_keyboard)
 
-  console.log(`📎 Referrer: ${referrer}`);
+@dp.callback_query(F.data.startswith("lang_"))
+async def set_lang(cb: types.CallbackQuery):
+    lang = cb.data.split("_")[1]
+    user_lang[cb.from_user.id] = lang
+    member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", cb.from_user.id)
+    if member.status in ("member", "administrator", "creator"):
+        await cb.message.edit_text("✅ مشترك. أرسل رمز العملة:" if lang == "ar" else "✅ Subscribed. Send coin symbol:")
+    else:
+        kb = subscribe_ar if lang == "ar" else subscribe_en
+        await cb.message.edit_text("❗ الرجاء الاشتراك أولاً" if lang == "ar" else "❗ Please subscribe first", reply_markup=kb)
 
-  let countryCode = null, asn = null, orgName = null;
+@dp.callback_query(F.data == "check_sub")
+async def check_sub(cb: types.CallbackQuery):
+    uid = cb.from_user.id
+    lang = user_lang.get(uid, "ar")
+    member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", uid)
+    if member.status in ("member", "administrator", "creator"):
+        await cb.message.edit_text("✅ مشترك. أرسل رمز العملة:" if lang == "ar" else "✅ Subscribed. Send coin symbol:")
+    else:
+        kb = subscribe_ar if lang == "ar" else subscribe_en
+        await cb.message.edit_text("❗ الرجاء الاشتراك أولاً" if lang == "ar" else "❗ Please subscribe first", reply_markup=kb)
 
-  const uaLower = ua.toLowerCase();
-  const isUptimeRobot = uaLower.includes("uptimerobot");
+@dp.message(F.text)
+async def handle_symbol(m: types.Message):
+    uid = m.from_user.id
+    lang = user_lang.get(uid, "ar")
+    sym = m.text.strip().lower()
 
-  if (!isUptimeRobot) {
-    try {
-      const geo = await axios.get(`https://ipapi.co/${ip}/json/`);
-      countryCode = geo.data.country_code;
-      asn = geo.data.asn;
-      orgName = geo.data.org;
-      console.log(`🌍 [ipapi] IP Info - ${ip} | ${countryCode} | ${asn} | ${orgName}`);
-    } catch (err) {
-      console.warn(`⚠️ ipapi.co failed: ${err.message}`);
-      try {
-        const altGeo = await axios.get(`https://ipwho.is/${ip}`);
-        if (altGeo.data && altGeo.data.success !== false) {
-          countryCode = altGeo.data.country_code;
-          asn = altGeo.data.connection.asn;
-          orgName = altGeo.data.connection.org;
-          console.log(`🌍 [ipwho.is fallback] IP Info - ${ip} | ${countryCode} | ${asn} | ${orgName}`);
-        } else {
-          console.warn("⚠️ ipwho.is returned invalid data");
-        }
-      } catch (altErr) {
-        console.error(`❌ Fallback GeoIP lookup failed: ${altErr.message}`);
-      }
-    }
-  } else {
-    console.log("🟡 Skipped GeoIP lookup for UptimeRobot.");
-  }
+    member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", uid)
+    if member.status not in ("member", "administrator", "creator"):
+        await m.answer("⚠️ اشترك بالقناة أولاً." if lang == "ar" else "⚠️ Please join the channel first.",
+                       reply_markup=subscribe_ar if lang == "ar" else subscribe_en)
+        return
 
-  const isFromUAE = countryCode === UAE_COUNTRY_CODE;
-  const isDetectedBot = await isBot(req);
-  const isRealUser = isLikelyRealUser(req);
-  const isASNBlocked = isBlockedASN(asn, orgName);
+    await m.answer("⏳ جاري جلب السعر..." if lang == "ar" else "⏳ Fetching price...")
+    price = await get_price_cmc(sym)
+    if not price:
+        await m.answer("❌ لم أتمكن من جلب السعر الحالي للعملة." if lang == "ar"
+                       else "❌ Couldn't fetch current price.")
+        return
 
-  console.log(`🧠 Decision: UAE=${isFromUAE} | Bot=${isDetectedBot} | RealUser=${isRealUser} | ASNBlocked=${isASNBlocked} | IP=${ip}`);
+    await m.answer(f"💵 السعر الحالي: ${price:.6f}" if lang == "ar" else f"💵 Current price: ${price:.6f}")
 
-  await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 500) + 100));
+    prompt = (
+        f"""سعر العملة {sym.upper()} الآن هو {price:.6f}$.
+قم بتحليل التشارت الأسبوعي فقط للعملة اعتمادًا على:
+- خطوط الدعم والمقاومة.
+- مؤشرات RSI و MACD و MA.
+- سلوك السعر السابق خلال الأسابيع الماضية.
+ثم قدّم:
+1. تقييم عام (صعود أم هبوط؟).
+2. أقرب مقاومة ودعم.
+3. السعر المستهدف المتوقع.
+✅ استخدم العربية فقط.
+🚫 لا تكتب رموز أو كلمات بلغة أخرى.
+❌ لا تشرح المشروع، فقط تحليل التشارت."""
+        if lang == "ar" else
+        f"""The current price of {sym.upper()} is ${price:.6f}.
+Analyze only the weekly chart using:
+- Support and resistance levels.
+- RSI, MACD, MA indicators.
+- Weekly price behavior.
+Then provide:
+1. General trend (up/down).
+2. Nearest resistance/support.
+3. Target price.
+✅ Answer in English only.
+❌ Don't explain the project, only chart analysis."""
+    )
 
-  if (isFromUAE && !isDetectedBot && isRealUser && !isASNBlocked) {
-    console.log("✅ Redirecting to GRAY_PAGE");
-    await proxyContent(GRAY_PAGE, req, res);
-  } else {
-    console.log("🔒 Redirecting to SAFE_PAGE");
-    await proxyContent(SAFE_PAGE, req, res);
-  }
-});
+    await m.answer("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
+    analysis = await ask_groq(prompt, lang=lang)
+    await m.answer(analysis)
 
-// --- Start Server ---
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`GRAY_PAGE: ${GRAY_PAGE}`);
-  console.log(`SAFE_PAGE: ${SAFE_PAGE}`);
-});
+async def handle_webhook(req):
+    if req.method == "GET":
+        return web.Response(text="✅ Bot is alive.")
+    update = await req.json()
+    await dp.feed_update(bot=bot, update=types.Update(**update))
+    return web.Response()
+
+async def on_startup(app):
+    await bot.set_webhook(WEBHOOK_URL)
+    print(f"✅ Webhook set to {WEBHOOK_URL}")
+
+async def on_shutdown(app):
+    await bot.delete_webhook()
+    await bot.session.close()
+
+async def main():
+    app = web.Application()
+    app.router.add_post("/", handle_webhook)
+    app.router.add_get("/", handle_webhook)  # Uptime check
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", PORT).start()
+    print("✅ Bot is running...")
+    while True:
+        await asyncio.sleep(3600)
+
+if __name__ == "__main__":
+    asyncio.run(main())
