@@ -76,7 +76,16 @@ subscribe_en = InlineKeyboardMarkup(inline_keyboard=[
 
 @dp.message(F.text == "/start")
 async def start(m: types.Message):
+    # تسجيل المستخدم فورًا بلغة افتراضية
+    user_lang[m.from_user.id] = "ar"
     await m.answer("👋 اختر لغتك:\nChoose your language:", reply_markup=language_keyboard)
+
+@dp.message(F.text == "/status")
+async def status_handler(m: types.Message):
+    count = len(user_lang)
+    lang = user_lang.get(m.from_user.id, "ar")
+    msg = f"📊 عدد المستخدمين: {count}" if lang == "ar" else f"📊 Total users: {count}"
+    await m.answer(msg)
 
 @dp.callback_query(F.data.startswith("lang_"))
 async def set_lang(cb: types.CallbackQuery):
