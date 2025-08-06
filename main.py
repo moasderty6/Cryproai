@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+import json
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -21,7 +22,21 @@ CHANNEL_USERNAME = "p2p_LRN"
 
 bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
-user_lang = {}
+USERS_FILE = "users.json"
+
+# === دعم تخزين المستخدمين في ملف JSON ===
+def load_users():
+    try:
+        with open(USERS_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_users(users):
+    with open(USERS_FILE, "w") as f:
+        json.dump(users, f)
+
+user_lang = load_users()
 
 def clean_response(text, lang="ar"):
     if lang == "ar":
@@ -76,21 +91,25 @@ subscribe_en = InlineKeyboardMarkup(inline_keyboard=[
 
 @dp.message(F.text == "/start")
 async def start(m: types.Message):
-    # تسجيل المستخدم فورًا بلغة افتراضية
-    user_lang[m.from_user.id] = "ar"
+    uid = str(m.from_user.id)
+    if uid not in user_lang:
+        user_lang[uid] = "ar"
+        save_users(user_lang)
     await m.answer("👋 اختر لغتك:\nChoose your language:", reply_markup=language_keyboard)
 
 @dp.message(F.text == "/status")
 async def status_handler(m: types.Message):
+    lang = user_lang.get(str(m.from_user.id), "ar")
     count = len(user_lang)
-    lang = user_lang.get(m.from_user.id, "ar")
     msg = f"📊 عدد المستخدمين: {count}" if lang == "ar" else f"📊 Total users: {count}"
     await m.answer(msg)
 
 @dp.callback_query(F.data.startswith("lang_"))
 async def set_lang(cb: types.CallbackQuery):
     lang = cb.data.split("_")[1]
-    user_lang[cb.from_user.id] = lang
+    uid = str(cb.from_user.id)
+    user_lang[uid] = lang
+    save_users(user_lang)
     member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", cb.from_user.id)
     if member.status in ("member", "administrator", "creator"):
         await cb.message.edit_text("✅ مشترك. أرسل رمز العملة:" if lang == "ar" else "✅ Subscribed. Send coin symbol:")
@@ -100,9 +119,9 @@ async def set_lang(cb: types.CallbackQuery):
 
 @dp.callback_query(F.data == "check_sub")
 async def check_sub(cb: types.CallbackQuery):
-    uid = cb.from_user.id
+    uid = str(cb.from_user.id)
     lang = user_lang.get(uid, "ar")
-    member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", uid)
+    member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", cb.from_user.id)
     if member.status in ("member", "administrator", "creator"):
         await cb.message.edit_text("✅ مشترك. أرسل رمز العملة:" if lang == "ar" else "✅ Subscribed. Send coin symbol:")
     else:
@@ -111,11 +130,11 @@ async def check_sub(cb: types.CallbackQuery):
 
 @dp.message(F.text)
 async def handle_symbol(m: types.Message):
-    uid = m.from_user.id
+    uid = str(m.from_user.id)
     lang = user_lang.get(uid, "ar")
     sym = m.text.strip().lower()
 
-    member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", uid)
+    member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", m.from_user.id)
     if member.status not in ("member", "administrator", "creator"):
         await m.answer("⚠️ اشترك بالقناة أولاً." if lang == "ar" else "⚠️ Please join the channel first.",
                        reply_markup=subscribe_ar if lang == "ar" else subscribe_en)
@@ -179,7 +198,7 @@ async def on_shutdown(app):
 async def main():
     app = web.Application()
     app.router.add_post("/", handle_webhook)
-    app.router.add_get("/", handle_webhook)  # Uptime check
+    app.router.add_get("/", handle_webhook)
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
     runner = web.AppRunner(app)
