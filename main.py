@@ -87,13 +87,24 @@ async def create_nowpayments_invoice(user_id: int):
         "ipn_callback_url": f"{WEBHOOK_URL}/webhook/nowpayments",
         "success_url": f"https://t.me/{(await bot.get_me()).username}",
     }
+    
+    # طباعة معلومات للتشخيص
+    print("Attempting to create invoice...")
+    print(f"API Key used: {str(NOWPAYMENTS_API_KEY)[:5]}...")
+    print(f"Callback URL: {data['ipn_callback_url']}")
+
     try:
         async with httpx.AsyncClient() as client:
             res = await client.post(url, headers=headers, json=data)
+            
+            # طباعة استجابة الخادم
+            print(f"NOWPayments API Response Status: {res.status_code}")
+            print(f"NOWPayments API Response Body: {res.text}")
+
             if res.status_code == 201:
                 return res.json().get("invoice_url")
     except Exception as e:
-        print(f"❌ Error creating NOWPayments invoice: {e}")
+        print(f"❌ CRITICAL ERROR in create_nowpayments_invoice: {e}")
     return None
 
 # --- لوحات الأزرار ---
