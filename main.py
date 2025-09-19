@@ -90,11 +90,20 @@ subscribe_en = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="✅ I've joined", callback_data="check_sub")]
 ])
 
-# === لوحة اختيار الإطار الزمني ===
+# === لوحة اختيار الإطار الزمني صغيرة جنب بعض ===
 timeframe_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="1️⃣ أسبوعي", callback_data="tf_weekly")],
-    [InlineKeyboardButton(text="2️⃣ يومي", callback_data="tf_daily")],
-    [InlineKeyboardButton(text="3️⃣ 4 ساعات", callback_data="tf_4h")],
+    [
+        InlineKeyboardButton(text="أسبوعي", callback_data="tf_weekly"),
+        InlineKeyboardButton(text="يومي", callback_data="tf_daily"),
+        InlineKeyboardButton(text="4 ساعات", callback_data="tf_4h")
+    ]
+])
+timeframe_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[
+    [
+        InlineKeyboardButton(text="Weekly", callback_data="tf_weekly"),
+        InlineKeyboardButton(text="Daily", callback_data="tf_daily"),
+        InlineKeyboardButton(text="4H", callback_data="tf_4h")
+    ]
 ])
 
 # === أوامر البوت ===
@@ -166,9 +175,10 @@ async def handle_symbol(m: types.Message):
     save_users(user_lang)
 
     # طلب اختيار الإطار الزمني
+    kb = timeframe_keyboard if lang == "ar" else timeframe_keyboard_en
     await m.answer(
         "⏳ اختر الإطار الزمني للتحليل:" if lang == "ar" else "⏳ Select timeframe for analysis:",
-        reply_markup=timeframe_keyboard
+        reply_markup=kb
     )
 
 # === التعامل مع اختيار الإطار الزمني ===
