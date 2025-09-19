@@ -1,212 +1,241 @@
-import asyncio
 import os
-import re
+import asyncio
+import logging
 import json
+import re
+from datetime import datetime, timedelta
+from io import BytesIO
+
+# --- مكتبات أساسية ---
+import httpx
+import asyncpg
+from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
+from aiogram.filters import Command, CommandStart
 from aiohttp import web
-from dotenv import load_dotenv
-import httpx
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from pycoingecko import CoinGeckoAPI
+import matplotlib.pyplot as plt
 
+# --- إعدادات أولية ---
 load_dotenv()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
+# --- متغيرات البيئة (مهم جداً) ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CMC_KEY = os.getenv("CMC_API_KEY")
+DATABASE_URL = os.getenv("DATABASE_URL")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # -> https://your-app-name.onrender.com
 PORT = int(os.getenv("PORT", 8000))
-GROQ_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
-CHANNEL_USERNAME = "p2p_LRN"
+CHANNEL_USERNAME = "p2p_LRN" # غيّر هذا لمعرف قناتك
 
+# --- تهيئة البوت و المكتبات ---
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
 bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
-dp = Dispatcher(storage=MemoryStorage())
-USERS_FILE = "users.json"
+scheduler = AsyncIOScheduler()
+cg = CoinGeckoAPI()
+http_client = httpx.AsyncClient(timeout=40)
 
-# === دعم تخزين المستخدمين في ملف JSON ===
-def load_users():
-    try:
-        with open(USERS_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return {}
+# --- نظام الكاش (لتقليل استهلاك الـ API) ---
+cache = {}
+CACHE_TTL = timedelta(minutes=5)
 
-def save_users(users):
-    with open(USERS_FILE, "w") as f:
-        json.dump(users, f)
+async def get_from_cache(key):
+    if key in cache and datetime.now() < cache[key]['expiry']:
+        return cache[key]['data']
+    return None
 
-user_lang = load_users()
-
-def clean_response(text, lang="ar"):
-    if lang == "ar":
-        return re.sub(r'[^\u0600-\u06FF0-9A-Za-z.,:%$؟! \n\-]+', '', text)
-    else:
-        return re.sub(r'[^\w\s.,:%$!?$-]+', '', text)
-
-async def ask_groq(prompt, lang="ar"):
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
+def set_in_cache(key, data):
+    cache[key] = {
+        'data': data,
+        'expiry': datetime.now() + CACHE_TTL
     }
-    data = {
-        "model": GROQ_MODEL,
-        "messages": [{"role": "user", "content": prompt}]
-    }
+
+# --- إعدادات قاعدة البيانات (PostgreSQL) ---
+async def init_db():
+    conn = await asyncpg.connect(DATABASE_URL)
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id BIGINT PRIMARY KEY,
+            lang TEXT DEFAULT 'ar',
+            is_subscribed BOOLEAN DEFAULT FALSE
+        );
+    """)
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS portfolio (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT,
+            symbol TEXT,
+            amount DOUBLE PRECISION,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        );
+    """)
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS alerts (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT,
+            symbol TEXT,
+            target_price DOUBLE PRECISION,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        );
+    """)
+    await conn.close()
+    logging.info("Database initialized successfully.")
+
+# --- دوال مساعدة لقاعدة البيانات ---
+async def get_user_lang(user_id):
+    conn = await asyncpg.connect(DATABASE_URL)
+    lang = await conn.fetchval("SELECT lang FROM users WHERE user_id = $1", user_id)
+    if not lang:
+        await conn.execute("INSERT INTO users (user_id, lang) VALUES ($1, 'ar') ON CONFLICT (user_id) DO NOTHING", user_id)
+        lang = 'ar'
+    await conn.close()
+    return lang
+
+async def set_user_lang(user_id, lang):
+    conn = await asyncpg.connect(DATABASE_URL)
+    await conn.execute("UPDATE users SET lang = $1 WHERE user_id = $2", lang, user_id)
+    await conn.close()
+    
+# ... (بقية دوال قاعدة البيانات هنا)
+
+# --- دوال واجهات برمجة التطبيقات (APIs) ---
+async def get_coin_data(symbol):
+    symbol = symbol.lower()
+    cache_key = f"price_{symbol}"
+    cached_data = await get_from_cache(cache_key)
+    if cached_data:
+        return cached_data
+
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data)
-            result = res.json()
-            content = result["choices"][0]["message"]["content"]
-            return clean_response(content, lang=lang).strip()
+        coins_list = cg.get_coins_list()
+        coin_id = next((coin['id'] for coin in coins_list if coin['symbol'] == symbol), None)
+        if not coin_id: return None
+        
+        data = cg.get_coin_by_id(coin_id)
+        price = data['market_data']['current_price']['usd']
+        price_change = data['market_data']['price_change_percentage_24h']
+        
+        result = {'id': coin_id, 'price': price, 'change': price_change}
+        set_in_cache(cache_key, result)
+        return result
     except Exception as e:
-        print("❌ Error from AI:", e)
-        return "❌ حدث خطأ أثناء تحليل التشارت." if lang == "ar" else "❌ Analysis failed."
-
-async def get_price_cmc(symbol):
-    url = f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={symbol.upper()}"
-    headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
-    try:
-        async with httpx.AsyncClient() as client:
-            res = await client.get(url, headers=headers)
-            if res.status_code != 200:
-                return None
-            data = res.json()
-            return data["data"][symbol.upper()]["quote"]["USD"]["price"]
-    except:
+        logging.error(f"Error fetching coin data for {symbol}: {e}")
         return None
 
-language_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")],
-    [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]
-])
-subscribe_ar = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="📢 اشترك بالقناة", url=f"https://t.me/{CHANNEL_USERNAME}")],
-    [InlineKeyboardButton(text="✅ تحققت", callback_data="check_sub")]
-])
-subscribe_en = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="📢 Subscribe", url=f"https://t.me/{CHANNEL_USERNAME}")],
-    [InlineKeyboardButton(text="✅ I've joined", callback_data="check_sub")]
-])
+async def ask_groq(prompt, lang="ar"):
+    # ... (نفس دالة Groq من الكود السابق)
 
-@dp.message(F.text == "/start")
-async def start(m: types.Message):
-    uid = str(m.from_user.id)
-    if uid not in user_lang:
-        user_lang[uid] = "ar"
-        save_users(user_lang)
-    await m.answer("👋 اختر لغتك:\nChoose your language:", reply_markup=language_keyboard)
+# --- إنشاء الرسوم البيانية ---
+async def generate_chart(coin_id, lang):
+    try:
+        days = 30
+        data = cg.get_coin_market_chart_by_id(coin_id, vs_currency='usd', days=days)
+        prices = [item[1] for item in data['prices']]
+        timestamps = [datetime.fromtimestamp(item[0]/1000) for item in data['prices']]
 
-@dp.message(F.text == "/status")
-async def status_handler(m: types.Message):
-    lang = user_lang.get(str(m.from_user.id), "ar")
-    count = len(user_lang)
-    msg = f"📊 عدد المستخدمين: {count}" if lang == "ar" else f"📊 Total users: {count}"
-    await m.answer(msg)
+        plt.style.use('dark_background')
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        ax.plot(timestamps, prices, color='#00FF00', linewidth=2)
+        
+        title = f"تحليل سعر {coin_id.upper()} آخر {days} يوم" if lang == 'ar' else f"{coin_id.upper()} Price Last {days} Days"
+        ax.set_title(title, fontsize=16, color='white')
+        ax.set_ylabel("السعر ($)" if lang == 'ar' else "Price (USD)", color='white')
+        
+        ax.grid(color='gray', linestyle='--', linewidth=0.5, alpha=0.5)
+        ax.tick_params(axis='x', colors='white')
+        ax.tick_params(axis='y', colors='white')
+        
+        buffer = BytesIO()
+        plt.savefig(buffer, format='png', transparent=True)
+        buffer.seek(0)
+        plt.close(fig)
+        return buffer
+    except Exception as e:
+        logging.error(f"Error generating chart for {coin_id}: {e}")
+        return None
 
-@dp.callback_query(F.data.startswith("lang_"))
-async def set_lang(cb: types.CallbackQuery):
-    lang = cb.data.split("_")[1]
-    uid = str(cb.from_user.id)
-    user_lang[uid] = lang
-    save_users(user_lang)
-    member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", cb.from_user.id)
-    if member.status in ("member", "administrator", "creator"):
-        await cb.message.edit_text("✅ مشترك. أرسل رمز العملة:" if lang == "ar" else "✅ Subscribed. Send coin symbol:")
-    else:
-        kb = subscribe_ar if lang == "ar" else subscribe_en
-        await cb.message.edit_text("❗ الرجاء الاشتراك أولاً" if lang == "ar" else "❗ Please subscribe first", reply_markup=kb)
-
-@dp.callback_query(F.data == "check_sub")
-async def check_sub(cb: types.CallbackQuery):
-    uid = str(cb.from_user.id)
-    lang = user_lang.get(uid, "ar")
-    member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", cb.from_user.id)
-    if member.status in ("member", "administrator", "creator"):
-        await cb.message.edit_text("✅ مشترك. أرسل رمز العملة:" if lang == "ar" else "✅ Subscribed. Send coin symbol:")
-    else:
-        kb = subscribe_ar if lang == "ar" else subscribe_en
-        await cb.message.edit_text("❗ الرجاء الاشتراك أولاً" if lang == "ar" else "❗ Please subscribe first", reply_markup=kb)
-
-@dp.message(F.text)
-async def handle_symbol(m: types.Message):
-    uid = str(m.from_user.id)
-    lang = user_lang.get(uid, "ar")
-    sym = m.text.strip().lower()
-
-    member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", m.from_user.id)
-    if member.status not in ("member", "administrator", "creator"):
-        await m.answer("⚠️ اشترك بالقناة أولاً." if lang == "ar" else "⚠️ Please join the channel first.",
-                       reply_markup=subscribe_ar if lang == "ar" else subscribe_en)
-        return
-
-    await m.answer("⏳ جاري جلب السعر..." if lang == "ar" else "⏳ Fetching price...")
-    price = await get_price_cmc(sym)
-    if not price:
-        await m.answer("❌ لم أتمكن من جلب السعر الحالي للعملة." if lang == "ar"
-                       else "❌ Couldn't fetch current price.")
-        return
-
-    await m.answer(f"💵 السعر الحالي: ${price:.6f}" if lang == "ar" else f"💵 Current price: ${price:.6f}")
-
-    prompt = (
-        f"""سعر العملة {sym.upper()} الآن هو {price:.6f}$.
-قم بتحليل التشارت الأسبوعي فقط للعملة اعتمادًا على:
-- خطوط الدعم والمقاومة.
-- مؤشرات RSI و MACD و MA.
-- سلوك السعر السابق خلال الأسابيع الماضية.
-ثم قدّم:
-1. تقييم عام (صعود أم هبوط؟).
-2. أقرب مقاومة ودعم.
-3. السعر المستهدف المتوقع.
-✅ استخدم العربية فقط.
-🚫 لا تكتب رموز أو كلمات بلغة أخرى.
-❌ لا تشرح المشروع، فقط تحليل التشارت."""
-        if lang == "ar" else
-        f"""The current price of {sym.upper()} is ${price:.6f}.
-Analyze only the weekly chart using:
-- Support and resistance levels.
-- RSI, MACD, MA indicators.
-- Weekly price behavior.
-Then provide:
-1. General trend (up/down).
-2. Nearest resistance/support.
-3. Target price.
-✅ Answer in English only.
-❌ Don't explain the project, only chart analysis."""
+# --- لوحات المفاتيح (Keyboards) ---
+# ... (تعريف لوحات المفاتيح هنا)
+def get_main_menu_keyboard(lang):
+    text = {
+        'ar': ["تحليل عملة 📈", "محفظتي 💼", "تنبيهاتي 🔔", "لمحة عن السوق 🌍"],
+        'en': ["Analyze Coin 📈", "My Portfolio 💼", "My Alerts 🔔", "Market Overview 🌍"]
+    }
+    keyboard = types.ReplyKeyboardMarkup(
+        keyboard=[
+            [types.KeyboardButton(text=text[lang][0]), types.KeyboardButton(text=text[lang][1])],
+            [types.KeyboardButton(text=text[lang][2]), types.KeyboardButton(text=text[lang][3])]
+        ],
+        resize_keyboard=True
     )
+    return keyboard
 
-    await m.answer("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
-    analysis = await ask_groq(prompt, lang=lang)
-    await m.answer(analysis)
+# --- معالجات الأوامر والرسائل (Handlers) ---
+@dp.message(CommandStart())
+async def send_welcome(message: types.Message):
+    user_id = message.from_user.id
+    conn = await asyncpg.connect(DATABASE_URL)
+    await conn.execute("INSERT INTO users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", user_id)
+    await conn.close()
+    
+    lang = await get_user_lang(user_id)
+    welcome_text = "أهلاً بك في بوت تحليل العملات الرقمية المطور!" if lang == 'ar' else "Welcome to the Advanced Crypto Analysis Bot!"
+    await message.answer(welcome_text, reply_markup=get_main_menu_keyboard(lang))
+    
+# ... (بقية الـ Handlers هنا)
 
-async def handle_webhook(req):
-    if req.method == "GET":
-        return web.Response(text="✅ Bot is alive.")
-    update = await req.json()
-    await dp.feed_update(bot=bot, update=types.Update(**update))
-    return web.Response()
+# --- مهام الخلفية (Scheduler) ---
+async def check_alerts():
+    # ... (كود التحقق من التنبيهات وإرسالها)
 
+# --- إعداد Webhook و تشغيل البوت ---
 async def on_startup(app):
-    await bot.set_webhook(WEBHOOK_URL)
-    print(f"✅ Webhook set to {WEBHOOK_URL}")
+    await init_db()
+    scheduler.add_job(check_alerts, 'interval', minutes=5)
+    scheduler.start()
+    webhook_info = await bot.get_webhook_info()
+    if webhook_info.url != WEBHOOK_URL:
+        await bot.set_webhook(url=WEBHOOK_URL)
+        logging.info(f"Webhook set to {WEBHOOK_URL}")
 
 async def on_shutdown(app):
-    await bot.delete_webhook()
     await bot.session.close()
+    scheduler.shutdown()
+    await http_client.aclose()
 
+async def handle_webhook(request):
+    url = str(request.url)
+    index = url.rfind('/')
+    token = url[index+1:]
+    if token == BOT_TOKEN:
+        update = await request.json()
+        await dp.feed_update(bot, types.Update(**update))
+        return web.Response()
+    else:
+        return web.Response(status=403)
+        
 async def main():
     app = web.Application()
-    app.router.add_post("/", handle_webhook)
-    app.router.add_get("/", handle_webhook)
+    app.router.add_post(f'/{BOT_TOKEN}', handle_webhook)
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
+    
     runner = web.AppRunner(app)
     await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", PORT).start()
-    print("✅ Bot is running...")
-    while True:
-        await asyncio.sleep(3600)
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+    logging.info(f"Bot is running on port {PORT}...")
+    await asyncio.Event().wait()
 
-if __name__ == "__main__":
-    asyncio.run(main())
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Bot stopped.")
+
