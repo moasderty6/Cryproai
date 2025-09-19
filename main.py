@@ -154,8 +154,8 @@ async def handle_symbol(m: types.Message):
     lang = user_lang.get(uid, "ar")
     text = m.text.strip().lower()
 
-    # تجاهل start=1 أو start أو /start
-    if text in ["start", "start=1", "/start"]:
+    # تجاهل أي أوامر أو start=1
+    if text.startswith("/") or text in ["start", "start=1"]:
         return
 
     sym = text
