@@ -199,31 +199,38 @@ async def set_timeframe(cb: types.CallbackQuery):
     if lang == "ar":
         prompt = (
             f"سعر العملة {sym.upper()} الآن هو {price:.6f}$.\n"
-            f"قم بتحليل التشارت للإطار الزمني {timeframe} اعتمادًا على:\n"
-            "- خطوط الدعم والمقاومة.\n"
-            "- مؤشرات RSI و MACD و MA.\n"
-            "- سلوك السعر السابق.\n"
-            "ثم قدّم:\n"
+            f"قم بتحليل التشارت للإطار الزمني {timeframe} باستخدام مؤشرات شاملة:\n"
+            "- خطوط الدعم والمقاومة\n"
+            "- RSI, MACD, MA\n"
+            "- Bollinger Bands\n"
+            "- Fibonacci Levels\n"
+            "- Stochastic Oscillator\n"
+            "- Volume Analysis\n"
+            "- Trendlines باستخدام Regression\n"
+            "ثم قدم:\n"
             "1. تقييم عام (صعود أم هبوط؟)\n"
-            "2. أقرب مقاومة ودعم.\n"
-            "3. السعر المستهدف المتوقع.\n"
-            "✅ استخدم العربية فقط.\n"
-            "🚫 لا تكتب رموز أو كلمات بلغة أخرى.\n"
-            "❌ لا تشرح المشروع، فقط تحليل التشارت."
+            "2. أقرب مقاومة ودعم\n"
+            "3. نطاق سعري مستهدف (Range)\n"
+            "✅ استخدم العربية فقط\n"
+            "❌ لا تشرح المشروع، فقط تحليل التشارت"
         )
     else:
         prompt = (
             f"The current price of {sym.upper()} is ${price:.6f}.\n"
-            f"Analyze the {timeframe} chart using:\n"
-            "- Support and resistance levels.\n"
-            "- RSI, MACD, MA indicators.\n"
-            "- Previous price behavior.\n"
+            f"Analyze the {timeframe} chart using comprehensive indicators:\n"
+            "- Support and Resistance\n"
+            "- RSI, MACD, MA\n"
+            "- Bollinger Bands\n"
+            "- Fibonacci Levels\n"
+            "- Stochastic Oscillator\n"
+            "- Volume Analysis\n"
+            "- Trendlines using Regression\n"
             "Then provide:\n"
             "1. General trend (up/down)\n"
             "2. Nearest resistance/support\n"
-            "3. Target price\n"
-            "✅ Answer in English only.\n"
-            "❌ Don't explain the project, only chart analysis."
+            "3. Target price range\n"
+            "✅ Answer in English only\n"
+            "❌ Don't explain the project, only chart analysis"
         )
 
     await cb.message.edit_text("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
