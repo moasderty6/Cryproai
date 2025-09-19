@@ -152,7 +152,11 @@ async def check_sub(cb: types.CallbackQuery):
 async def handle_symbol(m: types.Message):
     uid = str(m.from_user.id)
     lang = user_lang.get(uid, "ar")
-    sym = m.text.strip().lower()
+    text = m.text.strip()
+
+    # تجاهل start و start=1
+    if text.lower() in ("start", "start=1"):
+        return
 
     member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", m.from_user.id)
     if member.status not in ("member", "administrator", "creator"):
@@ -161,7 +165,7 @@ async def handle_symbol(m: types.Message):
         return
 
     await m.answer("⏳ جاري جلب السعر..." if lang == "ar" else "⏳ Fetching price...")
-    price = await get_price_cmc(sym)
+    price = await get_price_cmc(text)
     if not price:
         await m.answer("❌ لم أتمكن من جلب السعر الحالي للعملة." if lang == "ar"
                        else "❌ Couldn't fetch current price.")
@@ -170,7 +174,7 @@ async def handle_symbol(m: types.Message):
     await m.answer(f"💵 السعر الحالي: ${price:.6f}" if lang == "ar" else f"💵 Current price: ${price:.6f}")
 
     # حفظ الرمز والسعر للمراحل القادمة
-    user_lang[uid+"_symbol"] = sym
+    user_lang[uid+"_symbol"] = text
     user_lang[uid+"_price"] = price
     save_users(user_lang)
 
