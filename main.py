@@ -12,6 +12,9 @@ from aiohttp import web
 import httpx
 from dotenv import load_dotenv
 
+# <<< السطر الجديد الذي يجب إضافته
+from aiogram.client.default import DefaultBotProperties
+
 # --- تحميل الإعدادات ---
 load_dotenv()
 
@@ -21,15 +24,14 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8000))
 GROQ_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
-## <<< أضفنا مفاتيح NOWPayments
 NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY")
 NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET")
 
 # --- إعداد البوت ---
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+# <<< السطر الذي تم تعديله
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 USERS_FILE = "users.json"
-## <<< ملف جديد لتخزين المشتركين
 PAID_USERS_FILE = "paid_users.json"
 
 # --- إدارة بيانات المستخدمين والاشتراكات ---
@@ -38,6 +40,7 @@ def load_data(filename):
         with open(filename, "r") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
+        # إذا كان ملف المستخدمين، أرجع قاموساً فارغاً، وإلا أرجع قائمة فارغة
         return {} if filename == USERS_FILE else []
 
 def save_data(filename, data):
@@ -50,14 +53,12 @@ paid_users = set(load_data(PAID_USERS_FILE)) # نستخدم set للبحث ال�
 def is_user_paid(user_id: int):
     return user_id in paid_users
 
-# --- دوال مساعدة (بدون تغيير) ---
+# --- دوال مساعدة ---
 def clean_response(text, lang="ar"):
-    # ... الكود كما هو
     if lang == "ar": return re.sub(r'[^\u0600-\u06FF0-9A-Za-z.,:%$؟! \n\-]+', '', text)
     else: return re.sub(r'[^\w\s.,:%$!?$-]+', '', text)
 
 async def ask_groq(prompt, lang="ar"):
-    # ... الكود كما هو
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     data = {"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}]}
     try:
@@ -66,11 +67,10 @@ async def ask_groq(prompt, lang="ar"):
             result = res.json(); content = result["choices"][0]["message"]["content"]
             return clean_response(content, lang=lang).strip()
     except Exception as e:
-        print("❌ Error from AI:", e)
+        print(f"❌ Error from AI: {e}")
         return "❌ حدث خطأ أثناء تحليل التشارت." if lang == "ar" else "❌ Analysis failed."
 
 async def get_price_cmc(symbol):
-    # ... الكود كما هو
     url = f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={symbol.upper()}"
     headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
     try:
@@ -81,12 +81,12 @@ async def get_price_cmc(symbol):
             return data["data"][symbol.upper()]["quote"]["USD"]["price"]
     except: return None
 
-## <<< دالة جديدة لإنشاء فاتورة دفع كريبتو
 async def create_nowpayments_invoice(user_id: int):
     url = "https://api.nowpayments.io/v1/invoice"
     headers = {"x-api-key": NOWPAYMENTS_API_KEY, "Content-Type": "application/json"}
+    # استخدمنا 3 دولار كسعر عملي
     data = {
-        "price_amount": 3,  # السعر 3 دولار
+        "price_amount": 3,
         "price_currency": "usd",
         "order_id": str(user_id),
         "ipn_callback_url": f"{WEBHOOK_URL}/webhook/nowpayments",
@@ -106,18 +106,31 @@ language_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")],
     [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]
 ])
-## <<< زر الدفع الجديد
+
 payment_keyboard_ar = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="💎 اشترك الآن (3$ مدى الحياة)", callback_data="pay_with_crypto")]
 ])
 payment_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="💎 Subscribe Now ($3 Lifetime)", callback_data="pay_with_crypto")]
 ])
-# (باقي الأزرار كما هي)
-timeframe_keyboard = ...
-timeframe_keyboard_en = ...
 
-# === أوامر البوت ===
+timeframe_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [
+        InlineKeyboardButton(text="أسبوعي", callback_data="tf_weekly"),
+        InlineKeyboardButton(text="يومي", callback_data="tf_daily"),
+        InlineKeyboardButton(text="4 ساعات", callback_data="tf_4h")
+    ]
+])
+timeframe_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[
+    [
+        InlineKeyboardButton(text="Weekly", callback_data="tf_weekly"),
+        InlineKeyboardButton(text="Daily", callback_data="tf_daily"),
+        InlineKeyboardButton(text="4H", callback_data="tf_4h")
+    ]
+])
+
+
+# --- أوامر البوت ---
 @dp.message(F.text.in_({'/start', 'start'}))
 async def start(m: types.Message):
     uid = m.from_user.id
@@ -153,12 +166,11 @@ async def set_lang(cb: types.CallbackQuery):
             reply_markup=kb
         )
 
-## <<< معالج زر الدفع
 @dp.callback_query(F.data == "pay_with_crypto")
 async def process_crypto_payment(cb: types.CallbackQuery):
     lang = user_lang.get(str(cb.from_user.id), "ar")
     await cb.message.edit_text("⏳ يتم إنشاء رابط الدفع، يرجى الانتظار..." if lang == "ar" else "⏳ Generating payment link, please wait...")
-    
+
     invoice_url = await create_nowpayments_invoice(cb.from_user.id)
     if invoice_url:
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 افتح صفحة الدفع", url=invoice_url)]])
@@ -171,10 +183,9 @@ async def process_crypto_payment(cb: types.CallbackQuery):
         await cb.message.edit_text("❌ حدث خطأ. يرجى المحاولة مرة أخرى لاحقاً." if lang == "ar" else "❌ An error occurred. Please try again later.")
     await cb.answer()
 
-# === التعامل مع رمز العملة ===
+# --- التعامل مع رمز العملة ---
 @dp.message(F.text)
 async def handle_symbol(m: types.Message):
-    ## <<< حماية الميزة بالتحقق من الاشتراك
     if not is_user_paid(m.from_user.id):
         lang = user_lang.get(str(m.from_user.id), "ar")
         kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
@@ -185,42 +196,87 @@ async def handle_symbol(m: types.Message):
         )
         return
 
-    # ... باقي الكود كما هو
     uid = str(m.from_user.id)
     lang = user_lang.get(uid, "ar")
     sym = m.text.strip().lower()
+
     await m.answer("⏳ جاري جلب السعر..." if lang == "ar" else "⏳ Fetching price...")
     price = await get_price_cmc(sym)
-    # ... الخ
+    if not price:
+        await m.answer("❌ لم أتمكن من جلب السعر الحالي للعملة." if lang == "ar"
+                       else "❌ Couldn't fetch current price.")
+        return
 
-# === التعامل مع اختيار الإطار الزمني ===
+    await m.answer(f"💵 السعر الحالي: ${price:.6f}" if lang == "ar" else f"💵 Current price: ${price:.6f}")
+
+    user_lang[uid+"_symbol"] = sym
+    user_lang[uid+"_price"] = price
+    save_data(USERS_FILE, user_lang)
+
+    kb = timeframe_keyboard if lang == "ar" else timeframe_keyboard_en
+    await m.answer(
+        "⏳ اختر الإطار الزمني للتحليل:" if lang == "ar" else "⏳ Select timeframe for analysis:",
+        reply_markup=kb
+    )
+
+# --- التعامل مع اختيار الإطار الزمني ---
 @dp.callback_query(F.data.startswith("tf_"))
 async def set_timeframe(cb: types.CallbackQuery):
-    ## <<< حماية الميزة بالتحقق من الاشتراك
     if not is_user_paid(cb.from_user.id):
         await cb.answer("⚠️ هذه الميزة للمشتركين فقط.", show_alert=True)
         return
 
-    # ... باقي الكود كما هو
+    uid = str(cb.from_user.id)
+    lang = user_lang.get(uid, "ar")
+    tf_map = {
+        "tf_weekly": "weekly",
+        "tf_daily": "daily",
+        "tf_4h": "4h"
+    }
+    timeframe = tf_map[cb.data]
+    sym = user_lang.get(uid+"_symbol")
+    price = user_lang.get(uid+"_price")
 
-# === Webhook ===
-async def handle_telegram_webhook(req):
-    # ... الكود كما هو
+    prompt = ""
+    if lang == "ar":
+        prompt = (f"سعر العملة {sym.upper()} الآن هو {price:.6f}$.\n"
+                  f"قم بتحليل التشارت للإطار الزمني {timeframe} باستخدام مؤشرات شاملة:\n"
+                  f"- خطوط الدعم والمقاومة\n- RSI, MACD, MA\n- Bollinger Bands\n"
+                  f"- Fibonacci Levels\n- Stochastic Oscillator\n- Volume Analysis\n"
+                  f"- Trendlines باستخدام Regression\nثم قدم:\n"
+                  f"1. تقييم عام (صعود أم هبوط؟)\n2. أقرب مقاومة ودعم\n"
+                  f"3. نطاق سعري مستهدف (Range)\n✅ استخدم العربية فقط\n"
+                  f"❌ لا تشرح المشروع، فقط تحليل التشارت")
+    else:
+        prompt = (f"The current price of {sym.upper()} is ${price:.6f}.\n"
+                  f"Analyze the {timeframe} chart using comprehensive indicators:\n"
+                  f"- Support and Resistance\n- RSI, MACD, MA\n- Bollinger Bands\n"
+                  f"- Fibonacci Levels\n- Stochastic Oscillator\n- Volume Analysis\n"
+                  f"- Trendlines using Regression\nThen provide:\n"
+                  f"1. General trend (up/down)\n2. Nearest resistance/support\n"
+                  f"3. Target price range\n✅ Answer in English only\n"
+                  f"❌ Don't explain the project, only chart analysis")
+
+    await cb.message.edit_text("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
+    analysis = await ask_groq(prompt, lang=lang)
+    await cb.message.answer(analysis)
+
+
+# --- Webhook Handlers ---
+async def handle_telegram_webhook(req: web.Request):
     update = await req.json()
     await dp.feed_update(bot=bot, update=types.Update(**update))
-    return web.Response()
+    return web.Response(status=200)
 
-## <<< معالج إشعارات الدفع من NOWPayments
 async def handle_nowpayments_webhook(req: web.Request):
-    # التحقق من توقيع الطلب للأمان
     try:
         signature = req.headers.get("x-nowpayments-sig")
         body = await req.read()
         
         if not signature or not NOWPAYMENTS_IPN_SECRET:
-            return web.Response(status=400, text="Missing signature or secret")
+            print("❌ Webhook received without signature or IPN secret is not set.")
+            return web.Response(status=400, text="Configuration error")
 
-        # حساب التوقيع المتوقع
         h = hmac.new(NOWPAYMENTS_IPN_SECRET.encode(), body, hashlib.sha512)
         expected_signature = h.hexdigest()
 
@@ -228,19 +284,19 @@ async def handle_nowpayments_webhook(req: web.Request):
             print("❌ Invalid NOWPayments signature")
             return web.Response(status=401, text="Invalid signature")
         
-        # التوقيع صحيح، قم بمعالجة البيانات
         data = json.loads(body)
         if data.get("payment_status") == "finished":
             user_id = int(data.get("order_id"))
-            paid_users.add(user_id)
-            save_data(PAID_USERS_FILE, list(paid_users))
-            
-            lang = user_lang.get(str(user_id), "ar")
-            await bot.send_message(
-                user_id,
-                "✅ تم تأكيد الدفع بنجاح! شكراً لاشتراكك. يمكنك الآن استخدام البوت بشكل كامل." if lang == "ar"
-                else "✅ Payment confirmed! Thank you for subscribing. You can now use the bot fully."
-            )
+            if user_id not in paid_users:
+                paid_users.add(user_id)
+                save_data(PAID_USERS_FILE, list(paid_users))
+                
+                lang = user_lang.get(str(user_id), "ar")
+                await bot.send_message(
+                    user_id,
+                    "✅ تم تأكيد الدفع بنجاح! شكراً لاشتراكك. يمكنك الآن استخدام البوت بشكل كامل." if lang == "ar"
+                    else "✅ Payment confirmed! Thank you for subscribing. You can now use the bot fully."
+                )
 
         return web.Response(status=200, text="OK")
 
@@ -249,14 +305,31 @@ async def handle_nowpayments_webhook(req: web.Request):
         return web.Response(status=500, text="Internal Server Error")
 
 
+# --- Main Application Logic ---
+async def on_startup(app):
+    await bot.set_webhook(f"{WEBHOOK_URL}/")
+    print(f"✅ Webhook set to {WEBHOOK_URL}/")
+
+async def on_shutdown(app):
+    await bot.delete_webhook()
+    await bot.session.close()
+
 async def main():
     app = web.Application()
-    # مسار تيليجرام
+    
+    # مسار تيليجرام الرئيسي
     app.router.add_post("/", handle_telegram_webhook)
-    ## <<< مسار جديد لاستقبال إشعارات الدفع
+    # مسار استقبال إشعارات الدفع
     app.router.add_post("/webhook/nowpayments", handle_nowpayments_webhook)
     
-    # ... باقي الكود كما هو
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+    
+    return app
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # هذا الجزء لتشغيل الخادم
+    # Gunicorn سيقوم باستدعاء 'main()' لإنشاء الـ 'app'
+    app = asyncio.run(main())
+    web.run_app(app, host="0.0.0.0", port=PORT)
+
