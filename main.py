@@ -6,9 +6,9 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiohttp import web, ClientSession
-from dotenv import load_dotenv
+from aiohttp import web
 import httpx
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -18,7 +18,6 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8000))
 GROQ_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
-CHANNEL_USERNAME = "p2p_LRN"
 
 bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
@@ -76,18 +75,10 @@ async def get_price_cmc(symbol):
     except:
         return None
 
-# === لوحة اللغة والاشتراك ===
+# === لوحة اللغة ===
 language_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")],
     [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]
-])
-subscribe_ar = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="📢 اشترك بالقناة", url=f"https://t.me/{CHANNEL_USERNAME}")],
-    [InlineKeyboardButton(text="✅ تحققت", callback_data="check_sub")]
-])
-subscribe_en = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="📢 Subscribe", url=f"https://t.me/{CHANNEL_USERNAME}")],
-    [InlineKeyboardButton(text="✅ I've joined", callback_data="check_sub")]
 ])
 
 # === لوحة اختيار الإطار الزمني صغيرة جنب بعض ===
@@ -129,23 +120,7 @@ async def set_lang(cb: types.CallbackQuery):
     uid = str(cb.from_user.id)
     user_lang[uid] = lang
     save_users(user_lang)
-    member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", cb.from_user.id)
-    if member.status in ("member", "administrator", "creator"):
-        await cb.message.edit_text("✅ مشترك. أرسل رمز العملة:" if lang == "ar" else "✅ Subscribed. Send coin symbol:")
-    else:
-        kb = subscribe_ar if lang == "ar" else subscribe_en
-        await cb.message.edit_text("❗ الرجاء الاشتراك أولاً" if lang == "ar" else "❗ Please subscribe first", reply_markup=kb)
-
-@dp.callback_query(F.data == "check_sub")
-async def check_sub(cb: types.CallbackQuery):
-    uid = str(cb.from_user.id)
-    lang = user_lang.get(uid, "ar")
-    member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", cb.from_user.id)
-    if member.status in ("member", "administrator", "creator"):
-        await cb.message.edit_text("✅ مشترك. أرسل رمز العملة:" if lang == "ar" else "✅ Subscribed. Send coin symbol:")
-    else:
-        kb = subscribe_ar if lang == "ar" else subscribe_en
-        await cb.message.edit_text("❗ الرجاء الاشتراك أولاً" if lang == "ar" else "❗ Please subscribe first", reply_markup=kb)
+    await cb.message.edit_text("✅ أرسل رمز العملة:" if lang == "ar" else "✅ Send coin symbol:")
 
 # === التعامل مع رمز العملة ===
 @dp.message(F.text)
@@ -160,12 +135,6 @@ async def handle_symbol(m: types.Message):
         return
 
     sym = text
-
-    member = await bot.get_chat_member(f"@{CHANNEL_USERNAME}", m.from_user.id)
-    if member.status not in ("member", "administrator", "creator"):
-        await m.answer("⚠️ اشترك بالقناة أولاً." if lang == "ar" else "⚠️ Please join the channel first.",
-                       reply_markup=subscribe_ar if lang == "ar" else subscribe_en)
-        return
 
     await m.answer("⏳ جاري جلب السعر..." if lang == "ar" else "⏳ Fetching price...")
 
