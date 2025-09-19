@@ -11,8 +11,6 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiohttp import web
 import httpx
 from dotenv import load_dotenv
-
-# <<< السطر الجديد الذي يجب إضافته
 from aiogram.client.default import DefaultBotProperties
 
 # --- تحميل الإعدادات ---
@@ -28,7 +26,6 @@ NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY")
 NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET")
 
 # --- إعداد البوت ---
-# <<< السطر الذي تم تعديله
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 USERS_FILE = "users.json"
@@ -40,7 +37,6 @@ def load_data(filename):
         with open(filename, "r") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        # إذا كان ملف المستخدمين، أرجع قاموساً فارغاً، وإلا أرجع قائمة فارغة
         return {} if filename == USERS_FILE else []
 
 def save_data(filename, data):
@@ -48,7 +44,7 @@ def save_data(filename, data):
         json.dump(data, f, indent=4)
 
 user_lang = load_data(USERS_FILE)
-paid_users = set(load_data(PAID_USERS_FILE)) # نستخدم set للبحث السريع
+paid_users = set(load_data(PAID_USERS_FILE))
 
 def is_user_paid(user_id: int):
     return user_id in paid_users
@@ -84,7 +80,6 @@ async def get_price_cmc(symbol):
 async def create_nowpayments_invoice(user_id: int):
     url = "https://api.nowpayments.io/v1/invoice"
     headers = {"x-api-key": NOWPAYMENTS_API_KEY, "Content-Type": "application/json"}
-    # استخدمنا 3 دولار كسعر عملي
     data = {
         "price_amount": 3,
         "price_currency": "usd",
@@ -106,14 +101,12 @@ language_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")],
     [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]
 ])
-
 payment_keyboard_ar = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="💎 اشترك الآن (3$ مدى الحياة)", callback_data="pay_with_crypto")]
 ])
 payment_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="💎 Subscribe Now ($3 Lifetime)", callback_data="pay_with_crypto")]
 ])
-
 timeframe_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [
         InlineKeyboardButton(text="أسبوعي", callback_data="tf_weekly"),
@@ -305,31 +298,27 @@ async def handle_nowpayments_webhook(req: web.Request):
         return web.Response(status=500, text="Internal Server Error")
 
 
-# --- Main Application Logic ---
-async def on_startup(app):
-    await bot.set_webhook(f"{WEBHOOK_URL}/")
-    print(f"✅ Webhook set to {WEBHOOK_URL}/")
+# --- Webhook and Server Lifespan Events ---
+async def on_startup(app_instance: web.Application):
+    webhook_url = f"{WEBHOOK_URL}/"
+    await bot.set_webhook(webhook_url)
+    print(f"✅ Webhook set to {webhook_url}")
 
-async def on_shutdown(app):
+async def on_shutdown(app_instance: web.Application):
+    print("ℹ️ Shutting down...")
     await bot.delete_webhook()
     await bot.session.close()
 
-async def main():
-    app = web.Application()
-    
-    # مسار تيليجرام الرئيسي
-    app.router.add_post("/", handle_telegram_webhook)
-    # مسار استقبال إشعارات الدفع
-    app.router.add_post("/webhook/nowpayments", handle_nowpayments_webhook)
-    
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
-    
-    return app
+
+# --- Global App Initialization ---
+app = web.Application()
+
+app.router.add_post("/", handle_telegram_webhook)
+app.router.add_post("/webhook/nowpayments", handle_nowpayments_webhook)
+
+app.on_startup.append(on_startup)
+app.on_shutdown.append(on_shutdown)
 
 if __name__ == "__main__":
-    # هذا الجزء لتشغيل الخادم
-    # Gunicorn سيقوم باستدعاء 'main()' لإنشاء الـ 'app'
-    app = asyncio.run(main())
+    print("🚀 Starting bot locally for testing...")
     web.run_app(app, host="0.0.0.0", port=PORT)
-
