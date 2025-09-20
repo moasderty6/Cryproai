@@ -232,7 +232,6 @@ async def handle_nowpayments_webhook(req: web.Request):
         print(f"❌ Error in NOWPayments webhook: {e}")
         return web.Response(status=500, text="Internal Server Error")
 
-# <<< تم تعديل هذه الدالة لإضافة طباعة
 async def health_check(req: web.Request):
     print("Health check endpoint was called by Render.")
     return web.Response(text="OK", status=200)
@@ -270,9 +269,8 @@ async def on_shutdown(app_instance: web.Application):
 # --- Global App Initialization ---
 app = web.Application()
 
-# <<< تم تعديل المسارات هنا
-app.router.add_get("/health", health_check) # مسار مخصص للفحص الصحي
-app.router.add_post("/", handle_telegram_webhook) # المسار الرئيسي الآن فقط لتيليجرام
+app.router.add_get("/health", health_check)
+app.router.add_post("/", handle_telegram_webhook)
 app.router.add_post("/webhook/nowpayments", handle_nowpayments_webhook)
 
 app.on_startup.append(on_startup)
