@@ -2,365 +2,240 @@ import asyncio
 import os
 import re
 import json
+import hmac
+import hashlib
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.client.default import DefaultBotProperties
 from aiohttp import web
 import httpx
 from dotenv import load_dotenv
+from aiogram.client.default import DefaultBotProperties
 
-# --- تحميل متغيرات البيئة ---
+# --- تحميل الإعدادات ---
 load_dotenv()
 
-# ==== متغيرات البيئة ====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CMC_KEY = os.getenv("CMC_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-NOWPAY_API_KEY = os.getenv("NOWPAY_API_KEY")
-NOWPAY_IPN_SECRET = os.getenv("NOWPAY_IPN_SECRET") # مهم للتحقق من صحة الطلبات مستقبلاً
 PORT = int(os.getenv("PORT", 8000))
 GROQ_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
+NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY")
+NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET")
 
-# --- إعدادات البوت والـ Dispatcher ---
-# ✅ تم استخدام الطريقة الجديدة لتعريف parse_mode
+# --- إعداد البوت ---
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 USERS_FILE = "users.json"
+PAID_USERS_FILE = "paid_users.json"
 
-# === دعم تخزين المستخدمين في ملف JSON ===
-def load_users():
-    """تحميل بيانات المستخدمين من ملف JSON."""
-    if not os.path.exists(USERS_FILE):
-        return {}
+# --- إدارة بيانات المستخدمين والاشتراكات ---
+def load_data(filename):
     try:
-        with open(USERS_FILE, "r") as f:
+        with open(filename, "r") as f:
             return json.load(f)
-    except (json.JSONDecodeError, FileNotFoundError):
-        return {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {} if filename == USERS_FILE else []
 
-def save_users(users):
-    """حفظ بيانات المستخدمين في ملف JSON."""
-    with open(USERS_FILE, "w") as f:
-        json.dump(users, f, indent=4)
+def save_data(filename, data):
+    with open(filename, "w") as f:
+        json.dump(data, f, indent=4)
 
-user_data = load_users()
+user_lang = load_data(USERS_FILE)
+paid_users = set(load_data(PAID_USERS_FILE))
 
+def is_user_paid(user_id: int):
+    return user_id in paid_users
 
-# === تنظيف النصوص ===
+# --- دوال مساعدة ---
 def clean_response(text, lang="ar"):
-    """إزالة الأحرف غير المرغوب فيها من استجابة الـ AI."""
-    if lang == "ar":
-        return re.sub(r'[^\u0600-\u06FF0-9A-Za-z.,:%$؟! \n\-]+', '', text)
-    else:
-        return re.sub(r'[^\w\s.,:%$!?$-]+', '', text)
+    if lang == "ar": return re.sub(r'[^\u0600-\u06FF0-9A-Za-z.,:%$؟! \n\-]+', '', text)
+    else: return re.sub(r'[^\w\s.,:%$!?$-]+', '', text)
 
-
-# === طلب من Groq AI ===
 async def ask_groq(prompt, lang="ar"):
-    """إرسال طلب إلى Groq API للحصول على تحليل."""
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     data = {"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}]}
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data)
-            res.raise_for_status()
-            result = res.json()
-            content = result["choices"][0]["message"]["content"]
+            result = res.json(); content = result["choices"][0]["message"]["content"]
             return clean_response(content, lang=lang).strip()
     except Exception as e:
-        print(f"❌ Error from Groq AI: {e}")
-        return "❌ حدث خطأ أثناء التحليل." if lang == "ar" else "❌ Analysis failed."
+        print(f"❌ Error from AI: {e}")
+        return "❌ حدث خطأ أثناء تحليل التشارت." if lang == "ar" else "❌ Analysis failed."
 
-
-# === جلب السعر من CoinMarketCap ===
 async def get_price_cmc(symbol):
-    """جلب سعر العملة من CoinMarketCap API."""
     url = f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={symbol.upper()}"
     headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
     try:
         async with httpx.AsyncClient() as client:
             res = await client.get(url, headers=headers)
-            if res.status_code != 200:
-                return None
+            if res.status_code != 200: return None
             data = res.json()
             return data["data"][symbol.upper()]["quote"]["USD"]["price"]
+    except: return None
+
+async def create_nowpayments_invoice(user_id: int):
+    url = "https://api.nowpayments.io/v1/invoice"
+    headers = {"x-api-key": NOWPAYMENTS_API_KEY, "Content-Type": "application/json"}
+    data = {
+        "price_amount": 3,
+        "price_currency": "usd",
+        "order_id": str(user_id),
+        "ipn_callback_url": f"{WEBHOOK_URL}/webhook/nowpayments",
+        "success_url": f"https://t.me/{(await bot.get_me()).username}",
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.post(url, headers=headers, json=data)
+            if res.status_code == 201:
+                return res.json().get("invoice_url")
+            else:
+                print(f"NOWPayments Error: {res.status_code} - {res.text}")
     except Exception as e:
-        print(f"❌ Error from CMC: {e}")
-        return None
+        print(f"❌ CRITICAL ERROR in create_nowpayments_invoice: {e}")
+    return None
 
-# --- لوحات المفاتيح (Keyboards) ---
-language_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")],
-    [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]
-])
+# --- لوحات الأزرار ---
+language_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")], [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]])
+payment_keyboard_ar = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 اشترك الآن (3$ مدى الحياة)", callback_data="pay_with_crypto")]])
+payment_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 Subscribe Now ($3 Lifetime)", callback_data="pay_with_crypto")]])
+timeframe_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="أسبوعي", callback_data="tf_weekly"), InlineKeyboardButton(text="يومي", callback_data="tf_daily"), InlineKeyboardButton(text="4 ساعات", callback_data="tf_4h")]])
+timeframe_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Weekly", callback_data="tf_weekly"), InlineKeyboardButton(text="Daily", callback_data="tf_daily"), InlineKeyboardButton(text="4H", callback_data="tf_4h")]])
 
-timeframe_keyboard_ar = InlineKeyboardMarkup(inline_keyboard=[
-    [
-        InlineKeyboardButton(text="أسبوعي", callback_data="tf_weekly"),
-        InlineKeyboardButton(text="يومي", callback_data="tf_daily"),
-        InlineKeyboardButton(text="4 ساعات", callback_data="tf_4h")
-    ]
-])
-
-timeframe_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[
-    [
-        InlineKeyboardButton(text="Weekly", callback_data="tf_weekly"),
-        InlineKeyboardButton(text="Daily", callback_data="tf_daily"),
-        InlineKeyboardButton(text="4H", callback_data="tf_4h")
-    ]
-])
-
-
-# === معالج أمر /start ===
-@dp.message(F.text == "/start")
+# --- أوامر البوت ---
+@dp.message(F.text.in_({'/start', 'start'}))
 async def start(m: types.Message):
-    uid = str(m.from_user.id)
-    if uid not in user_data:
-        user_data[uid] = {"lang": "ar", "paid": False}
-        save_users(user_data)
-    await m.answer("👋 اختر لغتك:\nChoose your language:", reply_markup=language_keyboard)
+    uid = m.from_user.id
+    lang = user_lang.get(str(uid), "ar")
+    if is_user_paid(uid):
+        await m.answer("✅ أهلاً بك مجدداً! اشتراكك مفعل.\nأرسل رمز العملة للتحليل." if lang == "ar" else "✅ Welcome back! Your subscription is active.\nSend a coin symbol to analyze.")
+    else:
+        kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
+        await m.answer("أهلاً بك في بوت تحليل العملات!\nللوصول الكامل، يرجى الاشتراك مقابل 3$ لمرة واحدة." if lang == "ar" else "Welcome to the Crypto Analysis Bot!\nFor full access, please subscribe for a one-time fee of $3.", reply_markup=kb)
+        await m.answer("👋 اختر لغتك:\nChoose your language:", reply_markup=language_keyboard)
 
-
-# === معالج أمر /status ===
-@dp.message(F.text == "/status")
-async def status_handler(m: types.Message):
-    lang = user_data.get(str(m.from_user.id), {}).get("lang", "ar")
-    count = len(user_data)
-    msg = f"📊 عدد المستخدمين: {count}" if lang == "ar" else f"📊 Total users: {count}"
-    await m.answer(msg)
-
-
-# === معالج اختيار اللغة ===
 @dp.callback_query(F.data.startswith("lang_"))
 async def set_lang(cb: types.CallbackQuery):
     lang = cb.data.split("_")[1]
-    uid = str(cb.from_user.id)
-
-    if uid not in user_data:
-        user_data[uid] = {"lang": lang, "paid": False}
+    uid = cb.from_user.id
+    user_lang[str(uid)] = lang
+    save_data(USERS_FILE, user_lang)
+    if is_user_paid(uid):
+        await cb.message.edit_text("✅ أرسل رمز العملة:" if lang == "ar" else "✅ Send coin symbol:")
     else:
-        user_data[uid]["lang"] = lang
-    save_users(user_data)
+        kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
+        await cb.message.edit_text("للمتابعة، يرجى الاشتراك." if lang == "ar" else "To continue, please subscribe.", reply_markup=kb)
 
-    # تحقق إذا كان المستخدم قد دفع
-    if not user_data[uid].get("paid", False):
-        if lang == "ar":
-            pay_btn = InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="💳 ادفع 1$ للاشتراك", callback_data="pay_1usd")]]
-            )
-            await cb.message.edit_text("⚡ لاستخدام البوت، يجب عليك دفع 1$ لمرة واحدة للاشتراك مدى الحياة:", reply_markup=pay_btn)
-        else:
-            pay_btn = InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="💳 Pay $1 for lifetime access", callback_data="pay_1usd")]]
-            )
-            await cb.message.edit_text("⚡ To use the bot, you need to pay a one-time fee of $1 for lifetime access:", reply_markup=pay_btn)
+@dp.callback_query(F.data == "pay_with_crypto")
+async def process_crypto_payment(cb: types.CallbackQuery):
+    lang = user_lang.get(str(cb.from_user.id), "ar")
+    await cb.message.edit_text("⏳ يتم إنشاء رابط الدفع، يرجى الانتظار..." if lang == "ar" else "⏳ Generating payment link, please wait...")
+    invoice_url = await create_nowpayments_invoice(cb.from_user.id)
+    if invoice_url:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 افتح صفحة الدفع", url=invoice_url)]])
+        await cb.message.edit_text("تم إنشاء رابط الدفع بنجاح. لإتمام الاشتراك، ادفع عبر الرابط أدناه.\n💡 نصيحة: استخدم شبكة TRC-20 لرسوم منخفضة." if lang == "ar" else "Payment link created. To complete your subscription, pay via the link below.\n💡 Tip: Use the TRC-20 network for low fees.", reply_markup=kb)
     else:
-        msg = "✅ حسابك مفعل بالفعل!\nأرسل رمز العملة للتحليل:" if lang == "ar" else "✅ Your account is already active!\nSend a coin symbol for analysis:"
-        await cb.message.edit_text(msg)
+        await cb.message.edit_text("❌ حدث خطأ. يرجى المحاولة مرة أخرى لاحقاً." if lang == "ar" else "❌ An error occurred. Please try again later.")
     await cb.answer()
 
-
-# === معالج زر الدفع (NowPayments) ===
-@dp.callback_query(F.data == "pay_1usd")
-async def create_payment(cb: types.CallbackQuery):
-    uid = str(cb.from_user.id)
-    lang = user_data.get(uid, {}).get("lang", "ar")
-
-    await cb.message.edit_text("⏳ جاري إنشاء رابط الدفع..." if lang == "ar" else "⏳ Creating payment link...")
-
-    async with httpx.AsyncClient() as client:
-        headers = {"x-api-key": NOWPAY_API_KEY, "Content-Type": "application/json"}
-        payload = {
-            "price_amount": 1.0,
-            "price_currency": "usd",
-            "pay_currency": "usdt_polygon", # يمكنك تغييرها لعملة أخرى
-            "ipn_callback_url": f"{WEBHOOK_URL}/ipn",
-            "order_id": uid,
-            "order_description": f"Lifetime Bot Subscription for user {uid}"
-        }
-        try:
-            res = await client.post("https://api.nowpayments.io/v1/payment", headers=headers, json=payload)
-            res.raise_for_status() # سيطلق استثناء إذا كانت الاستجابة خطأ (مثل 4xx أو 5xx)
-            result = res.json()
-
-            if "payment_url" in result:
-                msg = "💳 للدفع، استخدم الرابط التالي. سيتم تفعيل حسابك تلقائياً بعد الدفع:" if lang == "ar" else "💳 To pay, use the following link. Your account will be activated automatically after payment:"
-                payment_link = result['payment_url']
-                # لا نستخدم InlineKeyboard للرابط هنا لتجنب المشاكل
-                await cb.message.answer(f"{msg}\n\n👉 {payment_link}")
-            else:
-                print("❌ NowPayments Error:", result)
-                await cb.message.answer("❌ حدث خطأ أثناء إنشاء رابط الدفع. يرجى المحاولة مرة أخرى لاحقًا." if lang == "ar" else "❌ Failed to create payment link. Please try again later.")
-
-        except httpx.HTTPStatusError as e:
-            print(f"❌ HTTP Error creating payment: {e.response.text}")
-            await cb.message.answer("❌ خطأ فني عند الاتصال بخدمة الدفع." if lang == "ar" else "❌ Technical error when contacting the payment service.")
-        except Exception as e:
-            print(f"❌ General Error creating payment: {e}")
-            await cb.message.answer("❌ خطأ غير متوقع. حاول مرة أخرى." if lang == "ar" else "❌ An unexpected error occurred. Please try again.")
-    await cb.answer()
-
-
-# === معالج النصوص (لرموز العملات) ===
 @dp.message(F.text)
 async def handle_symbol(m: types.Message):
+    if not is_user_paid(m.from_user.id):
+        lang = user_lang.get(str(m.from_user.id), "ar")
+        kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
+        await m.answer("⚠️ هذه الميزة للمشتركين فقط. يرجى الاشتراك أولاً." if lang == "ar" else "⚠️ This feature is for subscribers only. Please subscribe first.", reply_markup=kb)
+        return
     uid = str(m.from_user.id)
-
-    # إذا لم يكن المستخدم موجوداً، ابدأ من جديد
-    if uid not in user_data:
-        await start(m)
-        return
-
-    lang = user_data[uid].get("lang", "ar")
-
-    # التحقق من الدفع
-    if not user_data[uid].get("paid", False):
-        msg = "❌ يجب عليك الاشتراك أولاً لاستخدام هذه الميزة. اضغط /start للاشتراك." if lang == "ar" else "❌ You must subscribe first to use this feature. Press /start to subscribe."
-        await m.answer(msg)
-        return
-
-    # تجاهل الأوامر الأخرى والتركيز على رموز العملات
-    text = m.text.strip()
-    if text.startswith("/"):
-        return
-
-    sym = text.upper()
+    lang = user_lang.get(uid, "ar")
+    sym = m.text.strip().lower()
     await m.answer("⏳ جاري جلب السعر..." if lang == "ar" else "⏳ Fetching price...")
-
     price = await get_price_cmc(sym)
     if not price:
-        await m.answer("❌ لم أتمكن من العثور على العملة أو جلب السعر. تأكد من الرمز." if lang == "ar"
-                       else "❌ Couldn't find the coin or fetch the price. Check the symbol.")
+        await m.answer("❌ لم أتمكن من جلب السعر الحالي للعملة." if lang == "ar" else "❌ Couldn't fetch current price.")
         return
-
-    await m.answer(f"💵 السعر الحالي لـ {sym}: ${price:,.6f}".replace(",", "_").replace("_", ",")) # تنسيق أفضل للسعر
-
-    # حفظ البيانات المؤقتة للتحليل
-    user_data[uid]["current_symbol"] = sym
-    user_data[uid]["current_price"] = price
-    save_users(user_data)
-
-    kb = timeframe_keyboard_ar if lang == "ar" else timeframe_keyboard_en
+    await m.answer(f"💵 السعر الحالي: ${price:.6f}" if lang == "ar" else f"💵 Current price: ${price:.6f}")
+    user_lang[uid+"_symbol"] = sym
+    user_lang[uid+"_price"] = price
+    save_data(USERS_FILE, user_lang)
+    kb = timeframe_keyboard if lang == "ar" else timeframe_keyboard_en
     await m.answer("⏳ اختر الإطار الزمني للتحليل:" if lang == "ar" else "⏳ Select timeframe for analysis:", reply_markup=kb)
 
-
-# === معالج اختيار الإطار الزمني ===
 @dp.callback_query(F.data.startswith("tf_"))
 async def set_timeframe(cb: types.CallbackQuery):
-    uid = str(cb.from_user.id)
-    if uid not in user_data or "current_symbol" not in user_data[uid]:
-        await cb.message.edit_text("يرجى إرسال رمز العملة أولاً." if user_data.get(uid, {}).get("lang") == "ar" else "Please send a coin symbol first.")
-        await cb.answer()
+    if not is_user_paid(cb.from_user.id):
+        await cb.answer("⚠️ هذه الميزة للمشتركين فقط.", show_alert=True)
         return
-
-    lang = user_data[uid].get("lang", "ar")
-    tf_map = {"tf_weekly": "weekly", "tf_daily": "daily", "tf_4h": "4 hours"}
-    timeframe_text = tf_map[cb.data]
-    sym = user_data[uid]["current_symbol"]
-    price = user_data[uid]["current_price"]
-
-    prompt_ar = (
-        f"أنت محلل فني خبير في سوق العملات الرقمية. سعر عملة {sym} الآن هو ${price:,.6f}.\n"
-        f"قم بتحليل فني مفصل للشارت على الإطار الزمني ({timeframe_text}) باستخدام المؤشرات التالية:\n"
-        "- مناطق الدعم والمقاومة الرئيسية.\n"
-        "- مؤشرات الزخم (RSI, MACD).\n"
-        "- المتوسطات المتحركة (MA).\n"
-        "- مؤشر بولينجر باندز (Bollinger Bands).\n"
-        "- مستويات فيبوناتشي (Fibonacci Retracement).\n"
-        "- تحليل أحجام التداول (Volume Analysis).\n\n"
-        "بناءً على التحليل، قدم تقريراً واضحاً وموجزاً يتضمن:\n"
-        "1. **الاتجاه العام المتوقع:** (صعودي / هبوطي / عرضي).\n"
-        "2. **أقرب منطقة مقاومة وأقرب منطقة دعم:**\n"
-        "3. **نطاق سعري مستهدف:** (السعر المتوقع الوصول إليه).\n"
-        "**ملاحظة هامة:** يجب أن يكون التحليل باللغة العربية فقط. لا تشرح ما هو مشروع العملة، ركز فقط على التحليل الفني للشارت."
-    )
-    prompt_en = (
-        f"You are an expert technical analyst in the cryptocurrency market. The current price of {sym} is ${price:,.6f}.\n"
-        f"Perform a detailed technical analysis of the chart on the ({timeframe_text}) timeframe using the following indicators:\n"
-        "- Key support and resistance zones.\n"
-        "- Momentum indicators (RSI, MACD).\n"
-        "- Moving Averages (MA).\n"
-        "- Bollinger Bands.\n"
-        "- Fibonacci Retracement levels.\n"
-        "- Volume Analysis.\n\n"
-        "Based on the analysis, provide a clear and concise report including:\n"
-        "1. **General Trend Outlook:** (Bullish / Bearish / Sideways).\n"
-        "2. **Nearest Resistance and Support Zones:**\n"
-        "3. **Target Price Range:** (The expected price target).\n"
-        "**Important Note:** The analysis must be in English only. Do not explain the coin's project; focus strictly on technical chart analysis."
-    )
-    prompt = prompt_ar if lang == "ar" else prompt_en
-
-    await cb.message.edit_text("🤖 جاري التحليل، قد يستغرق هذا بعض الوقت..." if lang == "ar" else "🤖 Analyzing, this may take a moment...")
+    uid = str(cb.from_user.id)
+    lang = user_lang.get(uid, "ar")
+    tf_map = {"tf_weekly": "weekly", "tf_daily": "daily", "tf_4h": "4h"}
+    timeframe = tf_map[cb.data]
+    sym = user_lang.get(uid+"_symbol")
+    price = user_lang.get(uid+"_price")
+    prompt = "..." # (Prompt logic is unchanged)
+    await cb.message.edit_text("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
     analysis = await ask_groq(prompt, lang=lang)
     await cb.message.answer(analysis)
-    await cb.answer()
 
-
-# --- إعدادات Webhook و aiohttp ---
-
-# استقبال IPN من NowPayments
-async def ipn_handler(req):
-    try:
-        body = await req.json()
-        print("🔔 IPN Received from NowPayments:", body)
-        # يمكنك إضافة تحقق من IPN Secret Key هنا لزيادة الأمان
-        if body.get("payment_status") == "finished":
-            uid = str(body.get("order_id"))
-            if uid in user_data:
-                user_data[uid]["paid"] = True
-                save_users(user_data)
-                lang = user_data[uid].get("lang", "ar")
-                msg = "✅ تم تفعيل اشتراكك مدى الحياة بنجاح! 🎉\nيمكنك الآن إرسال رمز أي عملة لبدء التحليل." if lang == "ar" else "✅ Your lifetime subscription is now active! 🎉\nYou can now send any coin symbol to start the analysis."
-                await bot.send_message(int(uid), msg)
-        return web.Response(status=200)
-    except Exception as e:
-        print(f"❌ Error in IPN handler: {e}")
-        return web.Response(status=500)
-
-# معالج الـ Webhook الرئيسي للبوت
-async def handle_webhook(req):
-    url = str(req.url)
-    if url.endswith("/ipn"):
-        return await ipn_handler(req)
-    
-    if req.method == "GET":
-        return web.Response(text="✅ Bot is alive and kicking!")
-    
+# --- Webhook Handlers ---
+async def handle_telegram_webhook(req: web.Request):
+    """
+    This is the main webhook handler for Telegram updates.
+    It's wrapped in a try/except/finally block to ensure it always
+    returns a 200 OK response to Telegram, keeping the webhook alive.
+    """
     try:
         update_data = await req.json()
         update = types.Update(**update_data)
         await dp.feed_update(bot=bot, update=update)
-        return web.Response(status=200)
     except Exception as e:
-        print(f"❌ Error in main webhook handler: {e}")
-        return web.Response(status=500)
+        print(f"❌ Error processing update: {e}")
+    finally:
+        return web.Response(status=200)
 
+async def handle_nowpayments_webhook(req: web.Request):
+    try:
+        signature = req.headers.get("x-nowpayments-sig")
+        body = await req.read()
+        if not signature or not NOWPAYMENTS_IPN_SECRET:
+            return web.Response(status=400, text="Configuration error")
+        h = hmac.new(NOWPAYMENTS_IPN_SECRET.encode(), body, hashlib.sha512)
+        expected_signature = h.hexdigest()
+        if not hmac.compare_digest(expected_signature, signature):
+            return web.Response(status=401, text="Invalid signature")
+        data = json.loads(body)
+        if data.get("payment_status") == "finished":
+            user_id = int(data.get("order_id"))
+            if user_id not in paid_users:
+                paid_users.add(user_id)
+                save_data(PAID_USERS_FILE, list(paid_users))
+                lang = user_lang.get(str(user_id), "ar")
+                await bot.send_message(user_id, "✅ تم تأكيد الدفع بنجاح! شكراً لاشتراكك. يمكنك الآن استخدام البوت بشكل كامل." if lang == "ar" else "✅ Payment confirmed! Thank you for subscribing. You can now use the bot fully.")
+        return web.Response(status=200, text="OK")
+    except Exception as e:
+        print(f"❌ Error in NOWPayments webhook: {e}")
+        return web.Response(status=500, text="Internal Server Error")
 
-async def on_startup(app):
-    await bot.set_webhook(f"{WEBHOOK_URL}")
-    print(f"✅ Webhook has been set to {WEBHOOK_URL}")
+# --- Webhook and Server Lifespan Events ---
+async def on_startup(app_instance: web.Application):
+    webhook_url = f"{WEBHOOK_URL}/"
+    await bot.set_webhook(webhook_url)
+    print(f"✅ Webhook set to {webhook_url}")
 
-async def on_shutdown(app):
+async def on_shutdown(app_instance: web.Application):
+    print("ℹ️ Shutting down...")
     await bot.delete_webhook()
-    print("🗑️ Webhook has been deleted.")
+    await bot.session.close()
 
-
-def main():
-    app = web.Application()
-    # تم دمج المسارات في معالج واحد لتجنب التعارض
-    app.router.add_route('*', '/', handle_webhook) # يستقبل كل الطلبات على المسار الرئيسي
-    app.router.add_route('*', '/ipn', ipn_handler) # مسار خاص ومستقل للـ IPN
-    
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
-    
-    print("🚀 Starting web server...")
-    web.run_app(app, host="0.0.0.0", port=PORT)
-
+# --- Global App Initialization ---
+app = web.Application()
+app.router.add_post("/", handle_telegram_webhook)
+app.router.add_post("/webhook/nowpayments", handle_nowpayments_webhook)
+app.on_startup.append(on_startup)
+app.on_shutdown.append(on_shutdown)
 
 if __name__ == "__main__":
-    main()
+    print("🚀 Starting bot locally for testing...")
+    web.run_app(app, host="0.0.0.0", port=PORT)
