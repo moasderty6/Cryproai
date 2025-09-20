@@ -55,6 +55,7 @@ def clean_response(text, lang="ar"):
     else: return re.sub(r'[^\w\s.,:%$!?$-]+', '', text)
 
 async def ask_groq(prompt, lang="ar"):
+    # ... (الكود كما هو)
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     data = {"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}]}
     try:
@@ -67,6 +68,7 @@ async def ask_groq(prompt, lang="ar"):
         return "❌ حدث خطأ أثناء تحليل التشارت." if lang == "ar" else "❌ Analysis failed."
 
 async def get_price_cmc(symbol):
+    # ... (الكود كما هو)
     url = f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={symbol.upper()}"
     headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
     try:
@@ -77,12 +79,14 @@ async def get_price_cmc(symbol):
             return data["data"][symbol.upper()]["quote"]["USD"]["price"]
     except: return None
 
-async def create_nowpayments_invoice(user_id: int):
-    url = "https://api.nowpayments.io/v1/invoice"
+# <<< تم تعديل هذه الدالة بالكامل لفرض USDT Polygon
+async def create_usdt_polygon_payment(user_id: int):
+    url = "https://api.nowpayments.io/v1/payment"
     headers = {"x-api-key": NOWPAYMENTS_API_KEY, "Content-Type": "application/json"}
     data = {
         "price_amount": 3,
         "price_currency": "usd",
+        "pay_currency": "usdtpolygon", # تحديد العملة والشبكة بشكل إجباري
         "order_id": str(user_id),
         "ipn_callback_url": f"{WEBHOOK_URL}/webhook/nowpayments",
         "success_url": f"https://t.me/{(await bot.get_me()).username}",
@@ -90,64 +94,59 @@ async def create_nowpayments_invoice(user_id: int):
     try:
         async with httpx.AsyncClient() as client:
             res = await client.post(url, headers=headers, json=data)
-            
-            # <<< التعديل الرئيسي هنا
-            # نقبل أي رمز استجابة في نطاق 2xx كنجاح
             if 200 <= res.status_code < 300:
-            # >>>
-                print(f"Successfully created invoice with status {res.status_code}")
-                return res.json().get("invoice_url")
+                print(f"Successfully created payment link with status {res.status_code}")
+                # هذا الـ endpoint يرجع 'payment_url'
+                return res.json().get("payment_url")
             else:
-                # إذا فشل الطلب، نطبع الخطأ للمساعدة في التشخيص
                 print(f"NOWPayments Error: {res.status_code} - {res.text}")
-
     except Exception as e:
-        print(f"❌ CRITICAL ERROR in create_nowpayments_invoice: {e}")
-        
+        print(f"❌ CRITICAL ERROR in create_usdt_polygon_payment: {e}")
     return None
+
 # --- لوحات الأزرار ---
 language_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")], [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]])
-payment_keyboard_ar = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 اشترك الآن (3$ مدى الحياة)", callback_data="pay_with_crypto")]])
-payment_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 Subscribe Now ($3 Lifetime)", callback_data="pay_with_crypto")]])
+payment_keyboard_ar = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 اشترك الآن بـ USDT (Polygon)", callback_data="pay_with_crypto")]])
+payment_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 Subscribe Now with USDT (Polygon)", callback_data="pay_with_crypto")]])
 timeframe_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="أسبوعي", callback_data="tf_weekly"), InlineKeyboardButton(text="يومي", callback_data="tf_daily"), InlineKeyboardButton(text="4 ساعات", callback_data="tf_4h")]])
 timeframe_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Weekly", callback_data="tf_weekly"), InlineKeyboardButton(text="Daily", callback_data="tf_daily"), InlineKeyboardButton(text="4H", callback_data="tf_4h")]])
 
+
 # --- أوامر البوت ---
+# <<< تم تعديل أمر ستارت ليصبح أبسط
 @dp.message(F.text.in_({'/start', 'start'}))
 async def start(m: types.Message):
-    uid = m.from_user.id
-    lang = user_lang.get(str(uid), "ar")
-    if is_user_paid(uid):
-        await m.answer("✅ أهلاً بك مجدداً! اشتراكك مفعل.\nأرسل رمز العملة للتحليل." if lang == "ar" else "✅ Welcome back! Your subscription is active.\nSend a coin symbol to analyze.")
-    else:
-        kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
-        await m.answer("أهلاً بك في بوت تحليل العملات!\nللوصول الكامل، يرجى الاشتراك مقابل 3$ لمرة واحدة." if lang == "ar" else "Welcome to the Crypto Analysis Bot!\nFor full access, please subscribe for a one-time fee of $3.", reply_markup=kb)
-        await m.answer("👋 اختر لغتك:\nChoose your language:", reply_markup=language_keyboard)
+    await m.answer("👋 أهلاً بك، يرجى اختيار لغتك للمتابعة:\nWelcome, please choose your language to continue:", reply_markup=language_keyboard)
 
+# <<< تم تعديل هذه الدالة لتصبح بوابة الدخول الرئيسية
 @dp.callback_query(F.data.startswith("lang_"))
 async def set_lang(cb: types.CallbackQuery):
     lang = cb.data.split("_")[1]
     uid = cb.from_user.id
     user_lang[str(uid)] = lang
     save_data(USERS_FILE, user_lang)
+
+    # التحقق من الاشتراك يتم هنا بعد اختيار اللغة
     if is_user_paid(uid):
-        await cb.message.edit_text("✅ أرسل رمز العملة:" if lang == "ar" else "✅ Send coin symbol:")
+        await cb.message.edit_text("✅ أهلاً بك مجدداً! اشتراكك مفعل.\nأرسل رمز العملة للتحليل." if lang == "ar" else "✅ Welcome back! Your subscription is active.\nSend a coin symbol to analyze.")
     else:
         kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
-        await cb.message.edit_text("للمتابعة، يرجى الاشتراك." if lang == "ar" else "To continue, please subscribe.", reply_markup=kb)
+        await cb.message.edit_text("للوصول الكامل، يرجى الاشتراك مقابل 3$ (USDT Polygon) لمرة واحدة." if lang == "ar" else "For full access, please subscribe for a one-time fee of $3 (USDT Polygon).", reply_markup=kb)
 
 @dp.callback_query(F.data == "pay_with_crypto")
 async def process_crypto_payment(cb: types.CallbackQuery):
     lang = user_lang.get(str(cb.from_user.id), "ar")
     await cb.message.edit_text("⏳ يتم إنشاء رابط الدفع، يرجى الانتظار..." if lang == "ar" else "⏳ Generating payment link, please wait...")
-    invoice_url = await create_nowpayments_invoice(cb.from_user.id)
-    if invoice_url:
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 افتح صفحة الدفع", url=invoice_url)]])
-        await cb.message.edit_text("تم إنشاء رابط الدفع بنجاح. لإتمام الاشتراك، ادفع عبر الرابط أدناه.\n💡 نصيحة: استخدم شبكة TRC-20 لرسوم منخفضة." if lang == "ar" else "Payment link created. To complete your subscription, pay via the link below.\n💡 Tip: Use the TRC-20 network for low fees.", reply_markup=kb)
+
+    payment_url = await create_usdt_polygon_payment(cb.from_user.id)
+    if payment_url:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 افتح صفحة الدفع", url=payment_url)]])
+        await cb.message.edit_text("✅ تم إنشاء رابط الدفع.\nلإتمام الاشتراك، ادفع عبر الرابط أدناه." if lang == "ar" else "✅ Payment link created.\nTo complete your subscription, pay via the link below.", reply_markup=kb)
     else:
-        await cb.message.edit_text("❌ حدث خطأ. يرجى المحاولة مرة أخرى لاحقاً." if lang == "ar" else "❌ An error occurred. Please try again later.")
+        await cb.message.edit_text("❌ حدث خطأ. يرجى التأكد من أنك أضفت عملة USDT Polygon في حسابك على NOWPayments وحاول مرة أخرى." if lang == "ar" else "❌ An error occurred. Please ensure you have enabled USDT Polygon in your NOWPayments account and try again.")
     await cb.answer()
 
+# --- (باقي دوال البوت كما هي بدون تغيير) ---
 @dp.message(F.text)
 async def handle_symbol(m: types.Message):
     if not is_user_paid(m.from_user.id):
@@ -155,6 +154,7 @@ async def handle_symbol(m: types.Message):
         kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
         await m.answer("⚠️ هذه الميزة للمشتركين فقط. يرجى الاشتراك أولاً." if lang == "ar" else "⚠️ This feature is for subscribers only. Please subscribe first.", reply_markup=kb)
         return
+    # ... باقي الكود
     uid = str(m.from_user.id)
     lang = user_lang.get(uid, "ar")
     sym = m.text.strip().lower()
@@ -175,24 +175,28 @@ async def set_timeframe(cb: types.CallbackQuery):
     if not is_user_paid(cb.from_user.id):
         await cb.answer("⚠️ هذه الميزة للمشتركين فقط.", show_alert=True)
         return
+    # ... باقي الكود
     uid = str(cb.from_user.id)
     lang = user_lang.get(uid, "ar")
     tf_map = {"tf_weekly": "weekly", "tf_daily": "daily", "tf_4h": "4h"}
     timeframe = tf_map[cb.data]
     sym = user_lang.get(uid+"_symbol")
     price = user_lang.get(uid+"_price")
-    prompt = "..." # (Prompt logic is unchanged)
+    prompt = "..."
+    if lang == "ar":
+        prompt = (f"سعر العملة {sym.upper()} الآن هو {price:.6f}$.\n"
+                  f"قم بتحليل التشارت للإطار الزمني {timeframe} ...") # Prompt as before
+    else:
+        prompt = (f"The current price of {sym.upper()} is ${price:.6f}.\n"
+                  f"Analyze the {timeframe} chart ...") # Prompt as before
+
     await cb.message.edit_text("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
     analysis = await ask_groq(prompt, lang=lang)
     await cb.message.answer(analysis)
 
-# --- Webhook Handlers ---
+
+# --- Webhook Handlers (No changes) ---
 async def handle_telegram_webhook(req: web.Request):
-    """
-    This is the main webhook handler for Telegram updates.
-    It's wrapped in a try/except/finally block to ensure it always
-    returns a 200 OK response to Telegram, keeping the webhook alive.
-    """
     try:
         update_data = await req.json()
         update = types.Update(**update_data)
@@ -225,7 +229,7 @@ async def handle_nowpayments_webhook(req: web.Request):
         print(f"❌ Error in NOWPayments webhook: {e}")
         return web.Response(status=500, text="Internal Server Error")
 
-# --- Webhook and Server Lifespan Events ---
+# --- Webhook and Server Lifespan Events (No changes) ---
 async def on_startup(app_instance: web.Application):
     webhook_url = f"{WEBHOOK_URL}/"
     await bot.set_webhook(webhook_url)
@@ -236,7 +240,7 @@ async def on_shutdown(app_instance: web.Application):
     await bot.delete_webhook()
     await bot.session.close()
 
-# --- Global App Initialization ---
+# --- Global App Initialization (No changes) ---
 app = web.Application()
 app.router.add_post("/", handle_telegram_webhook)
 app.router.add_post("/webhook/nowpayments", handle_nowpayments_webhook)
