@@ -32,8 +32,9 @@ ADMIN_USER_ID = 6172153716  # <<< إضافة جديدة
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 USERS_FILE = "users.json"
-# <<< تم إزالة ملف المشتركين، سيتم استخدام قاعدة البيانات
-paid_users = set()  # <<< ستبدأ فارغة ويتم ملؤها من قاعدة البيانات عند بدء التشغيل
+
+# <<< تم تعديل هذا الجزء ليعتمد على قاعدة البيانات
+paid_users = set()
 
 # --- إدارة بيانات المستخدمين (ملف اللغة فقط) ---
 def load_users():
@@ -109,7 +110,6 @@ payment_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButto
 timeframe_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="أسبوعي", callback_data="tf_weekly"), InlineKeyboardButton(text="يومي", callback_data="tf_daily"), InlineKeyboardButton(text="4 ساعات", callback_data="tf_4h")]])
 timeframe_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Weekly", callback_data="tf_weekly"), InlineKeyboardButton(text="Daily", callback_data="tf_daily"), InlineKeyboardButton(text="4H", callback_data="tf_4h")]])
 
-
 # --- أوامر البوت (بدون تغيير في المنطق) ---
 @dp.message(F.text.in_({'/start', 'start'}))
 async def start(m: types.Message):
@@ -174,10 +174,27 @@ async def set_timeframe(cb: types.CallbackQuery):
     timeframe = tf_map[cb.data]
     sym = user_lang.get(uid+"_symbol")
     price = user_lang.get(uid+"_price")
+    
+    # <<< جزء التحليل المهم كاملاً كما هو في الكود الأصلي >>>
     if lang == "ar":
-        prompt = (f"سعر العملة {sym.upper()} الآن هو {price:.6f}$.\n" f"قم بتحليل التشارت للإطار الزمني {timeframe} ...")
+        prompt = (f"سعر العملة {sym.upper()} الآن هو {price:.6f}$.\n"
+                  f"قم بتحليل التشارت للإطار الزمني {timeframe} باستخدام مؤشرات شاملة:\n"
+                  f"- خطوط الدعم والمقاومة\n- RSI, MACD, MA\n- Bollinger Bands\n"
+                  f"- Fibonacci Levels\n- Stochastic Oscillator\n- Volume Analysis\n"
+                  f"- Trendlines باستخدام Regression\nثم قدم:\n"
+                  f"1. تقييم عام (صعود أم هبوط؟)\n2. أقرب مقاومة ودعم\n"
+                  f"3. نطاق سعري مستهدف (Range)\n✅ استخدم العربية فقط\n"
+                  f"❌ لا تشرح المشروع، فقط تحليل التشارت")
     else:
-        prompt = (f"The current price of {sym.upper()} is ${price:.6f}.\n" f"Analyze the {timeframe} chart ...")
+        prompt = (f"The current price of {sym.upper()} is ${price:.6f}.\n"
+                  f"Analyze the {timeframe} chart using comprehensive indicators:\n"
+                  f"- Support and Resistance\n- RSI, MACD, MA\n- Bollinger Bands\n"
+                  f"- Fibonacci Levels\n- Stochastic Oscillator\n- Volume Analysis\n"
+                  f"- Trendlines using Regression\nThen provide:\n"
+                  f"1. General trend (up/down)\n2. Nearest resistance/support\n"
+                  f"3. Target price range\n✅ Answer in English only\n"
+                  f"❌ Don't explain the project, only chart analysis")
+
     await cb.message.edit_text("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
     analysis = await ask_groq(prompt, lang=lang)
     await cb.message.answer(analysis)
@@ -264,3 +281,4 @@ app.on_shutdown.append(on_shutdown)
 if __name__ == "__main__":
     print("🚀 Starting bot locally for testing...")
     web.run_app(app, host="0.0.0.0", port=PORT)
+
