@@ -78,35 +78,25 @@ async def get_price_cmc(symbol):
     except: return None
 
 async def create_nowpayments_invoice(user_id: int):
-    url = "https://api.nowpayments.io/v1/payment" # استخدمنا endpoint الدفع المباشر
+    url = "https://api.nowpayments.io/v1/invoice"
     headers = {"x-api-key": NOWPAYMENTS_API_KEY, "Content-Type": "application/json"}
-
-    # قمنا بتحديد العملة والشبكة مباشرة
     data = {
         "price_amount": 3,
         "price_currency": "usd",
-        # <<< التعديل الرئيسي هنا
-        "pay_currency": "usdtpolygon", # هذا هو الرمز الرسمي لـ USDT على شبكة Polygon
-        # >>>
         "order_id": str(user_id),
         "ipn_callback_url": f"{WEBHOOK_URL}/webhook/nowpayments",
         "success_url": f"https://t.me/{(await bot.get_me()).username}",
     }
-
     try:
         async with httpx.AsyncClient() as client:
             res = await client.post(url, headers=headers, json=data)
-
-            print(f"NOWPayments API Response Status: {res.status_code}")
-            print(f"NOWPayments API Response Body: {res.text}")
-
-            if res.status_code == 201 or res.status_code == 200:
-                # endpoint الدفع يرجع 'payment_url' بدلاً من 'invoice_url'
-                return res.json().get("payment_url")
+            if res.status_code == 201:
+                return res.json().get("invoice_url")
+            else:
+                print(f"NOWPayments Error: {res.status_code} - {res.text}")
     except Exception as e:
         print(f"❌ CRITICAL ERROR in create_nowpayments_invoice: {e}")
     return None
-
 
 # --- لوحات الأزرار ---
 language_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")], [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]])
