@@ -27,6 +27,7 @@ GROQ_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 USERS_FILE = "users.json"
+
 # === دعم تخزين المستخدمين في ملف JSON ===
 def load_users():
     try:
@@ -177,7 +178,12 @@ async def create_payment(cb: types.CallbackQuery):
 
 # === استقبال IPN من NowPayments ===
 async def ipn_handler(req):
-    body = await req.json()
+    try:
+        body = await req.json()
+    except Exception as e:
+        print(f"❌ Failed to decode IPN JSON: {e}")
+        return web.Response(status=400, text="Invalid JSON")
+
     print("🔔 IPN Received:", body)
     if body.get("payment_status") == "finished":
         uid = str(body.get("order_id"))
@@ -277,15 +283,29 @@ async def set_timeframe(cb: types.CallbackQuery):
     await cb.message.answer(analysis)
 
 
-# === Webhook ===
+# === Webhook مع حماية JSON ===
 async def handle_webhook(req):
     if req.method == "GET":
         return web.Response(text="✅ Bot is alive.")
-    update = await req.json()
-    await dp.feed_update(bot=bot, update=types.Update(**update))
+
+    try:
+        update = await req.json()
+    except Exception as e:
+        print(f"❌ Failed to decode JSON from webhook: {e}")
+        body = await req.text()
+        print(f"Raw body: {body}")
+        return web.Response(status=400, text="Invalid JSON")
+
+    try:
+        await dp.feed_update(bot=bot, update=types.Update(**update))
+    except Exception as e:
+        print(f"❌ Failed to process update: {e}")
+        return web.Response(status=500, text="Failed to process update")
+
     return web.Response()
 
 
+# === Startup / Shutdown ===
 async def on_startup(app):
     await bot.set_webhook(WEBHOOK_URL)
     print(f"✅ Webhook set to {WEBHOOK_URL}")
@@ -296,11 +316,12 @@ async def on_shutdown(app):
     await bot.session.close()
 
 
+# === Main ===
 async def main():
     app = web.Application()
     app.router.add_post("/", handle_webhook)
     app.router.add_get("/", handle_webhook)
-    app.router.add_post("/ipn", ipn_handler)  # ✅ NowPayments IPN
+    app.router.add_post("/ipn", ipn_handler)
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
     runner = web.AppRunner(app)
