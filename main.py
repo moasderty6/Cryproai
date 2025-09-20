@@ -21,12 +21,12 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CMC_KEY = os.getenv("CMC_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-PORT = int(os.getenv("PORT", 8000))
+PORT = int(os.getenv("PORT", 8000))  # ⚠️ تأكد أن PORT يأتي من البيئة
 GROQ_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
 NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY")
 NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET")
 DATABASE_URL = os.getenv("DATABASE_URL")
-ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", 6172153716))
+ADMIN_USER_ID = 6172153716
 
 # --- إعداد البوت ---
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -34,7 +34,7 @@ dp = Dispatcher(storage=MemoryStorage())
 USERS_FILE = "users.json"
 paid_users = set()
 
-# --- إدارة بيانات المستخدمين (ملف اللغة فقط) ---
+# --- إدارة بيانات المستخدمين ---
 def load_users():
     try:
         with open(USERS_FILE, "r") as f:
@@ -53,10 +53,8 @@ def is_user_paid(user_id: int):
 
 # --- دوال مساعدة ---
 def clean_response(text, lang="ar"):
-    if lang == "ar":
-        return re.sub(r'[^\u0600-\u06FF0-9A-Za-z.,:%$؟! \n\-]+', '', text)
-    else:
-        return re.sub(r'[^\w\s.,:%$!?$-]+', '', text)
+    if lang == "ar": return re.sub(r'[^\u0600-\u06FF0-9A-Za-z.,:%$؟! \n\-]+', '', text)
+    else: return re.sub(r'[^\w\s.,:%$!?$-]+', '', text)
 
 async def ask_groq(prompt, lang="ar"):
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
@@ -64,8 +62,7 @@ async def ask_groq(prompt, lang="ar"):
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data)
-            result = res.json()
-            content = result["choices"][0]["message"]["content"]
+            result = res.json(); content = result["choices"][0]["message"]["content"]
             return clean_response(content, lang=lang).strip()
     except Exception as e:
         print(f"❌ Error from AI: {e}")
@@ -77,12 +74,10 @@ async def get_price_cmc(symbol):
     try:
         async with httpx.AsyncClient() as client:
             res = await client.get(url, headers=headers)
-            if res.status_code != 200:
-                return None
+            if res.status_code != 200: return None
             data = res.json()
             return data["data"][symbol.upper()]["quote"]["USD"]["price"]
-    except:
-        return None
+    except: return None
 
 async def create_nowpayments_invoice(user_id: int):
     url = "https://api.nowpayments.io/v1/invoice"
@@ -107,28 +102,11 @@ async def create_nowpayments_invoice(user_id: int):
     return None
 
 # --- لوحات الأزرار ---
-language_keyboard = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")],
-        [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]
-    ]
-)
-payment_keyboard_ar = InlineKeyboardMarkup(
-    inline_keyboard=[[InlineKeyboardButton(text="💎 اشترك الآن (3$ مدى الحياة)", callback_data="pay_with_crypto")]]
-)
-payment_keyboard_en = InlineKeyboardMarkup(
-    inline_keyboard=[[InlineKeyboardButton(text="💎 Subscribe Now ($3 Lifetime)", callback_data="pay_with_crypto")]]
-)
-timeframe_keyboard = InlineKeyboardMarkup(
-    inline_keyboard=[[InlineKeyboardButton(text="أسبوعي", callback_data="tf_weekly"),
-                      InlineKeyboardButton(text="يومي", callback_data="tf_daily"),
-                      InlineKeyboardButton(text="4 ساعات", callback_data="tf_4h")]]
-)
-timeframe_keyboard_en = InlineKeyboardMarkup(
-    inline_keyboard=[[InlineKeyboardButton(text="Weekly", callback_data="tf_weekly"),
-                      InlineKeyboardButton(text="Daily", callback_data="tf_daily"),
-                      InlineKeyboardButton(text="4H", callback_data="tf_4h")]]
-)
+language_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")], [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]])
+payment_keyboard_ar = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 اشترك الآن (3$ مدى الحياة)", callback_data="pay_with_crypto")]])
+payment_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 Subscribe Now ($3 Lifetime)", callback_data="pay_with_crypto")]])
+timeframe_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="أسبوعي", callback_data="tf_weekly"), InlineKeyboardButton(text="يومي", callback_data="tf_daily"), InlineKeyboardButton(text="4 ساعات", callback_data="tf_4h")]])
+timeframe_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Weekly", callback_data="tf_weekly"), InlineKeyboardButton(text="Daily", callback_data="tf_daily"), InlineKeyboardButton(text="4H", callback_data="tf_4h")]])
 
 # --- أوامر البوت ---
 @dp.message(F.text.in_({'/start', 'start'}))
@@ -254,6 +232,7 @@ async def handle_nowpayments_webhook(req: web.Request):
         print(f"❌ Error in NOWPayments webhook: {e}")
         return web.Response(status=500, text="Internal Server Error")
 
+# <<< Healthcheck endpoint
 async def health_check(req: web.Request):
     print("Health check endpoint was called by Render.")
     return web.Response(text="OK", status=200)
@@ -290,13 +269,14 @@ async def on_shutdown(app_instance: web.Application):
 
 # --- Global App Initialization ---
 app = web.Application()
+
 app.router.add_get("/health", health_check)
 app.router.add_post("/", handle_telegram_webhook)
 app.router.add_post("/webhook/nowpayments", handle_nowpayments_webhook)
+
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
-# --- Main Execution for Local Testing Only ---
 if __name__ == "__main__":
     print("🚀 Starting bot locally for testing...")
     web.run_app(app, host="0.0.0.0", port=PORT)
