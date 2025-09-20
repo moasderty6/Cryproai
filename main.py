@@ -4,7 +4,7 @@ import re
 import json
 import hmac
 import hashlib
-import asyncpg  # <<< إضافة جديدة
+import asyncpg
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -25,15 +25,13 @@ PORT = int(os.getenv("PORT", 8000))
 GROQ_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
 NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY")
 NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET")
-DATABASE_URL = os.getenv("DATABASE_URL")  # <<< إضافة جديدة
-ADMIN_USER_ID = 6172153716  # <<< إضافة جديدة
+DATABASE_URL = os.getenv("DATABASE_URL")
+ADMIN_USER_ID = 6172153716
 
 # --- إعداد البوت ---
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 USERS_FILE = "users.json"
-
-# <<< تم تعديل هذا الجزء ليعتمد على قاعدة البيانات
 paid_users = set()
 
 # --- إدارة بيانات المستخدمين (ملف اللغة فقط) ---
@@ -53,7 +51,7 @@ user_lang = load_users()
 def is_user_paid(user_id: int):
     return user_id in paid_users
 
-# --- دوال مساعدة (بدون تغيير) ---
+# --- دوال مساعدة ---
 def clean_response(text, lang="ar"):
     if lang == "ar": return re.sub(r'[^\u0600-\u06FF0-9A-Za-z.,:%$؟! \n\-]+', '', text)
     else: return re.sub(r'[^\w\s.,:%$!?$-]+', '', text)
@@ -103,14 +101,14 @@ async def create_nowpayments_invoice(user_id: int):
         print(f"❌ CRITICAL ERROR in create_nowpayments_invoice: {e}")
     return None
 
-# --- لوحات الأزرار (بدون تغيير) ---
+# --- لوحات الأزرار ---
 language_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")], [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]])
 payment_keyboard_ar = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 اشترك الآن (3$ مدى الحياة)", callback_data="pay_with_crypto")]])
 payment_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 Subscribe Now ($3 Lifetime)", callback_data="pay_with_crypto")]])
 timeframe_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="أسبوعي", callback_data="tf_weekly"), InlineKeyboardButton(text="يومي", callback_data="tf_daily"), InlineKeyboardButton(text="4 ساعات", callback_data="tf_4h")]])
 timeframe_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Weekly", callback_data="tf_weekly"), InlineKeyboardButton(text="Daily", callback_data="tf_daily"), InlineKeyboardButton(text="4H", callback_data="tf_4h")]])
 
-# --- أوامر البوت (بدون تغيير في المنطق) ---
+# --- أوامر البوت ---
 @dp.message(F.text.in_({'/start', 'start'}))
 async def start(m: types.Message):
     await m.answer("👋 أهلاً بك، يرجى اختيار لغتك للمتابعة:\nWelcome, please choose your language to continue:", reply_markup=language_keyboard)
@@ -175,7 +173,6 @@ async def set_timeframe(cb: types.CallbackQuery):
     sym = user_lang.get(uid+"_symbol")
     price = user_lang.get(uid+"_price")
     
-    # <<< جزء التحليل المهم كاملاً كما هو في الكود الأصلي >>>
     if lang == "ar":
         prompt = (f"سعر العملة {sym.upper()} الآن هو {price:.6f}$.\n"
                   f"قم بتحليل التشارت للإطار الزمني {timeframe} باستخدام مؤشرات شاملة:\n"
@@ -210,7 +207,6 @@ async def handle_telegram_webhook(req: web.Request):
     finally:
         return web.Response(status=200)
 
-# <<< تم تعديل هذه الدالة لتستخدم قاعدة البيانات
 async def handle_nowpayments_webhook(req: web.Request):
     pool = req.app['db_pool']
     try:
@@ -236,11 +232,12 @@ async def handle_nowpayments_webhook(req: web.Request):
         print(f"❌ Error in NOWPayments webhook: {e}")
         return web.Response(status=500, text="Internal Server Error")
 
+# <<< تم تعديل هذه الدالة لإضافة طباعة
 async def health_check(req: web.Request):
+    print("Health check endpoint was called by Render.")
     return web.Response(text="OK", status=200)
 
 # --- Webhook and Server Lifespan Events ---
-# <<< تم تعديل هذه الدوال بالكامل لتدعم قاعدة البيانات
 async def on_startup(app_instance: web.Application):
     print("Connecting to database...")
     pool = await asyncpg.create_pool(DATABASE_URL)
@@ -272,13 +269,15 @@ async def on_shutdown(app_instance: web.Application):
 
 # --- Global App Initialization ---
 app = web.Application()
-app.router.add_get("/", health_check)
-app.router.add_post("/", handle_telegram_webhook)
+
+# <<< تم تعديل المسارات هنا
+app.router.add_get("/health", health_check) # مسار مخصص للفحص الصحي
+app.router.add_post("/", handle_telegram_webhook) # المسار الرئيسي الآن فقط لتيليجرام
 app.router.add_post("/webhook/nowpayments", handle_nowpayments_webhook)
+
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
 if __name__ == "__main__":
     print("🚀 Starting bot locally for testing...")
     web.run_app(app, host="0.0.0.0", port=PORT)
-
