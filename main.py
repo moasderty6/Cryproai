@@ -90,14 +90,21 @@ async def create_nowpayments_invoice(user_id: int):
     try:
         async with httpx.AsyncClient() as client:
             res = await client.post(url, headers=headers, json=data)
-            if res.status_code == 201:
+            
+            # <<< التعديل الرئيسي هنا
+            # نقبل أي رمز استجابة في نطاق 2xx كنجاح
+            if 200 <= res.status_code < 300:
+            # >>>
+                print(f"Successfully created invoice with status {res.status_code}")
                 return res.json().get("invoice_url")
             else:
+                # إذا فشل الطلب، نطبع الخطأ للمساعدة في التشخيص
                 print(f"NOWPayments Error: {res.status_code} - {res.text}")
+
     except Exception as e:
         print(f"❌ CRITICAL ERROR in create_nowpayments_invoice: {e}")
+        
     return None
-
 # --- لوحات الأزرار ---
 language_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")], [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]])
 payment_keyboard_ar = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 اشترك الآن (3$ مدى الحياة)", callback_data="pay_with_crypto")]])
