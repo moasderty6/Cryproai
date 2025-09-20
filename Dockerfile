@@ -13,12 +13,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 5. نسخ باقي ملفات المشروع إلى مجلد العمل
 COPY . .
 
-# 6. تعيين المنفذ
-EXPOSE 10000
-
-# 7. Healthcheck لفحص endpoint /health
+# 6. تعيين Healthcheck endpoint
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -f http://localhost:10000/health || exit 1
+  CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# 8. أمر تشغيل البوت باستخدام Gunicorn
-CMD ["gunicorn", "main:app", "--worker-class", "aiohttp.GunicornWebWorker", "--bind", "0.0.0.0:10000"]
+# 7. أمر تشغيل البوت باستخدام Gunicorn مع أخذ PORT من البيئة
+CMD ["sh", "-c", "gunicorn main:app --worker-class aiohttp.GunicornWebWorker --bind 0.0.0.0:${PORT}"]
