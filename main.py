@@ -139,9 +139,20 @@ async def process_crypto_payment(cb: types.CallbackQuery):
         await cb.message.edit_text("❌ حدث خطأ. يرجى المحاولة مرة أخرى لاحقاً." if lang == "ar" else "❌ An error occurred. Please try again later.")
     await cb.answer()
 
+# --- أوامر جديدة للمستخدمين (تم نقلها إلى هنا لتعمل بشكل صحيح) ---
+@dp.message(Command("status"))
+async def status_cmd(m: types.Message):
+    await m.answer(f"ℹ️ عدد المستخدمين الذين ضغطوا /start: {len(user_lang)}")
+
+@dp.message(Command("admin"))
+async def admin_cmd(m: types.Message):
+    await m.answer("📌 للتواصل مع الدعم، يرجى التواصل مع هذا الحساب:\n@AiCrAdmin\n\n📌 For support, contact:\n@AiCrAdmin")
+
+
+# --- معالج النصوص العام لرموز العملات ---
 @dp.message(F.text)
 async def handle_symbol(m: types.Message):
-    if m.text.startswith('/'): return
+    # تم حذف الشرط if m.text.startswith('/') لأنه لم يعد ضرورياً بعد تعديل الترتيب
     if not is_user_paid(m.from_user.id):
         lang = user_lang.get(str(m.from_user.id), "ar")
         kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
@@ -196,15 +207,6 @@ async def set_timeframe(cb: types.CallbackQuery):
     await cb.message.edit_text("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
     analysis = await ask_groq(prompt, lang=lang)
     await cb.message.answer(analysis)
-
-# --- أوامر جديدة للمستخدمين ---
-@dp.message(Command("status"))
-async def status_cmd(m: types.Message):
-    await m.answer(f"ℹ️ عدد المستخدمين الذين ضغطوا /start: {len(user_lang)}")
-
-@dp.message(Command("admin"))
-async def admin_cmd(m: types.Message):
-    await m.answer("📌 للتواصل مع الدعم، يرجى التواصل مع هذا الحساب:\n@AiCrAdmin\n\n📌 For support, contact:\n@AiCrAdmin")
 
 # --- Webhook Handlers ---
 async def handle_telegram_webhook(req: web.Request):
