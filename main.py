@@ -53,8 +53,10 @@ def is_user_paid(user_id: int):
 
 # --- دوال مساعدة ---
 def clean_response(text, lang="ar"):
-    if lang == "ar": return re.sub(r'[^\u0600-\u06FF0-9A-Za-z.,:%$؟! \n\-]+', '', text)
-    else: return re.sub(r'[^\w\s.,:%$!?$-]+', '', text)
+    if lang == "ar":
+        return re.sub(r'[^\u0600-\u06FF0-9A-Za-z.,:%$؟! \n\-]+', '', text)
+    else:
+        return re.sub(r'[^\w\s.,:%$!?$-]+', '', text)
 
 async def ask_groq(prompt, lang="ar"):
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
@@ -62,7 +64,8 @@ async def ask_groq(prompt, lang="ar"):
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data)
-            result = res.json(); content = result["choices"][0]["message"]["content"]
+            result = res.json()
+            content = result["choices"][0]["message"]["content"]
             return clean_response(content, lang=lang).strip()
     except Exception as e:
         print(f"❌ Error from AI: {e}")
@@ -74,10 +77,13 @@ async def get_price_cmc(symbol):
     try:
         async with httpx.AsyncClient() as client:
             res = await client.get(url, headers=headers)
-            if res.status_code != 200: return None
+            if res.status_code != 200:
+                return None
             data = res.json()
             return data["data"][symbol.upper()]["quote"]["USD"]["price"]
-    except: return None
+    except Exception as e:
+        print(f"❌ Error fetching price: {e}")
+        return None
 
 async def create_nowpayments_invoice(user_id: int):
     url = "https://api.nowpayments.io/v1/invoice"
@@ -102,16 +108,26 @@ async def create_nowpayments_invoice(user_id: int):
     return None
 
 # --- لوحات الأزرار ---
-language_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")], [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]])
+language_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")],
+    [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]
+])
 payment_keyboard_ar = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 اشترك الآن (3$ مدى الحياة)", callback_data="pay_with_crypto")]])
 payment_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 Subscribe Now ($3 Lifetime)", callback_data="pay_with_crypto")]])
-timeframe_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="أسبوعي", callback_data="tf_weekly"), InlineKeyboardButton(text="يومي", callback_data="tf_daily"), InlineKeyboardButton(text="4 ساعات", callback_data="tf_4h")]])
-timeframe_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Weekly", callback_data="tf_weekly"), InlineKeyboardButton(text="Daily", callback_data="tf_daily"), InlineKeyboardButton(text="4H", callback_data="tf_4h")]])
+timeframe_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="أسبوعي", callback_data="tf_weekly"), InlineKeyboardButton(text="يومي", callback_data="tf_daily"), InlineKeyboardButton(text="4 ساعات", callback_data="tf_4h")]
+])
+timeframe_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="Weekly", callback_data="tf_weekly"), InlineKeyboardButton(text="Daily", callback_data="tf_daily"), InlineKeyboardButton(text="4H", callback_data="tf_4h")]
+])
 
 # --- أوامر البوت ---
 @dp.message(F.text.in_({'/start', 'start'}))
 async def start(m: types.Message):
-    await m.answer("👋 أهلاً بك، يرجى اختيار لغتك للمتابعة:\nWelcome, please choose your language to continue:", reply_markup=language_keyboard)
+    await m.answer(
+        "👋 أهلاً بك، يرجى اختيار لغتك للمتابعة:\nWelcome, please choose your language to continue:",
+        reply_markup=language_keyboard
+    )
 
 @dp.callback_query(F.data.startswith("lang_"))
 async def set_lang(cb: types.CallbackQuery):
@@ -120,22 +136,44 @@ async def set_lang(cb: types.CallbackQuery):
     user_lang[str(uid)] = lang
     save_users(user_lang)
     if is_user_paid(uid):
-        await cb.message.edit_text("✅ أهلاً بك مجدداً! اشتراكك مفعل.\nأرسل رمز العملة للتحليل." if lang == "ar" else "✅ Welcome back! Your subscription is active.\nSend a coin symbol to analyze.")
+        await cb.message.edit_text(
+            "✅ أهلاً بك مجدداً! اشتراكك مفعل.\nأرسل رمز العملة للتحليل."
+            if lang == "ar" else
+            "✅ Welcome back! Your subscription is active.\nSend a coin symbol to analyze."
+        )
     else:
         kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
-        await cb.message.edit_text("للوصول الكامل، يرجى الاشتراك مقابل 3$ لمرة واحدة." if lang == "ar" else "For full access, please subscribe for a one-time fee of $3.", reply_markup=kb)
+        await cb.message.edit_text(
+            "للوصول الكامل، يرجى الاشتراك مقابل 3$ لمرة واحدة."
+            if lang == "ar" else
+            "For full access, please subscribe for a one-time fee of $3.",
+            reply_markup=kb
+        )
 
 @dp.callback_query(F.data == "pay_with_crypto")
 async def process_crypto_payment(cb: types.CallbackQuery):
     lang = user_lang.get(str(cb.from_user.id), "ar")
-    await cb.message.edit_text("⏳ يتم إنشاء رابط الدفع، يرجى الانتظار..." if lang == "ar" else "⏳ Generating payment link, please wait...")
+    await cb.message.edit_text(
+        "⏳ يتم إنشاء رابط الدفع، يرجى الانتظار..."
+        if lang == "ar" else
+        "⏳ Generating payment link, please wait..."
+    )
     
     invoice_url = await create_nowpayments_invoice(cb.from_user.id)
     if invoice_url:
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 افتح صفحة الدفع", url=invoice_url)]])
-        await cb.message.edit_text("✅ تم إنشاء رابط الدفع.\nلإتمام الاشتراك، ادفع عبر الرابط أدناه." if lang == "ar" else "✅ Payment link created.\nTo complete your subscription, pay via the link below.", reply_markup=kb)
+        await cb.message.edit_text(
+            "✅ تم إنشاء رابط الدفع.\nلإتمام الاشتراك، ادفع عبر الرابط أدناه."
+            if lang == "ar" else
+            "✅ Payment link created.\nTo complete your subscription, pay via the link below.",
+            reply_markup=kb
+        )
     else:
-        await cb.message.edit_text("❌ حدث خطأ. يرجى المحاولة مرة أخرى لاحقاً." if lang == "ar" else "❌ An error occurred. Please try again later.")
+        await cb.message.edit_text(
+            "❌ حدث خطأ. يرجى المحاولة مرة أخرى لاحقاً."
+            if lang == "ar" else
+            "❌ An error occurred. Please try again later."
+        )
     await cb.answer()
 
 @dp.message(F.text)
@@ -144,7 +182,12 @@ async def handle_symbol(m: types.Message):
     if not is_user_paid(m.from_user.id):
         lang = user_lang.get(str(m.from_user.id), "ar")
         kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
-        await m.answer("⚠️ هذه الميزة للمشتركين فقط. يرجى الاشتراك أولاً." if lang == "ar" else "⚠️ This feature is for subscribers only. Please subscribe first.", reply_markup=kb)
+        await m.answer(
+            "⚠️ هذه الميزة للمشتركين فقط. يرجى الاشتراك أولاً."
+            if lang == "ar" else
+            "⚠️ This feature is for subscribers only. Please subscribe first.",
+            reply_markup=kb
+        )
         return
     uid = str(m.from_user.id)
     lang = user_lang.get(uid, "ar")
@@ -159,7 +202,10 @@ async def handle_symbol(m: types.Message):
     user_lang[uid+"_price"] = price
     save_users(user_lang)
     kb = timeframe_keyboard if lang == "ar" else timeframe_keyboard_en
-    await m.answer("⏳ اختر الإطار الزمني للتحليل:" if lang == "ar" else "⏳ Select timeframe for analysis:", reply_markup=kb)
+    await m.answer(
+        "⏳ اختر الإطار الزمني للتحليل:" if lang == "ar" else "⏳ Select timeframe for analysis:",
+        reply_markup=kb
+    )
 
 @dp.callback_query(F.data.startswith("tf_"))
 async def set_timeframe(cb: types.CallbackQuery):
@@ -226,7 +272,12 @@ async def handle_nowpayments_webhook(req: web.Request):
                     await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", user_id)
                 paid_users.add(user_id)
                 lang = user_lang.get(str(user_id), "ar")
-                await bot.send_message(user_id, "✅ تم تأكيد الدفع بنجاح! شكراً لاشتراكك. يمكنك الآن استخدام البوت بشكل كامل." if lang == "ar" else "✅ Payment confirmed! Thank you for subscribing. You can now use the bot fully.")
+                await bot.send_message(
+                    user_id,
+                    "✅ تم تأكيد الدفع بنجاح! شكراً لاشتراكك. يمكنك الآن استخدام البوت بشكل كامل."
+                    if lang == "ar" else
+                    "✅ Payment confirmed! Thank you for subscribing. You can now use the bot fully."
+                )
         return web.Response(status=200, text="OK")
     except Exception as e:
         print(f"❌ Error in NOWPayments webhook: {e}")
@@ -268,14 +319,21 @@ async def on_shutdown(app_instance: web.Application):
 
 # --- Global App Initialization ---
 app = web.Application()
-
 app.router.add_get("/health", health_check)
 app.router.add_post("/", handle_telegram_webhook)
 app.router.add_post("/webhook/nowpayments", handle_nowpayments_webhook)
-
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
+# --- Main Asyncio Runner for Render ---
+async def main():
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    print(f"🚀 Server running on port {PORT}")
+    while True:
+        await asyncio.sleep(3600)  # keep alive
+
 if __name__ == "__main__":
-    print("🚀 Starting bot locally for testing...")
-    web.run_app(app, host="0.0.0.0", port=PORT)
+    asyncio.run(main())
