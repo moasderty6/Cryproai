@@ -176,7 +176,7 @@ async def create_payment(cb: types.CallbackQuery):
         payload = {
             "price_amount": 1.0,
             "price_currency": "usd",
-            "pay_currency": "usdtmatic", # يمكنك تغييرها لعملة أخرى
+            "pay_currency": "usdt_polygon", # يمكنك تغييرها لعملة أخرى
             "ipn_callback_url": f"{WEBHOOK_URL}/ipn",
             "order_id": uid,
             "order_description": f"Lifetime Bot Subscription for user {uid}"
