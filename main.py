@@ -21,7 +21,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CMC_KEY = os.getenv("CMC_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-PORT = int(os.getenv("PORT", 8000))  # ⚠️ تأكد أن PORT يأتي من البيئة
+PORT = int(os.getenv("PORT", 8000))
 GROQ_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
 NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY")
 NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET")
@@ -102,7 +102,10 @@ async def create_nowpayments_invoice(user_id: int):
     return None
 
 # --- لوحات الأزرار ---
-language_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")], [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]])
+language_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")], 
+    [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]
+])
 payment_keyboard_ar = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 اشترك الآن (3$ مدى الحياة)", callback_data="pay_with_crypto")]])
 payment_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 Subscribe Now ($3 Lifetime)", callback_data="pay_with_crypto")]])
 timeframe_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="أسبوعي", callback_data="tf_weekly"), InlineKeyboardButton(text="يومي", callback_data="tf_daily"), InlineKeyboardButton(text="4 ساعات", callback_data="tf_4h")]])
@@ -195,6 +198,15 @@ async def set_timeframe(cb: types.CallbackQuery):
     await cb.message.edit_text("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
     analysis = await ask_groq(prompt, lang=lang)
     await cb.message.answer(analysis)
+
+# --- أوامر إضافية ---
+@dp.message(F.text == "/status")
+async def status_cmd(m: types.Message):
+    await m.answer(f"ℹ️ عدد المستخدمين الذين ضغطوا /start: {len(user_lang)}")
+
+@dp.message(F.text == "/admin")
+async def admin_cmd(m: types.Message):
+    await m.answer("📌 للتواصل مع الدعم والإستفسار عن الاشتراك، يرجى التواصل مع هذا الحساب:\n@AiCrAdmin\n\n📌 For support or subscription questions, contact:\n@AiCrAdmin")
 
 # --- Webhook Handlers ---
 async def handle_telegram_webhook(req: web.Request):
