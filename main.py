@@ -77,13 +77,12 @@ async def get_price_cmc(symbol):
             return data["data"][symbol.upper()]["quote"]["USD"]["price"]
     except: return None
 
-# <<< تم إرجاع هذه الدالة إلى النسخة العامة
 async def create_nowpayments_invoice(user_id: int):
     url = "https://api.nowpayments.io/v1/invoice"
     headers = {"x-api-key": NOWPAYMENTS_API_KEY, "Content-Type": "application/json"}
     data = {
         "price_amount": 3,
-        "price_currency": "usd", # نطلب بالدولار ونترك الخيار للمستخدم
+        "price_currency": "usd",
         "order_id": str(user_id),
         "ipn_callback_url": f"{WEBHOOK_URL}/webhook/nowpayments",
         "success_url": f"https://t.me/{(await bot.get_me()).username}",
@@ -140,11 +139,16 @@ async def process_crypto_payment(cb: types.CallbackQuery):
 
 @dp.message(F.text)
 async def handle_symbol(m: types.Message):
+    # تحقق من أن الرسالة ليست أمراً آخر قبل التحقق من الاشتراك
+    if m.text.startswith('/'):
+        return
+
     if not is_user_paid(m.from_user.id):
         lang = user_lang.get(str(m.from_user.id), "ar")
         kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
         await m.answer("⚠️ هذه الميزة للمشتركين فقط. يرجى الاشتراك أولاً." if lang == "ar" else "⚠️ This feature is for subscribers only. Please subscribe first.", reply_markup=kb)
         return
+
     uid = str(m.from_user.id)
     lang = user_lang.get(uid, "ar")
     sym = m.text.strip().lower()
@@ -171,11 +175,25 @@ async def set_timeframe(cb: types.CallbackQuery):
     timeframe = tf_map[cb.data]
     sym = user_lang.get(uid+"_symbol")
     price = user_lang.get(uid+"_price")
-    prompt = "..."
+    
     if lang == "ar":
-        prompt = (f"سعر العملة {sym.upper()} الآن هو {price:.6f}$.\n" f"قم بتحليل التشارت ...")
+        prompt = (f"سعر العملة {sym.upper()} الآن هو {price:.6f}$.\n"
+                  f"قم بتحليل التشارت للإطار الزمني {timeframe} باستخدام مؤشرات شاملة:\n"
+                  f"- خطوط الدعم والمقاومة\n- RSI, MACD, MA\n- Bollinger Bands\n"
+                  f"- Fibonacci Levels\n- Stochastic Oscillator\n- Volume Analysis\n"
+                  f"- Trendlines باستخدام Regression\nثم قدم:\n"
+                  f"1. تقييم عام (صعود أم هبوط؟)\n2. أقرب مقاومة ودعم\n"
+                  f"3. نطاق سعري مستهدف (Range)\n✅ استخدم العربية فقط\n"
+                  f"❌ لا تشرح المشروع، فقط تحليل التشارت")
     else:
-        prompt = (f"The current price of {sym.upper()} is ${price:.6f}.\n" f"Analyze the {timeframe} chart ...")
+        prompt = (f"The current price of {sym.upper()} is ${price:.6f}.\n"
+                  f"Analyze the {timeframe} chart using comprehensive indicators:\n"
+                  f"- Support and Resistance\n- RSI, MACD, MA\n- Bollinger Bands\n"
+                  f"- Fibonacci Levels\n- Stochastic Oscillator\n- Volume Analysis\n"
+                  f"- Trendlines using Regression\nThen provide:\n"
+                  f"1. General trend (up/down)\n2. Nearest resistance/support\n"
+                  f"3. Target price range\n✅ Answer in English only\n"
+                  f"❌ Don't explain the project, only chart analysis")
 
     await cb.message.edit_text("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
     analysis = await ask_groq(prompt, lang=lang)
@@ -215,6 +233,9 @@ async def handle_nowpayments_webhook(req: web.Request):
         print(f"❌ Error in NOWPayments webhook: {e}")
         return web.Response(status=500, text="Internal Server Error")
 
+async def health_check(req: web.Request):
+    return web.Response(text="OK", status=200)
+
 # --- Webhook and Server Lifespan Events ---
 async def on_startup(app_instance: web.Application):
     webhook_url = f"{WEBHOOK_URL}/"
@@ -228,8 +249,11 @@ async def on_shutdown(app_instance: web.Application):
 
 # --- Global App Initialization ---
 app = web.Application()
+
+app.router.add_get("/", health_check)
 app.router.add_post("/", handle_telegram_webhook)
 app.router.add_post("/webhook/nowpayments", handle_nowpayments_webhook)
+
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
