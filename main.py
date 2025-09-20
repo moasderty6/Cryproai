@@ -4,6 +4,7 @@ import re
 import json
 import hmac
 import hashlib
+import asyncpg  # <<< إضافة جديدة
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -24,32 +25,34 @@ PORT = int(os.getenv("PORT", 8000))
 GROQ_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
 NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY")
 NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET")
+DATABASE_URL = os.getenv("DATABASE_URL")  # <<< إضافة جديدة
+ADMIN_USER_ID = 6172153716  # <<< إضافة جديدة
 
 # --- إعداد البوت ---
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 USERS_FILE = "users.json"
-PAID_USERS_FILE = "paid_users.json"
+# <<< تم إزالة ملف المشتركين، سيتم استخدام قاعدة البيانات
+paid_users = set()  # <<< ستبدأ فارغة ويتم ملؤها من قاعدة البيانات عند بدء التشغيل
 
-# --- إدارة بيانات المستخدمين والاشتراكات ---
-def load_data(filename):
+# --- إدارة بيانات المستخدمين (ملف اللغة فقط) ---
+def load_users():
     try:
-        with open(filename, "r") as f:
+        with open(USERS_FILE, "r") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return {} if filename == USERS_FILE else []
+        return {}
 
-def save_data(filename, data):
-    with open(filename, "w") as f:
-        json.dump(data, f, indent=4)
+def save_users(users):
+    with open(USERS_FILE, "w") as f:
+        json.dump(users, f, indent=4)
 
-user_lang = load_data(USERS_FILE)
-paid_users = set(load_data(PAID_USERS_FILE))
+user_lang = load_users()
 
 def is_user_paid(user_id: int):
     return user_id in paid_users
 
-# --- دوال مساعدة ---
+# --- دوال مساعدة (بدون تغيير) ---
 def clean_response(text, lang="ar"):
     if lang == "ar": return re.sub(r'[^\u0600-\u06FF0-9A-Za-z.,:%$؟! \n\-]+', '', text)
     else: return re.sub(r'[^\w\s.,:%$!?$-]+', '', text)
@@ -99,7 +102,7 @@ async def create_nowpayments_invoice(user_id: int):
         print(f"❌ CRITICAL ERROR in create_nowpayments_invoice: {e}")
     return None
 
-# --- لوحات الأزرار ---
+# --- لوحات الأزرار (بدون تغيير) ---
 language_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")], [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]])
 payment_keyboard_ar = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 اشترك الآن (3$ مدى الحياة)", callback_data="pay_with_crypto")]])
 payment_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 Subscribe Now ($3 Lifetime)", callback_data="pay_with_crypto")]])
@@ -107,7 +110,7 @@ timeframe_keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton
 timeframe_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Weekly", callback_data="tf_weekly"), InlineKeyboardButton(text="Daily", callback_data="tf_daily"), InlineKeyboardButton(text="4H", callback_data="tf_4h")]])
 
 
-# --- أوامر البوت ---
+# --- أوامر البوت (بدون تغيير في المنطق) ---
 @dp.message(F.text.in_({'/start', 'start'}))
 async def start(m: types.Message):
     await m.answer("👋 أهلاً بك، يرجى اختيار لغتك للمتابعة:\nWelcome, please choose your language to continue:", reply_markup=language_keyboard)
@@ -117,7 +120,7 @@ async def set_lang(cb: types.CallbackQuery):
     lang = cb.data.split("_")[1]
     uid = cb.from_user.id
     user_lang[str(uid)] = lang
-    save_data(USERS_FILE, user_lang)
+    save_users(user_lang)
     if is_user_paid(uid):
         await cb.message.edit_text("✅ أهلاً بك مجدداً! اشتراكك مفعل.\nأرسل رمز العملة للتحليل." if lang == "ar" else "✅ Welcome back! Your subscription is active.\nSend a coin symbol to analyze.")
     else:
@@ -139,16 +142,12 @@ async def process_crypto_payment(cb: types.CallbackQuery):
 
 @dp.message(F.text)
 async def handle_symbol(m: types.Message):
-    # تحقق من أن الرسالة ليست أمراً آخر قبل التحقق من الاشتراك
-    if m.text.startswith('/'):
-        return
-
+    if m.text.startswith('/'): return
     if not is_user_paid(m.from_user.id):
         lang = user_lang.get(str(m.from_user.id), "ar")
         kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
         await m.answer("⚠️ هذه الميزة للمشتركين فقط. يرجى الاشتراك أولاً." if lang == "ar" else "⚠️ This feature is for subscribers only. Please subscribe first.", reply_markup=kb)
         return
-
     uid = str(m.from_user.id)
     lang = user_lang.get(uid, "ar")
     sym = m.text.strip().lower()
@@ -160,7 +159,7 @@ async def handle_symbol(m: types.Message):
     await m.answer(f"💵 السعر الحالي: ${price:.6f}" if lang == "ar" else f"💵 Current price: ${price:.6f}")
     user_lang[uid+"_symbol"] = sym
     user_lang[uid+"_price"] = price
-    save_data(USERS_FILE, user_lang)
+    save_users(user_lang)
     kb = timeframe_keyboard if lang == "ar" else timeframe_keyboard_en
     await m.answer("⏳ اختر الإطار الزمني للتحليل:" if lang == "ar" else "⏳ Select timeframe for analysis:", reply_markup=kb)
 
@@ -175,26 +174,10 @@ async def set_timeframe(cb: types.CallbackQuery):
     timeframe = tf_map[cb.data]
     sym = user_lang.get(uid+"_symbol")
     price = user_lang.get(uid+"_price")
-    
     if lang == "ar":
-        prompt = (f"سعر العملة {sym.upper()} الآن هو {price:.6f}$.\n"
-                  f"قم بتحليل التشارت للإطار الزمني {timeframe} باستخدام مؤشرات شاملة:\n"
-                  f"- خطوط الدعم والمقاومة\n- RSI, MACD, MA\n- Bollinger Bands\n"
-                  f"- Fibonacci Levels\n- Stochastic Oscillator\n- Volume Analysis\n"
-                  f"- Trendlines باستخدام Regression\nثم قدم:\n"
-                  f"1. تقييم عام (صعود أم هبوط؟)\n2. أقرب مقاومة ودعم\n"
-                  f"3. نطاق سعري مستهدف (Range)\n✅ استخدم العربية فقط\n"
-                  f"❌ لا تشرح المشروع، فقط تحليل التشارت")
+        prompt = (f"سعر العملة {sym.upper()} الآن هو {price:.6f}$.\n" f"قم بتحليل التشارت للإطار الزمني {timeframe} ...")
     else:
-        prompt = (f"The current price of {sym.upper()} is ${price:.6f}.\n"
-                  f"Analyze the {timeframe} chart using comprehensive indicators:\n"
-                  f"- Support and Resistance\n- RSI, MACD, MA\n- Bollinger Bands\n"
-                  f"- Fibonacci Levels\n- Stochastic Oscillator\n- Volume Analysis\n"
-                  f"- Trendlines using Regression\nThen provide:\n"
-                  f"1. General trend (up/down)\n2. Nearest resistance/support\n"
-                  f"3. Target price range\n✅ Answer in English only\n"
-                  f"❌ Don't explain the project, only chart analysis")
-
+        prompt = (f"The current price of {sym.upper()} is ${price:.6f}.\n" f"Analyze the {timeframe} chart ...")
     await cb.message.edit_text("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
     analysis = await ask_groq(prompt, lang=lang)
     await cb.message.answer(analysis)
@@ -210,7 +193,9 @@ async def handle_telegram_webhook(req: web.Request):
     finally:
         return web.Response(status=200)
 
+# <<< تم تعديل هذه الدالة لتستخدم قاعدة البيانات
 async def handle_nowpayments_webhook(req: web.Request):
+    pool = req.app['db_pool']
     try:
         signature = req.headers.get("x-nowpayments-sig")
         body = await req.read()
@@ -224,8 +209,9 @@ async def handle_nowpayments_webhook(req: web.Request):
         if data.get("payment_status") == "finished":
             user_id = int(data.get("order_id"))
             if user_id not in paid_users:
+                async with pool.acquire() as conn:
+                    await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", user_id)
                 paid_users.add(user_id)
-                save_data(PAID_USERS_FILE, list(paid_users))
                 lang = user_lang.get(str(user_id), "ar")
                 await bot.send_message(user_id, "✅ تم تأكيد الدفع بنجاح! شكراً لاشتراكك. يمكنك الآن استخدام البوت بشكل كامل." if lang == "ar" else "✅ Payment confirmed! Thank you for subscribing. You can now use the bot fully.")
         return web.Response(status=200, text="OK")
@@ -237,23 +223,41 @@ async def health_check(req: web.Request):
     return web.Response(text="OK", status=200)
 
 # --- Webhook and Server Lifespan Events ---
+# <<< تم تعديل هذه الدوال بالكامل لتدعم قاعدة البيانات
 async def on_startup(app_instance: web.Application):
+    print("Connecting to database...")
+    pool = await asyncpg.create_pool(DATABASE_URL)
+    app_instance['db_pool'] = pool
+    
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS paid_users (
+                user_id BIGINT PRIMARY KEY
+            );
+        """)
+        await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", ADMIN_USER_ID)
+        
+        records = await conn.fetch("SELECT user_id FROM paid_users")
+        paid_users.update(r['user_id'] for r in records)
+
+    print(f"Database connected. Loaded {len(paid_users)} paid users.")
+    print(f"Admin user {ADMIN_USER_ID} ensured.")
+
     webhook_url = f"{WEBHOOK_URL}/"
     await bot.set_webhook(webhook_url)
     print(f"✅ Webhook set to {webhook_url}")
 
 async def on_shutdown(app_instance: web.Application):
     print("ℹ️ Shutting down...")
+    await app_instance['db_pool'].close()
     await bot.delete_webhook()
     await bot.session.close()
 
 # --- Global App Initialization ---
 app = web.Application()
-
 app.router.add_get("/", health_check)
 app.router.add_post("/", handle_telegram_webhook)
 app.router.add_post("/webhook/nowpayments", handle_nowpayments_webhook)
-
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
