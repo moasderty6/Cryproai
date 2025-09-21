@@ -22,7 +22,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CMC_KEY = os.getenv("CMC_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-PORT = int(os.getenv("PORT", 8000))  # ⚠️ تأكد أن PORT يأتي من البيئة
+PORT = int(os.getenv("PORT", 8000))
 GROQ_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
 NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY")
 NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET")
@@ -141,7 +141,6 @@ async def process_crypto_payment(cb: types.CallbackQuery):
         await cb.message.edit_text("❌ حدث خطأ. يرجى المحاولة مرة أخرى لاحقاً." if lang == "ar" else "❌ An error occurred. Please try again later.")
     await cb.answer()
 
-# --- أوامر جديدة للمستخدمين (تم نقلها إلى هنا لتعمل بشكل صحيح) ---
 @dp.message(Command("status"))
 async def status_cmd(m: types.Message):
     await m.answer(f"ℹ️ عدد المستخدمين الذين ضغطوا /start: {len(user_lang)}")
@@ -150,10 +149,9 @@ async def status_cmd(m: types.Message):
 async def admin_cmd(m: types.Message):
     await m.answer("📌 للتواصل مع الدعم، يرجى التواصل مع هذا الحساب:\n@AiCrAdmin\n\n📌 For support, contact:\n@AiCrAdmin")
 
-
-# --- معالج النصوص العام لرموز العملات ---
 @dp.message(F.text)
 async def handle_symbol(m: types.Message):
+    if m.text.startswith('/'): return
     if not is_user_paid(m.from_user.id):
         lang = user_lang.get(str(m.from_user.id), "ar")
         kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
@@ -193,7 +191,7 @@ async def set_timeframe(cb: types.CallbackQuery):
                   f"- Fibonacci Levels\n- Stochastic Oscillator\n- Volume Analysis\n"
                   f"- Trendlines باستخدام Regression\nثم قدم:\n"
                   f"1. تقييم عام (صعود أم هبوط؟)\n2. أقرب مقاومة ودعم\n"
-                  f"3. نطاق سعري مستهدف (Range)\n✅ استخدم العربية فقط\n"
+                  f"3. ثلاثة أهداف مستقبلية (قصير، متوسط، بعيد المدى) بناءً على اتجاه السعر المتوقع.\n✅ استخدم العربية فقط\n"
                   f"❌ لا تشرح المشروع، فقط تحليل التشارت")
     else:
         prompt = (f"The current price of {sym.upper()} is ${price:.6f}.\n"
@@ -202,7 +200,7 @@ async def set_timeframe(cb: types.CallbackQuery):
                   f"- Fibonacci Levels\n- Stochastic Oscillator\n- Volume Analysis\n"
                   f"- Trendlines using Regression\nThen provide:\n"
                   f"1. General trend (up/down)\n2. Nearest resistance/support\n"
-                  f"3. Target price range\n✅ Answer in English only\n"
+                  f"3. Three future price targets (short, medium, and long term) based on the expected price direction.\n✅ Answer in English only\n"
                   f"❌ Don't explain the project, only chart analysis")
 
     await cb.message.edit_text("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
