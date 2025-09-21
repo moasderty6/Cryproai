@@ -134,7 +134,9 @@ async def process_crypto_payment(cb: types.CallbackQuery):
     invoice_url = await create_nowpayments_invoice(cb.from_user.id)
     if invoice_url:
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 افتح صفحة الدفع", url=invoice_url)]])
-        await cb.message.edit_text("✅ تم إنشاء رابط الدفع.\nلإتمام الاشتراك، ادفع عبر الرابط أدناه." if lang == "ar" else "✅ Payment link created.\nTo complete your subscription, pay via the link below.", reply_markup=kb)
+        msg_ar = "✅ تم إنشاء رابط الدفع.\nلإتمام الاشتراك، ادفع عبر الرابط أدناه.\n\nUSDT-(Polygon)"
+        msg_en = "✅ Payment link created.\nTo complete your subscription, pay via the link below.\n\nUSDT-(Polygon)"
+        await cb.message.edit_text(msg_ar if lang == "ar" else msg_en, reply_markup=kb)
     else:
         await cb.message.edit_text("❌ حدث خطأ. يرجى المحاولة مرة أخرى لاحقاً." if lang == "ar" else "❌ An error occurred. Please try again later.")
     await cb.answer()
@@ -152,7 +154,6 @@ async def admin_cmd(m: types.Message):
 # --- معالج النصوص العام لرموز العملات ---
 @dp.message(F.text)
 async def handle_symbol(m: types.Message):
-    # تم حذف الشرط if m.text.startswith('/') لأنه لم يعد ضرورياً بعد تعديل الترتيب
     if not is_user_paid(m.from_user.id):
         lang = user_lang.get(str(m.from_user.id), "ar")
         kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
