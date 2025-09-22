@@ -133,10 +133,13 @@ async def process_crypto_payment(cb: types.CallbackQuery):
     
     invoice_url = await create_nowpayments_invoice(cb.from_user.id)
     if invoice_url:
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 افتح صفحة الدفع", url=invoice_url)]])
-        msg_ar = "✅ تم إنشاء رابط الدفع.\nلإتمام الاشتراك، ادفع عبر الرابط أدناه.\n\nUSDT-(Polygon)"
-        msg_en = "✅ Payment link created.\nTo complete your subscription, pay via the link below.\n\nUSDT-(Polygon)"
-        await cb.message.edit_text(msg_ar if lang == "ar" else msg_en, reply_markup=kb)
+        if lang == "ar":
+            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 ادفع الآن", url=invoice_url)]])
+            msg = "✅ تم إنشاء رابط الدفع.\nلإتمام الاشتراك، ادفع عبر الرابط أدناه.\n\nUSDT-(Polygon)"
+        else:
+            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 Pay Now", url=invoice_url)]])
+            msg = "✅ Payment link created.\nTo complete your subscription, pay via the link below.\n\nUSDT-(Polygon)"
+        await cb.message.edit_text(msg, reply_markup=kb)
     else:
         await cb.message.edit_text("❌ حدث خطأ. يرجى المحاولة مرة أخرى لاحقاً." if lang == "ar" else "❌ An error occurred. Please try again later.")
     await cb.answer()
