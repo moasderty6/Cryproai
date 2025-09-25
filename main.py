@@ -52,6 +52,13 @@ user_lang = load_users()
 def is_user_paid(user_id: int):
     return user_id in paid_users
 
+def has_trial(uid: str):
+    return user_lang.get(uid + "_trial", False)
+
+def set_trial_used(uid: str):
+    user_lang[uid + "_trial"] = True
+    save_users(user_lang)
+
 # --- دوال مساعدة ---
 def clean_response(text, lang="ar"):
     if lang == "ar": return re.sub(r'[^\u0600-\u06FF0-9A-Za-z.,:%$؟! \n\-]+', '', text)
@@ -117,14 +124,18 @@ async def start(m: types.Message):
 @dp.callback_query(F.data.startswith("lang_"))
 async def set_lang(cb: types.CallbackQuery):
     lang = cb.data.split("_")[1]
-    uid = cb.from_user.id
-    user_lang[str(uid)] = lang
+    uid = str(cb.from_user.id)
+    user_lang[uid] = lang
     save_users(user_lang)
-    if is_user_paid(uid):
+    if is_user_paid(cb.from_user.id):
         await cb.message.edit_text("✅ أهلاً بك مجدداً! اشتراكك مفعل.\nأرسل رمز العملة للتحليل." if lang == "ar" else "✅ Welcome back! Your subscription is active.\nSend a coin symbol to analyze.")
     else:
-        kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
-        await cb.message.edit_text("للوصول الكامل، يرجى الاشتراك مقابل 3$ لمرة واحدة." if lang == "ar" else "For full access, please subscribe for a one-time fee of $3.", reply_markup=kb)
+        # عرض التجربة المجانية أول مرة فقط
+        if not has_trial(uid):
+            await cb.message.edit_text("🎁 لديك تجربة مجانية واحدة! أرسل رمز العملة للتحليل." if lang == "ar" else "🎁 You have one free trial! Send a coin symbol for analysis.")
+        else:
+            kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
+            await cb.message.edit_text("للوصول الكامل، يرجى الاشتراك مقابل 3$ لمرة واحدة." if lang == "ar" else "For full access, please subscribe for a one-time fee of $3.", reply_markup=kb)
 
 @dp.callback_query(F.data == "pay_with_crypto")
 async def process_crypto_payment(cb: types.CallbackQuery):
@@ -154,22 +165,18 @@ async def admin_cmd(m: types.Message):
 
 @dp.message(F.text)
 async def handle_symbol(m: types.Message):
-    if m.text.startswith('/'): 
-        return
-
+    if m.text.startswith('/'): return
     uid = str(m.from_user.id)
     lang = user_lang.get(uid, "ar")
 
-    # --- تجربة مجانية للمرة الأولى ---
     if not is_user_paid(m.from_user.id):
-        if not user_lang.get(uid + "_trial"):  # لسا ما استعمل التجربة
-            user_lang[uid + "_trial"] = True
-            save_users(user_lang)
-            await m.answer("🎁 لديك تجربة مجانية واحدة! سأحلل لك هذه العملة الآن." if lang == "ar" else "🎁 You have one free trial! I will analyze this coin now.")
-        else:
+        if not has_trial(uid):
             kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
             await m.answer("⚠️ هذه الميزة للمشتركين فقط. يرجى الاشتراك أولاً." if lang == "ar" else "⚠️ This feature is for subscribers only. Please subscribe first.", reply_markup=kb)
             return
+        else:
+            # أول مرة: نسمح بالتحليل ونعلّم أن التجربة استُخدمت
+            set_trial_used(uid)
 
     sym = m.text.strip().lower()
     await m.answer("⏳ جاري جلب السعر..." if lang == "ar" else "⏳ Fetching price...")
@@ -177,22 +184,21 @@ async def handle_symbol(m: types.Message):
     if not price:
         await m.answer("❌ لم أتمكن من جلب السعر الحالي للعملة." if lang == "ar" else "❌ Couldn't fetch current price.")
         return
-
     await m.answer(f"💵 السعر الحالي: ${price:.6f}" if lang == "ar" else f"💵 Current price: ${price:.6f}")
     user_lang[uid+"_symbol"] = sym
     user_lang[uid+"_price"] = price
     save_users(user_lang)
-
     kb = timeframe_keyboard if lang == "ar" else timeframe_keyboard_en
     await m.answer("⏳ اختر الإطار الزمني للتحليل:" if lang == "ar" else "⏳ Select timeframe for analysis:", reply_markup=kb)
 
 @dp.callback_query(F.data.startswith("tf_"))
 async def set_timeframe(cb: types.CallbackQuery):
-    if not is_user_paid(cb.from_user.id):
-        await cb.answer("⚠️ هذه الميزة للمشتركين فقط.", show_alert=True)
-        return
     uid = str(cb.from_user.id)
     lang = user_lang.get(uid, "ar")
+    if not is_user_paid(cb.from_user.id) and not has_trial(uid):
+        await cb.answer("⚠️ هذه الميزة للمشتركين فقط.", show_alert=True)
+        return
+
     tf_map = {"tf_weekly": "weekly", "tf_daily": "daily", "tf_4h": "4h"}
     timeframe = tf_map[cb.data]
     sym = user_lang.get(uid+"_symbol")
@@ -220,6 +226,13 @@ async def set_timeframe(cb: types.CallbackQuery):
     await cb.message.edit_text("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
     analysis = await ask_groq(prompt, lang=lang)
     await cb.message.answer(analysis)
+
+    # بعد أول تحليل بالتجربة، نطلب الاشتراك
+    if not is_user_paid(cb.from_user.id) and has_trial(uid):
+        kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
+        msg = ("للوصول الكامل، يرجى الاشتراك مقابل 3$ لمرة واحدة." if lang == "ar" 
+               else "For full access, please subscribe for a one-time fee of $3.")
+        await cb.message.answer(msg, reply_markup=kb)
 
 # --- Webhook Handlers ---
 async def handle_telegram_webhook(req: web.Request):
