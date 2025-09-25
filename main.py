@@ -172,7 +172,7 @@ async def handle_symbol(m: types.Message):
     if not is_user_paid(m.from_user.id):
         if not has_trial(uid):
             kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
-            await m.answer("⚠️ هذه الميزة للمشتركين فقط. يرجى الاشتراك أولاً." if lang == "ar" else "⚠️ This feature is for subscribers only. Please subscribe first.", reply_markup=kb)
+            await m.answer("⚠️ آنتهت تجربتك المجانية. يرجى الاشتراك أولاً." if lang == "ar" else "⚠️ This feature is for subscribers only. Please subscribe first.", reply_markup=kb)
             return
         else:
             # أول مرة: نسمح بالتحليل ونعلّم أن التجربة استُخدمت
