@@ -154,24 +154,35 @@ async def admin_cmd(m: types.Message):
 
 @dp.message(F.text)
 async def handle_symbol(m: types.Message):
-    if m.text.startswith('/'): return
-    if not is_user_paid(m.from_user.id):
-        lang = user_lang.get(str(m.from_user.id), "ar")
-        kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
-        await m.answer("⚠️ هذه الميزة للمشتركين فقط. يرجى الاشتراك أولاً." if lang == "ar" else "⚠️ This feature is for subscribers only. Please subscribe first.", reply_markup=kb)
+    if m.text.startswith('/'): 
         return
+
     uid = str(m.from_user.id)
     lang = user_lang.get(uid, "ar")
+
+    # --- تجربة مجانية للمرة الأولى ---
+    if not is_user_paid(m.from_user.id):
+        if not user_lang.get(uid + "_trial"):  # لسا ما استعمل التجربة
+            user_lang[uid + "_trial"] = True
+            save_users(user_lang)
+            await m.answer("🎁 لديك تجربة مجانية واحدة! سأحلل لك هذه العملة الآن." if lang == "ar" else "🎁 You have one free trial! I will analyze this coin now.")
+        else:
+            kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
+            await m.answer("⚠️ هذه الميزة للمشتركين فقط. يرجى الاشتراك أولاً." if lang == "ar" else "⚠️ This feature is for subscribers only. Please subscribe first.", reply_markup=kb)
+            return
+
     sym = m.text.strip().lower()
     await m.answer("⏳ جاري جلب السعر..." if lang == "ar" else "⏳ Fetching price...")
     price = await get_price_cmc(sym)
     if not price:
         await m.answer("❌ لم أتمكن من جلب السعر الحالي للعملة." if lang == "ar" else "❌ Couldn't fetch current price.")
         return
+
     await m.answer(f"💵 السعر الحالي: ${price:.6f}" if lang == "ar" else f"💵 Current price: ${price:.6f}")
     user_lang[uid+"_symbol"] = sym
     user_lang[uid+"_price"] = price
     save_users(user_lang)
+
     kb = timeframe_keyboard if lang == "ar" else timeframe_keyboard_en
     await m.answer("⏳ اختر الإطار الزمني للتحليل:" if lang == "ar" else "⏳ Select timeframe for analysis:", reply_markup=kb)
 
