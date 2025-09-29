@@ -170,12 +170,11 @@ async def handle_symbol(m: types.Message):
     lang = user_lang.get(uid, "ar")
 
     if not is_user_paid(m.from_user.id):
-        if not has_trial(uid):
+        if has_trial(uid):  
             kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
             await m.answer("⚠️ آنتهت تجربتك المجانية. يرجى الاشتراك أولاً." if lang == "ar" else "⚠️ This feature is for subscribers only. Please subscribe first.", reply_markup=kb)
             return
         else:
-            # أول مرة: نسمح بالتحليل ونعلّم أن التجربة استُخدمت
             set_trial_used(uid)
 
     sym = m.text.strip().lower()
@@ -227,7 +226,6 @@ async def set_timeframe(cb: types.CallbackQuery):
     analysis = await ask_groq(prompt, lang=lang)
     await cb.message.answer(analysis)
 
-    # بعد أول تحليل بالتجربة، نطلب الاشتراك
     if not is_user_paid(cb.from_user.id) and has_trial(uid):
         kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
         msg = ("للوصول الكامل، يرجى الاشتراك مقابل 3$ لمرة واحدة." if lang == "ar" 
