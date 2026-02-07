@@ -283,6 +283,27 @@ async def admin_cmd(m: types.Message):
         "📌 For support, contact:\n@AiCrAdmin"
     )
 
+@dp.message(Command("reset_trials"))
+async def reset_trials_cmd(m: types.Message):
+    # للأدمن فقط
+    if m.from_user.id != ADMIN_USER_ID:
+        await m.answer("❌ هذا الأمر مخصص للإدارة فقط.")
+        return
+
+    pool = m.bot['db_pool']
+
+    # مسح التجارب من قاعدة البيانات
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM trial_users")
+
+    # مسح التجارب من الذاكرة
+    trial_users.clear()
+
+    await m.answer(
+        "✅ تم مسح جميع مستخدمي التجربة المجانية.\n"
+        "يمكن للجميع الآن استخدام التجربة مرة أخرى 🎁"
+    )
+
 # --- التعامل مع رموز العملات ---
 @dp.message(F.text)
 async def handle_symbol(m: types.Message):
