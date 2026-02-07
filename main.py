@@ -149,14 +149,14 @@ language_keyboard = InlineKeyboardMarkup(
 payment_keyboard_ar = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="💎 اشترك الآن (10 USDT مدى الحياة)", callback_data="pay_with_crypto")],
-        [InlineKeyboardButton(text="⭐ اشترك الآن بـ 1000 ⭐", callback_data="pay_with_stars")]
+        [InlineKeyboardButton(text=" اشترك الآن بـ 1000 نجمة مدى الحياة⭐", callback_data="pay_with_stars")]
     ]
 )
 
 payment_keyboard_en = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="💎 Subscribe Now (10 USDT Lifetime)", callback_data="pay_with_crypto")],
-        [InlineKeyboardButton(text="⭐ Subscribe Now with 1000 ⭐ Lifetime", callback_data="pay_with_stars")]
+        [InlineKeyboardButton(text="⭐ Subscribe Now with 1000 Stars Lifetime", callback_data="pay_with_stars")]
     ]
 )
 
