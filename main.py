@@ -8,7 +8,7 @@ import asyncpg
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice
 from aiohttp import web
 import httpx
 from dotenv import load_dotenv
@@ -32,8 +32,9 @@ ADMIN_USER_ID = 6172153716
 # --- إعداد البوت ---
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
-USERS_FILE = "users.json"
+USERS_FILE = "users.json" # سيبقى لدعم بيانات الجلسة المؤقتة
 paid_users = set()
+trial_used_users = set() # سنملأ هذه المجموعة من قاعدة البيانات عند التشغيل
 
 # --- إدارة بيانات المستخدمين ---
 def load_users():
@@ -52,12 +53,17 @@ user_lang = load_users()
 def is_user_paid(user_id: int):
     return user_id in paid_users
 
-def has_trial(uid: str):
-    return user_lang.get(uid + "_trial", False)
+async def has_trial(uid_int: int, pool):
+    # نتحقق من الذاكرة أولاً (المحملة من DB)
+    return uid_int in trial_used_users
 
-def set_trial_used(uid: str):
-    user_lang[uid + "_trial"] = True
-    save_users(user_lang)
+async def set_trial_used(uid_int: int, pool):
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users_trial (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
+            uid_int
+        )
+    trial_used_users.add(uid_int)
 
 # --- دوال مساعدة ---
 def clean_response(text, lang="ar"):
@@ -103,12 +109,12 @@ async def create_nowpayments_invoice(user_id: int):
         "Content-Type": "application/json"
     }
     data = {
-    "price_amount": 10,
-    "price_currency": "usd",
-    "order_id": str(user_id),
-    "ipn_callback_url": f"{WEBHOOK_URL}/webhook/nowpayments",
-    "success_url": f"https://t.me/{(await bot.get_me()).username}",
-}
+        "price_amount": 10,
+        "price_currency": "usd",
+        "order_id": str(user_id),
+        "ipn_callback_url": f"{WEBHOOK_URL}/webhook/nowpayments",
+        "success_url": f"https://t.me/{(await bot.get_me()).username}",
+    }
     try:
         async with httpx.AsyncClient() as client:
             res = await client.post(url, headers=headers, json=data)
@@ -129,17 +135,21 @@ language_keyboard = InlineKeyboardMarkup(
     ]
 )
 
-payment_keyboard_ar = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="💎 اشترك الآن (10 USDT مدى الحياة)", callback_data="pay_with_crypto")]
-    ]
-)
-
-payment_keyboard_en = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="💎 Subscribe Now (10 USDT Lifetime)", callback_data="pay_with_crypto")]
-    ]
-)
+def get_payment_keyboard(lang="ar"):
+    if lang == "ar":
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="💎 اشتراك USDT (10$ مدى الحياة)", callback_data="pay_with_crypto")],
+                [InlineKeyboardButton(text="⭐️ اشتراك عبر نجوم تليجرام (1000 نجمة)", callback_data="pay_with_stars")]
+            ]
+        )
+    else:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="💎 Pay with USDT (10$ Lifetime)", callback_data="pay_with_crypto")],
+                [InlineKeyboardButton(text="⭐️ Pay with Telegram Stars (1000 Stars)", callback_data="pay_with_stars")]
+            ]
+        )
 
 timeframe_keyboard = InlineKeyboardMarkup(
     inline_keyboard=[
@@ -173,29 +183,32 @@ async def start(m: types.Message):
 async def set_lang(cb: types.CallbackQuery):
     lang = cb.data.split("_")[1]
     uid = str(cb.from_user.id)
+    uid_int = cb.from_user.id
+    pool = cb.message.app['db_pool']
+    
     user_lang[uid] = lang
     save_users(user_lang)
 
-    if is_user_paid(cb.from_user.id):
+    if is_user_paid(uid_int):
         await cb.message.edit_text(
             "✅ أهلاً بك مجدداً! اشتراكك مفعل.\nأرسل رمز العملة للتحليل."
             if lang == "ar"
             else "✅ Welcome back! Your subscription is active.\nSend a coin symbol to analyze."
         )
     else:
-        if not has_trial(uid):
+        trial_status = await has_trial(uid_int, pool)
+        if not trial_status:
             await cb.message.edit_text(
                 "🎁 لديك تجربة مجانية واحدة! أرسل رمز العملة للتحليل."
                 if lang == "ar"
                 else "🎁 You have one free trial! Send a coin symbol for analysis."
             )
         else:
-            kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
             await cb.message.edit_text(
-                "للوصول الكامل، يرجى الاشتراك مقابل 10 USDT لمرة واحدة."
+                "للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 1000 نجمة تليجرام لمرة واحدة."
                 if lang == "ar"
-                else "For full access, please subscribe for a one-time fee of 10 USDT.",
-                reply_markup=kb
+                else "For full access, please subscribe for a one-time fee of 10 USDT or 1000 Telegram Stars.",
+                reply_markup=get_payment_keyboard(lang)
             )
 
 @dp.callback_query(F.data == "pay_with_crypto")
@@ -236,6 +249,49 @@ async def process_crypto_payment(cb: types.CallbackQuery):
         )
     await cb.answer()
 
+@dp.callback_query(F.data == "pay_with_stars")
+async def process_stars_payment(cb: types.CallbackQuery):
+    lang = user_lang.get(str(cb.from_user.id), "ar")
+    
+    # 1000 Stars = 1000 in amount for XTR
+    prices = [LabeledPrice(label="Lifetime Subscription", amount=1000)]
+    
+    await cb.message.answer_invoice(
+        title="Premium Subscription" if lang == "en" else "الاشتراك المميز",
+        description="Lifetime access to AI analysis" if lang == "en" else "وصول مدى الحياة لتحليلات الذكاء الاصطناعي",
+        prices=prices,
+        payload=f"lifetime_sub_{cb.from_user.id}",
+        currency="XTR", # عملة النجوم
+        start_parameter="lifetime_subscription"
+    )
+    await cb.answer()
+
+# معالج Pre-Checkout لنجوم تليجرام
+@dp.pre_checkout_query()
+async def pre_checkout_handler(pre_checkout_query: types.PreCheckoutQuery):
+    await pre_checkout_query.answer(ok=True)
+
+# معالج الدفع الناجح بالنجوم
+@dp.message(F.successful_payment)
+async def successful_payment_handler(m: types.Message):
+    pool = m.app['db_pool']
+    user_id = m.from_user.id
+    
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
+            user_id
+        )
+
+    paid_users.add(user_id)
+    lang = user_lang.get(str(user_id), "ar")
+
+    await m.answer(
+        "✅ تم تأكيد الدفع بنجاح عبر نجوم تليجرام! شكراً لاشتراكك."
+        if lang == "ar"
+        else "✅ Payment confirmed via Telegram Stars! Thank you for subscribing."
+    )
+
 @dp.message(Command("status"))
 async def status_cmd(m: types.Message):
     await m.answer(f"ℹ️ عدد المستخدمين الذين ضغطوا /start: {len(user_lang)}")
@@ -253,11 +309,14 @@ async def handle_symbol(m: types.Message):
         return
 
     uid = str(m.from_user.id)
+    uid_int = m.from_user.id
+    pool = m.app['db_pool']
     lang = user_lang.get(uid, "ar")
 
-    if not is_user_paid(m.from_user.id):
-        if has_trial(uid):
-            kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
+    if not is_user_paid(uid_int):
+        trial_status = await has_trial(uid_int, pool)
+        if trial_status:
+            kb = get_payment_keyboard(lang)
             await m.answer(
                 "⚠️ آنتهت تجربتك المجانية. يرجى الاشتراك أولاً."
                 if lang == "ar"
@@ -266,7 +325,8 @@ async def handle_symbol(m: types.Message):
             )
             return
         else:
-            set_trial_used(uid)
+            # لم يستخدم التجربة بعد، نجعله يستخدمها الآن
+            await set_trial_used(uid_int, pool)
 
     sym = m.text.strip().lower()
     await m.answer("⏳ جاري جلب السعر..." if lang == "ar" else "⏳ Fetching price...")
@@ -301,10 +361,14 @@ async def handle_symbol(m: types.Message):
 @dp.callback_query(F.data.startswith("tf_"))
 async def set_timeframe(cb: types.CallbackQuery):
     uid = str(cb.from_user.id)
+    uid_int = cb.from_user.id
+    pool = cb.message.app['db_pool']
     lang = user_lang.get(uid, "ar")
 
-    if not is_user_paid(cb.from_user.id) and not has_trial(uid):
-        await cb.answer("⚠️ هذه الميزة للمشتركين فقط.", show_alert=True)
+    # التحقق من الصلاحية (دفع أو تجربة مستخدمة في هذه الجلسة)
+    if not is_user_paid(uid_int) and not (await has_trial(uid_int, pool)):
+        # هذا السطر يحمي من التلاعب المباشر بالـ callback
+        await cb.answer("⚠️ يجب تفعيل الاشتراك أولاً.", show_alert=True)
         return
 
     tf_map = {
@@ -358,12 +422,13 @@ async def set_timeframe(cb: types.CallbackQuery):
     analysis = await ask_groq(prompt, lang=lang)
     await cb.message.answer(analysis)
 
-    if not is_user_paid(cb.from_user.id) and has_trial(uid):
-        kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
+    # إذا كان مستخدماً للتجربة المجانية، نظهر له زر الاشتراك بعد التحليل
+    if not is_user_paid(uid_int):
+        kb = get_payment_keyboard(lang)
         await cb.message.answer(
-            "للوصول الكامل، يرجى الاشتراك مقابل 10 USDT لمرة واحدة."
+            "للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 1000 نجمة لمرة واحدة."
             if lang == "ar"
-            else "For full access, please subscribe for a one-time fee of 10 USDT.",
+            else "For full access, please subscribe for a one-time fee of 10 USDT or 1000 Stars.",
             reply_markup=kb
         )
 
@@ -372,6 +437,8 @@ async def handle_telegram_webhook(req: web.Request):
     try:
         update_data = await req.json()
         update = types.Update(**update_data)
+        # نمرر الـ app لداخل الـ dp لكي نتمكن من الوصول لـ db_pool
+        dp["app"] = req.app
         await dp.feed_update(bot=bot, update=update)
     except Exception as e:
         print(f"❌ Error processing update: {e}")
@@ -423,7 +490,6 @@ async def handle_nowpayments_webhook(req: web.Request):
 
 # --- Healthcheck ---
 async def health_check(req: web.Request):
-    print("Health check endpoint was called by Render.")
     return web.Response(text="OK", status=200)
 
 # --- Startup / Shutdown ---
@@ -433,18 +499,31 @@ async def on_startup(app_instance: web.Application):
     app_instance['db_pool'] = pool
 
     async with pool.acquire() as conn:
+        # جدول المشتركين
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS paid_users (
                 user_id BIGINT PRIMARY KEY
             );
         """)
+        # جدول مستخدمي التجربة المجانية (التعديل المطلوب الأول)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS users_trial (
+                user_id BIGINT PRIMARY KEY
+            );
+        """)
+        
         await conn.execute(
             "INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
             ADMIN_USER_ID
         )
 
+        # تحميل المشتركين للذاكرة
         records = await conn.fetch("SELECT user_id FROM paid_users")
         paid_users.update(r['user_id'] for r in records)
+        
+        # تحميل مستخدمي التجربة للذاكرة (للتخزين الدائم)
+        trial_records = await conn.fetch("SELECT user_id FROM users_trial")
+        trial_used_users.update(r['user_id'] for r in trial_records)
 
     webhook_url = f"{WEBHOOK_URL}/"
     await bot.set_webhook(webhook_url)
@@ -452,7 +531,8 @@ async def on_startup(app_instance: web.Application):
 
 async def on_shutdown(app_instance: web.Application):
     print("ℹ️ Shutting down...")
-    await app_instance['db_pool'].close()
+    if 'db_pool' in app_instance:
+        await app_instance['db_pool'].close()
     await bot.delete_webhook()
     await bot.session.close()
 
@@ -467,5 +547,5 @@ app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
 if __name__ == "__main__":
-    print("🚀 Starting bot locally for testing...")
+    print("🚀 Starting bot...")
     web.run_app(app, host="0.0.0.0", port=PORT)
