@@ -8,7 +8,7 @@ import asyncpg
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery
 from aiohttp import web
 import httpx
 from dotenv import load_dotenv
@@ -26,6 +26,7 @@ PORT = int(os.getenv("PORT", 8000))
 GROQ_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
 NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY")
 NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET")
+STARS_PROVIDER_TOKEN = os.getenv("STARS_PROVIDER_TOKEN")  # توكن الدفع بالنجوم
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_USER_ID = 6172153716
 
@@ -118,6 +119,24 @@ async def create_nowpayments_invoice(user_id: int):
         print(f"❌ CRITICAL ERROR in create_nowpayments_invoice: {e}")
     return None
 
+# --- إرسال فاتورة النجوم ---
+async def send_stars_invoice(chat_id: int, lang="ar"):
+    prices = [LabeledPrice(label="اشتراك البوت بـ 1000 ⭐", amount=1000 * 100)]  # 100 وحدة = 1 ⭐
+    title = "اشتراك البوت"
+    description = "اشترك الآن باستخدام 1000 ⭐ للوصول الكامل"
+    payload = "stars_subscription"
+    currency = "XTR"
+
+    await bot.send_invoice(
+        chat_id=chat_id,
+        title=title,
+        description=description,
+        provider_token=STARS_PROVIDER_TOKEN,
+        currency=currency,
+        prices=prices,
+        payload=payload
+    )
+
 # --- لوحات الأزرار ---
 language_keyboard = InlineKeyboardMarkup(
     inline_keyboard=[
@@ -128,13 +147,15 @@ language_keyboard = InlineKeyboardMarkup(
 
 payment_keyboard_ar = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="💎 اشترك الآن (10 USDT مدى الحياة)", callback_data="pay_with_crypto")]
+        [InlineKeyboardButton(text="💎 اشترك الآن (10 USDT مدى الحياة)", callback_data="pay_with_crypto")],
+        [InlineKeyboardButton(text="⭐ اشترك الآن بـ 1000 ⭐", callback_data="pay_with_stars")]
     ]
 )
 
 payment_keyboard_en = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="💎 Subscribe Now (10 USDT Lifetime)", callback_data="pay_with_crypto")]
+        [InlineKeyboardButton(text="💎 Subscribe Now (10 USDT Lifetime)", callback_data="pay_with_crypto")],
+        [InlineKeyboardButton(text="⭐ Subscribe Now with 1000 ⭐", callback_data="pay_with_stars")]
     ]
 )
 
@@ -189,9 +210,9 @@ async def set_lang(cb: types.CallbackQuery):
         else:
             kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
             await cb.message.edit_text(
-                "للوصول الكامل، يرجى الاشتراك مقابل 10 USDT لمرة واحدة."
+                "للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 1000 ⭐ لمرة واحدة."
                 if lang == "ar"
-                else "For full access, please subscribe for a one-time fee of 10 USDT.",
+                else "For full access, please subscribe for a one-time fee of 10 USDT or 1000 ⭐.",
                 reply_markup=kb
             )
 
@@ -223,6 +244,29 @@ async def process_crypto_payment(cb: types.CallbackQuery):
         )
     await cb.answer()
 
+@dp.callback_query(F.data == "pay_with_stars")
+async def process_stars_payment(cb: types.CallbackQuery):
+    lang = user_lang.get(str(cb.from_user.id), "ar")
+    await cb.answer()
+    await send_stars_invoice(cb.from_user.id, lang)
+
+@dp.pre_checkout_query()
+async def pre_checkout(pre_checkout_q: PreCheckoutQuery):
+    await bot.answer_pre_checkout_query(pre_checkout_q.id, ok=True)
+
+@dp.message(F.content_type == "successful_payment")
+async def successful_payment(msg: types.Message):
+    user_id = msg.from_user.id
+    paid_users.add(user_id)
+    lang = user_lang.get(str(user_id), "ar")
+    await msg.answer(
+        "✅ تم تأكيد الدفع بالنجوم! يمكنك الآن استخدام البوت بالكامل."
+        if lang == "ar" else
+        "✅ Payment with Stars confirmed! You can now use the bot fully."
+    )
+
+# --- باقي الكود كما هو --- 
+# (status, admin, handle_symbol, set_timeframe, webhook handlers, healthcheck, startup/shutdown, web app)
 @dp.message(Command("status"))
 async def status_cmd(m: types.Message):
     await m.answer(f"ℹ️ عدد المستخدمين الذين ضغطوا /start: {len(user_lang)}")
