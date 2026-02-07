@@ -122,7 +122,7 @@ async def create_nowpayments_invoice(user_id: int):
 # --- إرسال فاتورة النجوم ---
 async def send_stars_invoice(chat_id: int, lang="ar"):
     # مبلغ النجوم مصحح إلى 1000 ⭐
-    prices = [LabeledPrice(label="اشتراك البوت بـ 1000 ⭐" if lang=="ar" else "Subscribe Now with 1000 ⭐ Lifetime", amount=1000 * 100)]  # 100 وحدة = 1 ⭐
+    prices = [LabeledPrice(label=" اشتراك البوت بـ 1000 نجمة مدى الحياة⭐" if lang=="ar" else "Subscribe Now with 1000 ⭐ Lifetime", amount=1000 )]  # 100 وحدة = 1 ⭐
     title = "اشتراك البوت" if lang=="ar" else "Subscribe Now"
     description = "اشترك الآن باستخدام 1000 ⭐ للوصول الكامل" if lang=="ar" else "Subscribe Now with 1000 ⭐ Lifetime"
     payload = "stars_subscription"
