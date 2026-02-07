@@ -32,11 +32,12 @@ ADMIN_USER_ID = 6172153716
 # --- إعداد البوت ---
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
-paid_users = set()
 
-# --- إدارة بيانات المستخدمين ---
-# user_lang للتخزين اللغوي فقط، trial users في قاعدة البيانات
+# --- ذاكرة المستخدمين ---
+paid_users = set()
+trial_users = set()
 USERS_FILE = "users.json"
+
 def load_users():
     try:
         with open(USERS_FILE, "r") as f:
@@ -50,20 +51,11 @@ def save_users(users):
 
 user_lang = load_users()
 
-async def has_trial(pool, uid: str):
-    async with pool.acquire() as conn:
-        record = await conn.fetchrow("SELECT 1 FROM trial_users WHERE user_id = $1", int(uid))
-        return record is None  # إذا مش موجود => ما استخدم التجربة بعد
-
-async def set_trial_used(pool, uid: str):
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO trial_users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
-            int(uid)
-        )
-
 def is_user_paid(user_id: int):
     return user_id in paid_users
+
+def has_trial(uid: str):
+    return uid not in trial_users
 
 # --- دوال مساعدة ---
 def clean_response(text, lang="ar"):
@@ -119,7 +111,6 @@ async def create_nowpayments_invoice(user_id: int):
         async with httpx.AsyncClient() as client:
             res = await client.post(url, headers=headers, json=data)
             if 200 <= res.status_code < 300:
-                print(f"Successfully created invoice with status {res.status_code}")
                 return res.json().get("invoice_url")
             else:
                 print(f"NOWPayments Error: {res.status_code} - {res.text}")
@@ -189,8 +180,7 @@ async def set_lang(cb: types.CallbackQuery):
             else "✅ Welcome back! Your subscription is active.\nSend a coin symbol to analyze."
         )
     else:
-        pool = cb.app['db_pool']
-        if await has_trial(pool, uid):
+        if has_trial(uid):
             await cb.message.edit_text(
                 "🎁 لديك تجربة مجانية واحدة! أرسل رمز العملة للتحليل."
                 if lang == "ar"
@@ -216,24 +206,14 @@ async def process_crypto_payment(cb: types.CallbackQuery):
 
     invoice_url = await create_nowpayments_invoice(cb.from_user.id)
     if invoice_url:
-        if lang == "ar":
-            kb = InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="💳 ادفع الآن", url=invoice_url)]]
-            )
-            msg = (
-                "✅ تم إنشاء رابط الدفع.\n"
-                "لإتمام الاشتراك، ادفع عبر الرابط أدناه.\n\n"
-                "USDT (BEP20)"
-            )
-        else:
-            kb = InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="💳 Pay Now", url=invoice_url)]]
-            )
-            msg = (
-                "✅ Payment link created.\n"
-                "To complete your subscription, pay via the link below.\n\n"
-                "USDT (BEP20)"
-            )
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="💳 ادفع الآن" if lang=="ar" else "💳 Pay Now", url=invoice_url)]]
+        )
+        msg = (
+            "✅ تم إنشاء رابط الدفع.\nلإتمام الاشتراك، ادفع عبر الرابط أدناه.\n\nUSDT (BEP20)"
+            if lang == "ar"
+            else "✅ Payment link created.\nTo complete your subscription, pay via the link below.\n\nUSDT (BEP20)"
+        )
         await cb.message.edit_text(msg, reply_markup=kb)
     else:
         await cb.message.edit_text(
@@ -261,20 +241,19 @@ async def handle_symbol(m: types.Message):
 
     uid = str(m.from_user.id)
     lang = user_lang.get(uid, "ar")
-    pool = m.app['db_pool']
 
     if not is_user_paid(m.from_user.id):
-        if not await has_trial(pool, uid):
+        if not has_trial(uid):
             kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
             await m.answer(
-                "⚠️ آنتهت تجربتك المجانية. يرجى الاشتراك أولاً."
+                "⚠️ انتهت تجربتك المجانية. يرجى الاشتراك أولاً."
                 if lang == "ar"
                 else "⚠️ This feature is for subscribers only. Please subscribe first.",
                 reply_markup=kb
             )
             return
         else:
-            await set_trial_used(pool, uid)
+            trial_users.add(uid)
 
     sym = m.text.strip().lower()
     await m.answer("⏳ جاري جلب السعر..." if lang == "ar" else "⏳ Fetching price...")
@@ -310,9 +289,8 @@ async def handle_symbol(m: types.Message):
 async def set_timeframe(cb: types.CallbackQuery):
     uid = str(cb.from_user.id)
     lang = user_lang.get(uid, "ar")
-    pool = cb.app['db_pool']
 
-    if not is_user_paid(cb.from_user.id) and await has_trial(pool, uid) == False:
+    if not is_user_paid(cb.from_user.id) and not has_trial(uid):
         await cb.answer("⚠️ هذه الميزة للمشتركين فقط.", show_alert=True)
         return
 
@@ -367,7 +345,7 @@ async def set_timeframe(cb: types.CallbackQuery):
     analysis = await ask_groq(prompt, lang=lang)
     await cb.message.answer(analysis)
 
-    if not is_user_paid(cb.from_user.id) and await has_trial(pool, uid):
+    if not is_user_paid(cb.from_user.id) and has_trial(uid):
         kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
         await cb.message.answer(
             "للوصول الكامل، يرجى الاشتراك مقابل 10 USDT لمرة واحدة."
@@ -464,6 +442,10 @@ async def on_startup(app_instance: web.Application):
         records = await conn.fetch("SELECT user_id FROM paid_users")
         paid_users.update(r['user_id'] for r in records)
 
+        # تحميل مستخدمي التجربة من DB
+        trial_records = await conn.fetch("SELECT user_id FROM trial_users")
+        trial_users.update(str(r['user_id']) for r in trial_records)
+
     webhook_url = f"{WEBHOOK_URL}/"
     await bot.set_webhook(webhook_url)
     print(f"✅ Webhook set to {webhook_url}")
@@ -476,11 +458,9 @@ async def on_shutdown(app_instance: web.Application):
 
 # --- App Init ---
 app = web.Application()
-
 app.router.add_get("/health", health_check)
 app.router.add_post("/", handle_telegram_webhook)
 app.router.add_post("/webhook/nowpayments", handle_nowpayments_webhook)
-
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
