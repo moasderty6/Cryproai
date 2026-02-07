@@ -121,9 +121,10 @@ async def create_nowpayments_invoice(user_id: int):
 
 # --- إرسال فاتورة النجوم ---
 async def send_stars_invoice(chat_id: int, lang="ar"):
-    prices = [LabeledPrice(label="اشتراك البوت بـ 1000 ⭐", amount=1000 * 100)]  # 100 وحدة = 1 ⭐
-    title = "اشتراك البوت"
-    description = "اشترك الآن باستخدام 1000 ⭐ للوصول الكامل"
+    # مبلغ النجوم مصحح إلى 1000 ⭐
+    prices = [LabeledPrice(label="اشتراك البوت بـ 1000 ⭐" if lang=="ar" else "Subscribe Now with 1000 ⭐ Lifetime", amount=1000 * 100)]  # 100 وحدة = 1 ⭐
+    title = "اشتراك البوت" if lang=="ar" else "Subscribe Now"
+    description = "اشترك الآن باستخدام 1000 ⭐ للوصول الكامل" if lang=="ar" else "Subscribe Now with 1000 ⭐ Lifetime"
     payload = "stars_subscription"
     currency = "XTR"
 
@@ -155,7 +156,7 @@ payment_keyboard_ar = InlineKeyboardMarkup(
 payment_keyboard_en = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="💎 Subscribe Now (10 USDT Lifetime)", callback_data="pay_with_crypto")],
-        [InlineKeyboardButton(text="⭐ Subscribe Now with 1000 ⭐", callback_data="pay_with_stars")]
+        [InlineKeyboardButton(text="⭐ Subscribe Now with 1000 ⭐ Lifetime", callback_data="pay_with_stars")]
     ]
 )
 
@@ -249,6 +250,8 @@ async def process_stars_payment(cb: types.CallbackQuery):
     lang = user_lang.get(str(cb.from_user.id), "ar")
     await cb.answer()
     await send_stars_invoice(cb.from_user.id, lang)
+
+# --- البقية تبقى كما هي (pre_checkout, successful_payment, handle_symbol, timeframes, webhooks, startup/shutdown) ---
 
 @dp.pre_checkout_query()
 async def pre_checkout(pre_checkout_q: PreCheckoutQuery):
