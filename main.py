@@ -121,13 +121,11 @@ async def create_nowpayments_invoice(user_id: int):
 
 # --- إرسال فاتورة النجوم ---
 async def send_stars_invoice(chat_id: int, lang="ar"):
-    # مبلغ النجوم مصحح إلى 1000 ⭐
-    prices = [LabeledPrice(label=" اشتراك البوت بـ 500 نجمة مدى الحياة⭐" if lang=="ar" else "Subscribe Now with 500 ⭐ Lifetime", amount=500 )]  # 100 وحدة = 1 ⭐
+    prices = [LabeledPrice(label=" اشتراك البوت بـ 500 نجمة مدى الحياة⭐" if lang=="ar" else "Subscribe Now with 500 ⭐ Lifetime", amount=500)]
     title = "اشتراك البوت" if lang=="ar" else "Subscribe Now"
     description = "اشترك الآن باستخدام 500 ⭐ للوصول الكامل" if lang=="ar" else "Subscribe Now with 500 ⭐ Lifetime"
     payload = "stars_subscription"
     currency = "XTR"
-
     await bot.send_invoice(
         chat_id=chat_id,
         title=title,
@@ -257,8 +255,7 @@ async def process_stars_payment(cb: types.CallbackQuery):
     await cb.answer()
     await send_stars_invoice(cb.from_user.id, lang)
 
-# --- البقية تبقى كما هي (pre_checkout, successful_payment, handle_symbol, timeframes, webhooks, startup/shutdown) ---
-
+# --- Precheckout & Successful Payment ---
 @dp.pre_checkout_query()
 async def pre_checkout(pre_checkout_q: PreCheckoutQuery):
     await bot.answer_pre_checkout_query(pre_checkout_q.id, ok=True)
@@ -274,8 +271,7 @@ async def successful_payment(msg: types.Message):
         "✅ Payment with Stars confirmed! You can now use the bot fully."
     )
 
-# --- باقي الكود كما هو --- 
-# (status, admin, handle_symbol, set_timeframe, webhook handlers, healthcheck, startup/shutdown, web app)
+# --- حالة البوت وأوامر الدعم ---
 @dp.message(Command("status"))
 async def status_cmd(m: types.Message):
     await m.answer(f"ℹ️ عدد المستخدمين الذين ضغطوا /start: {len(user_lang)}")
@@ -287,6 +283,7 @@ async def admin_cmd(m: types.Message):
         "📌 For support, contact:\n@AiCrAdmin"
     )
 
+# --- التعامل مع رموز العملات ---
 @dp.message(F.text)
 async def handle_symbol(m: types.Message):
     if m.text.startswith('/'):
@@ -304,10 +301,10 @@ async def handle_symbol(m: types.Message):
             else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐.",
             reply_markup=kb
         )
-        return  # يمنع متابعة التحليل
+        return
 
     # لو المستخدم عنده تجربة مجانية، نسجله كمستخدم جرب التجربة
-    if not is_user_paid(m.from_user.id):
+    if not is_user_paid(m.from_user.id) and uid not in trial_users:
         trial_users.add(uid)
 
     sym = m.text.strip().lower()
@@ -340,12 +337,23 @@ async def handle_symbol(m: types.Message):
         reply_markup=kb
     )
 
+# --- اختيار الإطار الزمني مع تجربة مجانية ---
 @dp.callback_query(F.data.startswith("tf_"))
 async def set_timeframe(cb: types.CallbackQuery):
     uid = str(cb.from_user.id)
     lang = user_lang.get(uid, "ar")
 
-    # تحقق أولًا من الاشتراك أو انتهاء التجربة
+    # --- تسجيل المستخدم كتجربة مجانية إذا لم يشترك بعد ---
+    if not is_user_paid(cb.from_user.id) and uid not in trial_users:
+        trial_users.add(uid)
+        pool = cb.bot['db_pool']
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO trial_users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
+                cb.from_user.id
+            )
+
+    # --- تحقق من الاشتراك أو انتهاء التجربة ---
     if not is_user_paid(cb.from_user.id) and not has_trial(uid):
         kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
         await cb.message.edit_text(
@@ -354,11 +362,7 @@ async def set_timeframe(cb: types.CallbackQuery):
             else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐.",
             reply_markup=kb
         )
-        return  # يمنع أي متابعة
-
-    # إذا المستخدم عنده تجربة مجانية، سجلها كمستخدم جرب التجربة
-    if not is_user_paid(cb.from_user.id):
-        trial_users.add(uid)
+        return
 
     tf_map = {
         "tf_weekly": "weekly",
@@ -366,9 +370,17 @@ async def set_timeframe(cb: types.CallbackQuery):
         "tf_4h": "4h"
     }
 
-    timeframe = tf_map[cb.data]
+    timeframe = tf_map.get(cb.data)
+    if not timeframe:
+        await cb.answer("❌ خطأ في اختيار الإطار الزمني." if lang=="ar" else "❌ Invalid timeframe.", show_alert=True)
+        return
+
     sym = user_lang.get(uid + "_symbol")
     price = user_lang.get(uid + "_price")
+
+    if not sym or not price:
+        await cb.answer("❌ لم يتم تحديد العملة بعد." if lang=="ar" else "❌ No symbol selected yet.", show_alert=True)
+        return
 
     if lang == "ar":
         prompt = (
@@ -411,7 +423,6 @@ async def set_timeframe(cb: types.CallbackQuery):
     analysis = await ask_groq(prompt, lang=lang)
     await cb.message.answer(analysis)
 
-    # للمستخدمين الذين لديهم تجربة مجانية بعد التحليل، نقترح الاشتراك
     if not is_user_paid(cb.from_user.id) and has_trial(uid):
         kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
         await cb.message.answer(
@@ -487,29 +498,24 @@ async def on_startup(app_instance: web.Application):
     app_instance['db_pool'] = pool
 
     async with pool.acquire() as conn:
-        # جدول المستخدمين المدفوعين
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS paid_users (
                 user_id BIGINT PRIMARY KEY
             );
         """)
-        # جدول مستخدمي التجربة المجانية
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS trial_users (
                 user_id BIGINT PRIMARY KEY
             );
         """)
-        # إضافة الأدمن تلقائياً
         await conn.execute(
             "INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
             ADMIN_USER_ID
         )
 
-        # تحميل المستخدمين المدفوعين من DB
         records = await conn.fetch("SELECT user_id FROM paid_users")
         paid_users.update(r['user_id'] for r in records)
 
-        # تحميل مستخدمي التجربة من DB
         trial_records = await conn.fetch("SELECT user_id FROM trial_users")
         trial_users.update(str(r['user_id']) for r in trial_records)
 
