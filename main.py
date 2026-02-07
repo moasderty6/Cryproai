@@ -289,18 +289,20 @@ async def handle_symbol(m: types.Message):
     uid = str(m.from_user.id)
     lang = user_lang.get(uid, "ar")
 
+    # تحقق أولًا إذا انتهت التجربة ولم يشترك
+    if not is_user_paid(m.from_user.id) and not has_trial(uid):
+        kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
+        await m.answer(
+            "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 1000 ⭐ لمرة واحدة."
+            if lang == "ar"
+            else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 1000 ⭐.",
+            reply_markup=kb
+        )
+        return  # يمنع متابعة التحليل
+
+    # لو المستخدم عنده تجربة مجانية، نسجله كمستخدم جرب التجربة
     if not is_user_paid(m.from_user.id):
-        if not has_trial(uid):
-            kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
-            await m.answer(
-                "⚠️ انتهت تجربتك المجانية. يرجى الاشتراك أولاً."
-                if lang == "ar"
-                else "⚠️ This feature is for subscribers only. Please subscribe first.",
-                reply_markup=kb
-            )
-            return
-        else:
-            trial_users.add(uid)
+        trial_users.add(uid)
 
     sym = m.text.strip().lower()
     await m.answer("⏳ جاري جلب السعر..." if lang == "ar" else "⏳ Fetching price...")
