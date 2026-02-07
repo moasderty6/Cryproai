@@ -195,27 +195,33 @@ async def set_lang(cb: types.CallbackQuery):
     user_lang[uid] = lang
     save_users(user_lang)
 
+    # إذا المستخدم مشترك
     if is_user_paid(cb.from_user.id):
         await cb.message.edit_text(
             "✅ أهلاً بك مجدداً! اشتراكك مفعل.\nأرسل رمز العملة للتحليل."
             if lang == "ar"
             else "✅ Welcome back! Your subscription is active.\nSend a coin symbol to analyze."
         )
-    else:
-        if has_trial(uid):
-            await cb.message.edit_text(
-                "🎁 لديك تجربة مجانية واحدة! أرسل رمز العملة للتحليل."
-                if lang == "ar"
-                else "🎁 You have one free trial! Send a coin symbol for analysis."
-            )
-        else:
-            kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
-            await cb.message.edit_text(
-                "للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة."
-                if lang == "ar"
-                else "For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐.",
-                reply_markup=kb
-            )
+        return
+
+    # المستخدم غير مشترك، تحقق من التجربة المجانية
+    if has_trial(uid):
+        # لا يزال يمكنه تجربة مجانية
+        await cb.message.edit_text(
+            "🎁 لديك تجربة مجانية واحدة! أرسل رمز العملة للتحليل."
+            if lang == "ar"
+            else "🎁 You have one free trial! Send a coin symbol for analysis."
+        )
+        return
+
+    # إذا انتهت التجربة المجانية
+    kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
+    await cb.message.edit_text(
+        "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة."
+        if lang == "ar"
+        else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 1000 ⭐.",
+        reply_markup=kb
+    )
 
 @dp.callback_query(F.data == "pay_with_crypto")
 async def process_crypto_payment(cb: types.CallbackQuery):
