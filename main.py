@@ -349,9 +349,9 @@ async def set_timeframe(cb: types.CallbackQuery):
     if not is_user_paid(cb.from_user.id) and not has_trial(uid):
         kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
         await cb.message.edit_text(
-            "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 1000 ⭐ لمرة واحدة."
+            "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة."
             if lang == "ar"
-            else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 1000 ⭐.",
+            else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐.",
             reply_markup=kb
         )
         return  # يمنع أي متابعة
