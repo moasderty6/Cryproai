@@ -103,13 +103,12 @@ async def create_nowpayments_invoice(user_id: int):
         "Content-Type": "application/json"
     }
     data = {
-        "price_amount": 10,
-        "price_currency": "usd",
-        "pay_currency": "usdtbep20",
-        "order_id": str(user_id),
-        "ipn_callback_url": f"{WEBHOOK_URL}/webhook/nowpayments",
-        "success_url": f"https://t.me/{(await bot.get_me()).username}",
-    }
+    "price_amount": 10,
+    "price_currency": "usd",
+    "order_id": str(user_id),
+    "ipn_callback_url": f"{WEBHOOK_URL}/webhook/nowpayments",
+    "success_url": f"https://t.me/{(await bot.get_me()).username}",
+}
     try:
         async with httpx.AsyncClient() as client:
             res = await client.post(url, headers=headers, json=data)
