@@ -323,11 +323,7 @@ async def handle_symbol(m: types.Message):
             reply_markup=kb
         )
         return
-
-    # لو المستخدم عنده تجربة مجانية، نسجله كمستخدم جرب التجربة
-    if not is_user_paid(m.from_user.id) and uid not in trial_users:
-        trial_users.add(uid)
-
+        
     sym = m.text.strip().lower()
     await m.answer("⏳ جاري جلب السعر..." if lang == "ar" else "⏳ Fetching price...")
     price = await get_price_cmc(sym)
