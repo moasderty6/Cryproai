@@ -122,9 +122,9 @@ async def create_nowpayments_invoice(user_id: int):
 # --- إرسال فاتورة النجوم ---
 async def send_stars_invoice(chat_id: int, lang="ar"):
     # مبلغ النجوم مصحح إلى 1000 ⭐
-    prices = [LabeledPrice(label=" اشتراك البوت بـ 1000 نجمة مدى الحياة⭐" if lang=="ar" else "Subscribe Now with 1000 ⭐ Lifetime", amount=1000 )]  # 100 وحدة = 1 ⭐
+    prices = [LabeledPrice(label=" اشتراك البوت بـ 500 نجمة مدى الحياة⭐" if lang=="ar" else "Subscribe Now with 500 ⭐ Lifetime", amount=500 )]  # 100 وحدة = 1 ⭐
     title = "اشتراك البوت" if lang=="ar" else "Subscribe Now"
-    description = "اشترك الآن باستخدام 1000 ⭐ للوصول الكامل" if lang=="ar" else "Subscribe Now with 1000 ⭐ Lifetime"
+    description = "اشترك الآن باستخدام 500 ⭐ للوصول الكامل" if lang=="ar" else "Subscribe Now with 500 ⭐ Lifetime"
     payload = "stars_subscription"
     currency = "XTR"
 
@@ -149,14 +149,14 @@ language_keyboard = InlineKeyboardMarkup(
 payment_keyboard_ar = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="💎 اشترك الآن (10 USDT مدى الحياة)", callback_data="pay_with_crypto")],
-        [InlineKeyboardButton(text=" اشترك الآن بـ 1000 نجمة مدى الحياة⭐", callback_data="pay_with_stars")]
+        [InlineKeyboardButton(text=" اشترك الآن بـ 500 نجمة مدى الحياة⭐", callback_data="pay_with_stars")]
     ]
 )
 
 payment_keyboard_en = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="💎 Subscribe Now (10 USDT Lifetime)", callback_data="pay_with_crypto")],
-        [InlineKeyboardButton(text="⭐ Subscribe Now with 1000 Stars Lifetime", callback_data="pay_with_stars")]
+        [InlineKeyboardButton(text="⭐ Subscribe Now with 500 Stars Lifetime", callback_data="pay_with_stars")]
     ]
 )
 
@@ -211,9 +211,9 @@ async def set_lang(cb: types.CallbackQuery):
         else:
             kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
             await cb.message.edit_text(
-                "للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 1000 ⭐ لمرة واحدة."
+                "للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة."
                 if lang == "ar"
-                else "For full access, please subscribe for a one-time fee of 10 USDT or 1000 ⭐.",
+                else "For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐.",
                 reply_markup=kb
             )
 
@@ -293,7 +293,7 @@ async def handle_symbol(m: types.Message):
     if not is_user_paid(m.from_user.id) and not has_trial(uid):
         kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
         await m.answer(
-            "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 1000 ⭐ لمرة واحدة."
+            "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة."
             if lang == "ar"
             else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 1000 ⭐.",
             reply_markup=kb
