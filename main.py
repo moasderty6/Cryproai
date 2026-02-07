@@ -343,27 +343,6 @@ async def set_timeframe(cb: types.CallbackQuery):
     uid = str(cb.from_user.id)
     lang = user_lang.get(uid, "ar")
 
-    # --- تسجيل المستخدم كتجربة مجانية إذا لم يشترك بعد ---
-    if not is_user_paid(cb.from_user.id) and uid not in trial_users:
-        trial_users.add(uid)
-        pool = cb.bot['db_pool']
-        async with pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO trial_users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
-                cb.from_user.id
-            )
-
-    # --- تحقق من الاشتراك أو انتهاء التجربة ---
-    if not is_user_paid(cb.from_user.id) and not has_trial(uid):
-        kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
-        await cb.message.edit_text(
-            "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة."
-            if lang == "ar"
-            else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐.",
-            reply_markup=kb
-        )
-        return
-
     tf_map = {
         "tf_weekly": "weekly",
         "tf_daily": "daily",
@@ -382,6 +361,26 @@ async def set_timeframe(cb: types.CallbackQuery):
         await cb.answer("❌ لم يتم تحديد العملة بعد." if lang=="ar" else "❌ No symbol selected yet.", show_alert=True)
         return
 
+    # --- التحقق من الاشتراك أو التجربة ---
+    if not is_user_paid(cb.from_user.id):
+        # المستخدم لديه تجربة مجانية أول مرة
+        if has_trial(uid):
+            # يسمح بالتحليل أول مرة
+            pass
+        else:
+            # انتهت التجربة، يطلب الاشتراك
+            kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
+            await cb.message.edit_text(
+                "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة."
+                if lang == "ar"
+                else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐.",
+                reply_markup=kb
+            )
+            return
+
+    await cb.message.edit_text("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
+    
+    # --- تحليل بواسطة Groq ---
     if lang == "ar":
         prompt = (
             f"سعر العملة {sym.upper()} الآن هو {price:.6f}$.\n"
@@ -419,11 +418,21 @@ async def set_timeframe(cb: types.CallbackQuery):
             f"❌ Don't explain the project, only chart analysis"
         )
 
-    await cb.message.edit_text("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
     analysis = await ask_groq(prompt, lang=lang)
     await cb.message.answer(analysis)
 
+    # --- بعد التحليل لأول مرة، نسجل المستخدم كمستخدم جرب التجربة ---
     if not is_user_paid(cb.from_user.id) and has_trial(uid):
+        trial_users.add(uid)
+        pool = cb.bot['db_pool']
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO trial_users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
+                cb.from_user.id
+            )
+
+    # --- اقتراح الاشتراك بعد التحليل إذا المستخدم لم يشترك ---
+    if not is_user_paid(cb.from_user.id):
         kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
         await cb.message.answer(
             "للوصول الكامل، يرجى الاشتراك مقابل 10 USDT لمرة واحدة."
