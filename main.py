@@ -217,7 +217,7 @@ async def set_lang(cb: types.CallbackQuery):
     await cb.message.edit_text(
         "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة."
         if lang == "ar"
-        else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 1000 ⭐.",
+        else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐.",
         reply_markup=kb
     )
 
