@@ -32,10 +32,11 @@ ADMIN_USER_ID = 6172153716
 # --- إعداد البوت ---
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
-USERS_FILE = "users.json"
 paid_users = set()
 
 # --- إدارة بيانات المستخدمين ---
+# user_lang للتخزين اللغوي فقط، trial users في قاعدة البيانات
+USERS_FILE = "users.json"
 def load_users():
     try:
         with open(USERS_FILE, "r") as f:
@@ -49,15 +50,20 @@ def save_users(users):
 
 user_lang = load_users()
 
+async def has_trial(pool, uid: str):
+    async with pool.acquire() as conn:
+        record = await conn.fetchrow("SELECT 1 FROM trial_users WHERE user_id = $1", int(uid))
+        return record is None  # إذا مش موجود => ما استخدم التجربة بعد
+
+async def set_trial_used(pool, uid: str):
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO trial_users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
+            int(uid)
+        )
+
 def is_user_paid(user_id: int):
     return user_id in paid_users
-
-def has_trial(uid: str):
-    return user_lang.get(uid + "_trial", False)
-
-def set_trial_used(uid: str):
-    user_lang[uid + "_trial"] = True
-    save_users(user_lang)
 
 # --- دوال مساعدة ---
 def clean_response(text, lang="ar"):
@@ -103,12 +109,12 @@ async def create_nowpayments_invoice(user_id: int):
         "Content-Type": "application/json"
     }
     data = {
-    "price_amount": 10,
-    "price_currency": "usd",
-    "order_id": str(user_id),
-    "ipn_callback_url": f"{WEBHOOK_URL}/webhook/nowpayments",
-    "success_url": f"https://t.me/{(await bot.get_me()).username}",
-}
+        "price_amount": 10,
+        "price_currency": "usd",
+        "order_id": str(user_id),
+        "ipn_callback_url": f"{WEBHOOK_URL}/webhook/nowpayments",
+        "success_url": f"https://t.me/{(await bot.get_me()).username}",
+    }
     try:
         async with httpx.AsyncClient() as client:
             res = await client.post(url, headers=headers, json=data)
@@ -183,7 +189,8 @@ async def set_lang(cb: types.CallbackQuery):
             else "✅ Welcome back! Your subscription is active.\nSend a coin symbol to analyze."
         )
     else:
-        if not has_trial(uid):
+        pool = cb.app['db_pool']
+        if await has_trial(pool, uid):
             await cb.message.edit_text(
                 "🎁 لديك تجربة مجانية واحدة! أرسل رمز العملة للتحليل."
                 if lang == "ar"
@@ -254,9 +261,10 @@ async def handle_symbol(m: types.Message):
 
     uid = str(m.from_user.id)
     lang = user_lang.get(uid, "ar")
+    pool = m.app['db_pool']
 
     if not is_user_paid(m.from_user.id):
-        if has_trial(uid):
+        if not await has_trial(pool, uid):
             kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
             await m.answer(
                 "⚠️ آنتهت تجربتك المجانية. يرجى الاشتراك أولاً."
@@ -266,7 +274,7 @@ async def handle_symbol(m: types.Message):
             )
             return
         else:
-            set_trial_used(uid)
+            await set_trial_used(pool, uid)
 
     sym = m.text.strip().lower()
     await m.answer("⏳ جاري جلب السعر..." if lang == "ar" else "⏳ Fetching price...")
@@ -302,8 +310,9 @@ async def handle_symbol(m: types.Message):
 async def set_timeframe(cb: types.CallbackQuery):
     uid = str(cb.from_user.id)
     lang = user_lang.get(uid, "ar")
+    pool = cb.app['db_pool']
 
-    if not is_user_paid(cb.from_user.id) and not has_trial(uid):
+    if not is_user_paid(cb.from_user.id) and await has_trial(pool, uid) == False:
         await cb.answer("⚠️ هذه الميزة للمشتركين فقط.", show_alert=True)
         return
 
@@ -358,7 +367,7 @@ async def set_timeframe(cb: types.CallbackQuery):
     analysis = await ask_groq(prompt, lang=lang)
     await cb.message.answer(analysis)
 
-    if not is_user_paid(cb.from_user.id) and has_trial(uid):
+    if not is_user_paid(cb.from_user.id) and await has_trial(pool, uid):
         kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
         await cb.message.answer(
             "للوصول الكامل، يرجى الاشتراك مقابل 10 USDT لمرة واحدة."
@@ -433,16 +442,25 @@ async def on_startup(app_instance: web.Application):
     app_instance['db_pool'] = pool
 
     async with pool.acquire() as conn:
+        # جدول المستخدمين المدفوعين
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS paid_users (
                 user_id BIGINT PRIMARY KEY
             );
         """)
+        # جدول مستخدمي التجربة المجانية
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS trial_users (
+                user_id BIGINT PRIMARY KEY
+            );
+        """)
+        # إضافة الأدمن تلقائياً
         await conn.execute(
             "INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
             ADMIN_USER_ID
         )
 
+        # تحميل المستخدمين المدفوعين من DB
         records = await conn.fetch("SELECT user_id FROM paid_users")
         paid_users.update(r['user_id'] for r in records)
 
