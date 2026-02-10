@@ -71,8 +71,10 @@ async def ask_groq(prompt, lang="ar"):
                 json=data
             )
             result = res.json()
-            content = result["choices"][0]["message"]["content"]
-            return clean_response(content, lang=lang).strip()
+            if "choices" in result:
+                content = result["choices"][0]["message"]["content"]
+                return clean_response(content, lang=lang).strip()
+            return "❌ AI Limit Reached"
     except Exception as e:
         print(f"❌ Error from AI: {e}")
         return "❌ حدث خطأ أثناء تحليل التشارت." if lang == "ar" else "❌ Analysis failed."
@@ -150,42 +152,46 @@ async def ai_opportunity_radar():
                 user_id = row['user_id']
                 lang = row['lang'] or "ar"
                 
-                prompt = (
-                    f"Analyze the current price of {symbol} at ${price:,.2f}. "
-                    f"Write a very short urgent breakout alert in {'Arabic' if lang=='ar' else 'English'}."
-                )
-                ai_insight = await ask_groq(prompt, lang=lang)
-
-                try:
-                    if is_user_paid(user_id):
-                        alert_text = (
-                            f"🚨 **[ VIP BREAKOUT ALERT ]** 🚨\n"
-                            f"───────────────────\n"
-                            f"💎 **العملة:** #{symbol.upper()}\n"
-                            f"💵 **السعر الحالي:** `${price:,.4f}`\n"
-                            f"📈 **رؤية الذكاء الاصطناعي:**\n\n"
-                            f"*{ai_insight}*\n"
-                        )
+                # إرسال التنبيه للمشتركين (تحليل كامل)
+                if is_user_paid(user_id):
+                    prompt = (
+                        f"Analyze the current price of {symbol} at ${price:,.2f}. "
+                        f"Write a very short urgent breakout alert in {'Arabic' if lang=='ar' else 'English'}."
+                    )
+                    ai_insight = await ask_groq(prompt, lang=lang)
+                    alert_text = (
+                        f"🚨 **[ VIP BREAKOUT ALERT ]** 🚨\n"
+                        f"───────────────────\n"
+                        f"💎 **العملة:** #{symbol.upper()}\n"
+                        f"💵 **السعر الحالي:** `${price:,.4f}`\n"
+                        f"📈 **رؤية الذكاء الاصطناعي:**\n\n"
+                        f"*{ai_insight}*\n"
+                    )
+                    try:
                         await bot.send_message(user_id, alert_text, parse_mode=ParseMode.MARKDOWN)
-                    else:
-                        kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
-                        blurred_text = (
-                            f"📡 **[ رادار الذكاء الاصطناعي ]**\n"
-                            f"───────────────────\n"
-                            f"⚠️ **تم رصد انفجار سعري محتمل لعملة من القائمة الذهبية!**\n\n"
-                            f"💎 **العملة:** `****` (مخفي للمشتركين فقط)\n"
-                            f"🔥 اشترك الآن لكشف العملة والحصول على الأهداف!"
-                        ) if lang == "ar" else (
-                            f"📡 **[ AI RADAR ]**\n"
-                            f"───────────────────\n"
-                            f"⚠️ **Potential breakout detected!**\n\n"
-                            f"💎 **Symbol:** `****` (VIP Only)\n"
-                            f"🔥 Subscribe now to unlock!"
-                        )
+                        await asyncio.sleep(1) # تأخير بسيط لتجنب الـ Rate Limit
+                    except: continue
+                
+                # إرسال التنبيه لغير المشتركين (رسالة تشويقية)
+                else:
+                    kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
+                    blurred_text = (
+                        f"📡 **[ رادار الذكاء الاصطناعي ]**\n"
+                        f"───────────────────\n"
+                        f"⚠️ **تم رصد انفجار سعري محتمل لعملة من القائمة الذهبية!**\n\n"
+                        f"💎 **العملة:** `****` (مخفي للمشتركين فقط)\n"
+                        f"🔥 اشترك الآن لكشف العملة والحصول على الأهداف!"
+                    ) if lang == "ar" else (
+                        f"📡 **[ AI RADAR ]**\n"
+                        f"───────────────────\n"
+                        f"⚠️ **Potential breakout detected!**\n\n"
+                        f"💎 **Symbol:** `****` (VIP Only)\n"
+                        f"🔥 Subscribe now to unlock!"
+                    )
+                    try:
                         await bot.send_message(user_id, blurred_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
-                except:
-                    continue
-            break # يرسل عملة واحدة في كل دورة
+                    except: continue
+            break # يرسل عملة واحدة في كل دورة رادار
         
         print("⏳ Radar finished round. Waiting 4 hours...")
         await asyncio.sleep(14400) # الانتظار 4 ساعات
