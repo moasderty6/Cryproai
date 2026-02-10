@@ -102,7 +102,7 @@ timeframe_kb_en = InlineKeyboardMarkup(inline_keyboard=[[
     InlineKeyboardButton(text="4H", callback_data="tf_4h")
 ]])
 
-# --- رادار الفرص (VIP + مجاني مع تحليل تلميحي) ---
+# --- رادار الفرص (VIP + مجاني مع تحليل تلميحي) ---# --- رادار الفرص (تعديل لمنع خلط النصوص وتحسين التنسيق) ---
 async def ai_opportunity_radar(pool):
     print("🚀 AI Radar is active...")
     while True:
@@ -118,12 +118,20 @@ async def ai_opportunity_radar(pool):
                     price = selected_coin["quote"]["USD"]["price"]
                     price_display = f"{price:.8f}" if price < 1 else f"{price:,.2f}"
 
-                    # توليد تحليل VIP كامل (باسم العملة)
-                    vip_prompt = f"Analyze #{symbol} at ${price_display}. Give a 2-line technical insight. Lang: ar and en"
+                    # تعديل البرومبت ليكون صارمًا (بدون مقدمات)
+                    vip_prompt = (
+                        f"Analyze #{symbol} at ${price_display}. Give a 2-line technical insight. "
+                        f"Rules: Start immediately with the analysis. No 'Technical insight in English/Arabic'. "
+                        f"No introductions. Format: [English Analysis] \n\n [Arabic Analysis]"
+                    )
                     vip_insight = await ask_groq(vip_prompt)
 
-                    # توليد تحليل "تلميحي" للمجانيين (بدون اسم العملة)
-                    free_prompt = f"Write a 1-line technical breakout hint for a coin at price ${price_display}. DO NOT mention any coin names or symbols. Lang: ar and en"
+                    # تعديل برومبت المجانيين لمنع الجمل الإضافية
+                    free_prompt = (
+                        f"Write a 1-line technical breakout hint for a coin at price ${price_display}. "
+                        f"Format strictly as: AR: [Arabic hint] \nEN: [English hint]. "
+                        f"Do not mention coin names. No introductory text."
+                    )
                     free_insight = await ask_groq(free_prompt)
 
                     users = await pool.fetch("SELECT user_id, lang FROM users_info")
@@ -134,10 +142,10 @@ async def ai_opportunity_radar(pool):
                         try:
                             if is_paid:
                                 text = (
-                                    f"🚨 **[ VIP BREAKOUT ALERT ]**\n"
+                                    f"🚨 **[ VIP BREAKOUT ALERT ]**\n\n"
                                     f"💎 **العملة:** #{symbol.upper()}\n"
                                     f"💵 **السعر:** `${price_display}`\n"
-                                    f"📈 **الرؤية:**\n*{vip_insight}*"
+                                    f"📈 **الرؤية الفنية:**\n\n{vip_insight}"
                                 )
                                 await bot.send_message(uid, text, parse_mode=ParseMode.MARKDOWN)
                             else:
@@ -147,8 +155,8 @@ async def ai_opportunity_radar(pool):
                                         f"───────────────────\n"
                                         f"🔥 **تم رصد انفجار سعري محتمل الآن!**\n\n"
                                         f"📊 **العملة:** `•••••` 🔒\n"
-                                        f"💰 **السعر الحالي:** `${price_display}`\n"
-                                        f"📈 **تلميح تقني:**\n_{free_insight}_\n\n"
+                                        f"💰 **السعر الحالي:** `${price_display}`\n\n"
+                                        f"📈 **تلميح تقني:**\n{free_insight}\n\n"
                                         f"📢 **اشترك الآن لكشف اسم العملة والحصول على الأهداف!**"
                                     )
                                 else:
@@ -157,8 +165,8 @@ async def ai_opportunity_radar(pool):
                                         f"───────────────────\n"
                                         f"🔥 **Potential Breakout Detected!**\n\n"
                                         f"📊 **Symbol:** `•••••` 🔒\n"
-                                        f"💰 **Current Price:** `${price_display}`\n"
-                                        f"📈 **Technical Hint:**\n_{free_insight}_\n\n"
+                                        f"💰 **Current Price:** `${price_display}`\n\n"
+                                        f"📈 **Technical Hint:**\n{free_insight}\n\n"
                                         f"📢 **Subscribe to VIP to unlock the symbol!**"
                                     )
                                 await bot.send_message(uid, blurred, reply_markup=get_payment_kb(lang), parse_mode=ParseMode.MARKDOWN)
@@ -166,6 +174,7 @@ async def ai_opportunity_radar(pool):
                         except: continue
         except Exception as e: print(f"⚠️ Radar Error: {e}")
         await asyncio.sleep(14400)
+
 
 # ---Handlers ---
 @dp.message(Command("start"))
