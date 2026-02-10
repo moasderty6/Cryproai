@@ -185,7 +185,6 @@ async def ai_opportunity_radar():
                             )
                             try:
                                 await bot.send_message(user_id, alert_text, parse_mode=ParseMode.MARKDOWN)
-                                # نظام حماية: تأخير بسيط بين الإرسال لكل مستخدم لتجنب حظر تليجرام
                                 await asyncio.sleep(0.05) 
                             except: continue
                         else:
@@ -205,7 +204,6 @@ async def ai_opportunity_radar():
                             )
                             try:
                                 await bot.send_message(user_id, blurred_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
-                                # نظام حماية: تأخير بسيط بين الإرسال لكل مستخدم
                                 await asyncio.sleep(0.05)
                             except: continue
         except Exception as e:
@@ -271,7 +269,6 @@ async def start_cmd(m: types.Message):
 
 @dp.message(Command("status"))
 async def status_cmd(m: types.Message):
-    # يسمح فقط للمطور برؤية الإحصائيات (اختياري، يمكنك حذف الشرط ليراه الجميع)
     async with dp['db_pool'].acquire() as conn:
         total_users = await conn.fetchval("SELECT COUNT(*) FROM users_info")
         total_paid = await conn.fetchval("SELECT COUNT(*) FROM paid_users")
@@ -284,7 +281,26 @@ async def status_cmd(m: types.Message):
         f"💎 المشتركين (VIP): `{total_paid}`\n"
         f"🎁 مستخدمي التجربة: `{total_trial}`"
     )
-    await m.answer(status_text, parse_mode=ParseMode.HTML)
+    await m.answer(status_text, parse_mode=ParseMode.MARKDOWN)
+
+@dp.message(Command("cleanup"))
+async def cleanup_cmd(m: types.Message):
+    if m.from_user.id != ADMIN_USER_ID:
+        return
+
+    async with dp['db_pool'].acquire() as conn:
+        # حذف المستخدمين الذين ليسوا في جدول المدفوعين وليسوا في جدول التجربة المجانية
+        deleted_count = await conn.execute(
+            """
+            DELETE FROM users_info 
+            WHERE user_id NOT IN (SELECT user_id FROM paid_users)
+            AND user_id NOT IN (SELECT user_id FROM trial_users)
+            """
+        )
+        # استخراج العدد من نص الاستجابة (DELETE X)
+        count = deleted_count.split(" ")[1]
+        
+    await m.answer(f"🧹 تم تنظيف قاعدة البيانات!\nتم حذف `{count}` مستخدم خامل (لم يشتركوا ولم يستخدموا التجربة).")
 
 @dp.callback_query(F.data.startswith("lang_"))
 async def set_lang(cb: types.CallbackQuery):
