@@ -133,12 +133,11 @@ async def send_stars_invoice(chat_id: int, lang="ar"):
 
 # --- ميزة الرادار (AI Opportunity Radar) ---
 async def ai_opportunity_radar():
-    """رادار الذكاء الاصطناعي - تم التعديل لجلب أفضل 50 عملة تلقائياً كل 4 ساعات"""
-    print("🚀 AI Breakout Radar is active (Top 50 Binance Coins)...")
+    """نسخة محسنة لمعالجة العملات ذات الأصفار الكثيرة ومنع ثرثرة الـ AI"""
+    print("🚀 AI Radar is active (Enhanced Precision)...")
     
     while True:
         try:
-            # جلب قائمة أفضل 50 عملة من كوين ماركت كاب
             url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
             params = {"start": "1", "limit": "50", "convert": "USD"}
             headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
@@ -147,15 +146,16 @@ async def ai_opportunity_radar():
                 res = await client.get(url, headers=headers, params=params)
                 if res.status_code == 200:
                     watch_list = res.json()["data"]
-                    # اختيار عملة واحدة عشوائياً من الـ 50 للفحص في كل دورة
                     selected_coin = random.choice(watch_list)
                     symbol = selected_coin["symbol"]
                     price = selected_coin["quote"]["USD"]["price"]
+                    
+                    # اختيار التنسيق المناسب: إذا كان السعر صغيراً جداً نظهر 8 أرقام، وإذا كان كبيراً نظهر 2
+                    price_display = f"{price:.8f}" if price < 1 else f"{price:,.2f}"
                 else:
-                    print("⚠️ Failed to fetch CMC list, using fallback...")
-                    symbol, price = "BTC", await get_price_cmc("BTC")
+                    symbol, price_display = "BTC", "Fetching..."
 
-            if symbol and price:
+            if symbol:
                 pool = dp.get('db_pool')
                 if pool:
                     async with pool.acquire() as conn:
@@ -166,17 +166,21 @@ async def ai_opportunity_radar():
                         lang = row['lang'] or "ar"
                         
                         if is_user_paid(user_id):
+                            # تعليمات صارمة للذكاء الاصطناعي لعدم الرد برسائل توضيحية
                             prompt = (
-                                f"Analyze the current price of {symbol} at ${price:,.2f}. "
-                                f"Write a very short urgent breakout alert in {'Arabic' if lang=='ar' else 'English'}."
+                                f"Analyze {symbol} at price ${price_display}. "
+                                f"Task: Write ONLY a 2-line technical breakout alert. "
+                                f"Rules: No chat, No explanations, No 'I must point out', No translations. "
+                                f"Language: {'Arabic' if lang=='ar' else 'English'}."
                             )
                             ai_insight = await ask_groq(prompt, lang=lang)
+                            
                             alert_text = (
                                 f"🚨 **[ VIP BREAKOUT ALERT ]** 🚨\n"
                                 f"───────────────────\n"
                                 f"💎 **العملة:** #{symbol.upper()}\n"
-                                f"💵 **السعر الحالي:** `${price:,.4f}`\n"
-                                f"📈 **رؤية الذكاء الاصطناعي:**\n\n"
+                                f"💵 **السعر:** `${price_display}`\n"
+                                f"📈 **الرؤية:**\n\n"
                                 f"*{ai_insight}*\n"
                             )
                             try:
