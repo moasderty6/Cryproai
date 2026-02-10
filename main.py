@@ -328,7 +328,6 @@ async def on_timeframe_selected(cb: types.CallbackQuery):
     tf = cb.data.replace("tf_", "")
     
     await cb.message.edit_text("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
-    
     if lang == "ar":
         prompt = (
             f"سعر العملة {sym.upper()} الآن هو {price:.6f}$.\n"
