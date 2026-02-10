@@ -89,7 +89,16 @@ def get_payment_kb(lang):
         [InlineKeyboardButton(text="⭐ Subscribe Now with 500 Stars Lifetime", callback_data="pay_with_stars")]
     ])
 
-# --- رادار الفرص الذكي (تعديل اللغات والتنسيق) ---
+# --- أمر تنظيف التجربة (Reset Trials) ---
+@dp.message(Command("reset_trials"))
+async def cmd_reset_trials(m: types.Message):
+    if m.from_user.id != ADMIN_USER_ID:
+        return
+    async with dp['db_pool'].acquire() as conn:
+        await conn.execute("DELETE FROM trial_users")
+        await m.answer("✅ تم تنظيف قائمة التجربة المجانية بنجاح! يمكن للجميع الآن استخدام البوت مرة أخرى.")
+
+# --- رادار الفرص الذكي ---
 async def ai_opportunity_radar(pool):
     while True:
         try:
@@ -108,7 +117,6 @@ async def ai_opportunity_radar(pool):
                         uid, lang = row['user_id'], row['lang'] or "ar"
                         is_paid = await is_user_paid(pool, uid)
                         
-                        # طلب تحليل بلغة واحدة فقط لكل مستخدم لمنع الخلط
                         if is_paid:
                             prompt = f"Give a very short 2-line technical breakout insight for #{symbol} at ${price_display}. Answer strictly in {lang} language only. No headers."
                             insight = await ask_groq(prompt, lang=lang)
@@ -188,42 +196,21 @@ async def run_full_analysis(cb: types.CallbackQuery):
     lang, sym, price, tf = data['lang'], data['sym'], data['price'], cb.data.replace("tf_", "")
     await cb.message.edit_text("🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing...")
     
-    # --- البرومبت الأصلي الطويل (دون أي اختصار) ---
     if lang == "ar":
         prompt = (
             f"سعر العملة {sym} الآن هو {price:.6f}$.\n"
             f"قم بتحليل التشارت للإطار الزمني {tf} باستخدام مؤشرات شاملة:\n"
-            f"- خطوط الدعم والمقاومة\n"
-            f"- RSI, MACD, MA\n"
-            f"- Bollinger Bands\n"
-            f"- Fibonacci Levels\n"
-            f"- Stochastic Oscillator\n"
-            f"- Volume Analysis\n"
-            f"- Trendlines باستخدام Regression\n"
-            f"ثم قدم:\n"
-            f"1. تقييم عام (صعود أم هبوط؟)\n"
-            f"2. أقرب مقاومة ودعم\n"
-            f"3. ثلاثة أهداف مستقبلية (قصير، متوسط، بعيد المدى)\n"
-            f"✅ استخدم العربية فقط\n"
-            f"❌ لا تشرح المشروع، فقط تحليل التشارت"
+            f"- خطوط الدعم والمقاومة\n- RSI, MACD, MA\n- Bollinger Bands\n- Fibonacci Levels\n- Stochastic Oscillator\n- Volume Analysis\n- Trendlines باستخدام Regression\n"
+            f"ثم قدم:\n1. تقييم عام (صعود أم هبوط؟)\n2. أقرب مقاومة ودعم\n3. ثلاثة أهداف مستقبلية (قصير، متوسط، بعيد المدى)\n"
+            f"✅ استخدم العربية فقط\n❌ لا تشرح المشروع، فقط تحليل التشارت"
         )
     else:
         prompt = (
             f"The current price of {sym} is ${price:.6f}.\n"
             f"Analyze the {tf} chart using comprehensive indicators:\n"
-            f"- Support and Resistance\n"
-            f"- RSI, MACD, MA\n"
-            f"- Bollinger Bands\n"
-            f"- Fibonacci Levels\n"
-            f"- Stochastic Oscillator\n"
-            f"- Volume Analysis\n"
-            f"- Trendlines using Regression\n"
-            f"Then provide:\n"
-            f"1. General trend (up/down)\n"
-            f"2. Nearest resistance/support\n"
-            f"3. Three future price targets\n"
-            f"✅ Answer in English only\n"
-            f"❌ Don't explain the project, only chart analysis"
+            f"- Support and Resistance\n- RSI, MACD, MA\n- Bollinger Bands\n- Fibonacci Levels\n- Stochastic Oscillator\n- Volume Analysis\n- Trendlines using Regression\n"
+            f"Then provide:\n1. General trend (up/down)\n2. Nearest resistance/support\n3. Three future price targets\n"
+            f"✅ Answer in English only\n❌ Don't explain the project, only chart analysis"
         )
 
     res = await ask_groq(prompt, lang=lang)
@@ -233,11 +220,20 @@ async def run_full_analysis(cb: types.CallbackQuery):
         async with dp['db_pool'].acquire() as conn:
             await conn.execute("INSERT INTO trial_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
 
-# --- نظام التشغيل ---
+# --- نظام التشغيل وإصلاح التايم أوت ---
 async def handle_webhook(req: web.Request):
-    if req.headers.get("X-Telegram-Bot-Api-Secret-Token") != SECRET_TOKEN: return web.Response(status=403)
-    await dp.feed_update(bot, types.Update(**(await req.json())))
-    return web.Response(text="ok")
+    if req.headers.get("X-Telegram-Bot-Api-Secret-Token") != SECRET_TOKEN: 
+        return web.Response(status=403)
+    
+    try:
+        data = await req.json()
+        update = types.Update(**data)
+        # تشغيل المعالجة في الخلفية لمنع التايم أوت
+        asyncio.create_task(dp.feed_update(bot, update))
+    except Exception:
+        pass
+        
+    return web.Response(text="ok") # الرد الفوري على ريندر
 
 async def on_startup(app_instance):
     pool = await asyncpg.create_pool(DATABASE_URL)
