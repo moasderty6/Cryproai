@@ -136,6 +136,71 @@ async def send_stars_invoice(chat_id: int, lang="ar"):
         payload=payload
     )
 
+# --- وظيفة الرادار القوية مع التوصية المضللة ---
+async def ai_opportunity_radar():
+    """رادار الذكاء الاصطناعي - يراقب السوق ويبحث عن انفجارات سعرية محتملة للمشتركين والمجانيين"""
+    watch_list = ["BTC", "ETH", "SOL", "BNB", "TIA", "FET", "INJ", "LINK"]
+    print("🚀 AI Breakout Radar with Blurred Signals is active...")
+    
+    while True:
+        await asyncio.sleep(14400)  # يتم الفحص كل 4 ساعات
+        for symbol in watch_list:
+            price = await get_price_cmc(symbol)
+            if not price: continue
+            
+            prompt = (
+                f"Analyze the current price of {symbol} at ${price:,.2f}. "
+                "Write a very short, high-impact 'VIP Opportunity Alert' in Arabic. "
+                "Focus on potential breakout or whale accumulation. Tone: Professional, Urgent."
+            )
+            ai_insight = await ask_groq(prompt, lang="ar")
+
+            # استخراج قائمة كل المستخدمين من ملف JSON
+            all_users = user_lang.keys()
+            
+            for uid_str in all_users:
+                try:
+                    # تحويل الـ ID من نص إلى رقم (مع تجنب مفاتيح السيمبل والسعر)
+                    if not uid_str.isdigit(): continue
+                    user_id = int(uid_str)
+                    lang = user_lang.get(uid_str, "ar")
+
+                    if is_user_paid(user_id):
+                        # --- رسالة المشترك المدفوع: تفاصيل كاملة ---
+                        alert_text = (
+                            f"🚨 **[ VIP BREAKOUT ALERT ]** 🚨\n"
+                            f"───────────────────\n"
+                            f"💎 **العملة:** #{symbol.upper()}\n"
+                            f"💵 **السعر الحالي:** `${price:,.4f}`\n"
+                            f"📈 **رؤية الذكاء الاصطناعي:**\n\n"
+                            f"*{ai_insight}*\n\n"
+                            f"───────────────────\n"
+                            f"⚡️ *الفرصة لا تنتظر المترددين!*"
+                        )
+                        await bot.send_message(user_id, alert_text, parse_mode=ParseMode.MARKDOWN)
+                    else:
+                        # --- رسالة المستخدم المجاني: توصية مضللة (Blurred) ---
+                        kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
+                        blurred_text = (
+                            f"📡 **[ رادار الذكاء الاصطناعي ]**\n"
+                            f"───────────────────\n"
+                            f"⚠️ **تم رصد انفجار سعري محتمل لعملة من القائمة الذهبية!**\n\n"
+                            f"💎 **العملة:** `****` (مخفي للمشتركين فقط)\n"
+                            f"📈 **الحالة:** تجميع حيتان واختراق وشيك.\n\n"
+                            f"🔥 اشترك الآن لكشف العملة والحصول على أهداف الدخول والخروج الدقيقة قبل فوات الأوان!"
+                        ) if lang == "ar" else (
+                            f"📡 **[ AI MARKET RADAR ]**\n"
+                            f"───────────────────\n"
+                            f"⚠️ **Potential breakout detected for a Top-Tier coin!**\n\n"
+                            f"💎 **Symbol:** `****` (Hidden for VIP only)\n"
+                            f"📈 **Status:** Whale accumulation detected.\n\n"
+                            f"🔥 Subscribe now to unlock the symbol and get precise entry/exit targets!"
+                        )
+                        await bot.send_message(user_id, blurred_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+                except Exception as e:
+                    print(f"Error sending radar alert to {uid_str}: {e}")
+            break # عملة واحدة لكل دورة رادار
+
 # --- لوحات الأزرار ---
 language_keyboard = InlineKeyboardMarkup(
     inline_keyboard=[
@@ -544,6 +609,9 @@ async def on_startup(app_instance: web.Application):
 
         trial_records = await conn.fetch("SELECT user_id FROM trial_users")
         trial_users.update(str(r['user_id']) for r in trial_records)
+
+    # تشغيل رادار الفرص (VIP + Blurred) في الخلفية
+    asyncio.create_task(ai_opportunity_radar())
 
     webhook_url = f"{WEBHOOK_URL}/"
     await bot.set_webhook(webhook_url)
