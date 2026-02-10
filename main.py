@@ -26,7 +26,7 @@ PORT = int(os.getenv("PORT", 8000))
 GROQ_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
 NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY")
 NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET")
-STARS_PROVIDER_TOKEN = os.getenv("STARS_PROVIDER_TOKEN")  # توكن الدفع بالنجوم
+STARS_PROVIDER_TOKEN = os.getenv("STARS_PROVIDER_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_USER_ID = 6172153716
 
@@ -34,29 +34,16 @@ ADMIN_USER_ID = 6172153716
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 
-# --- ذاكرة المستخدمين ---
+# --- ذاكرة المستخدمين (تتم مزامنتها مع DB عند التشغيل) ---
 paid_users = set()
 trial_users = set()
-USERS_FILE = "users.json"
-
-def load_users():
-    try:
-        with open(USERS_FILE, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-
-def save_users(users):
-    with open(USERS_FILE, "w") as f:
-        json.dump(users, f, indent=4)
-
-user_lang = load_users()
+user_data_cache = {} # كاش مؤقت للغة والعملة المختارة حالياً
 
 def is_user_paid(user_id: int):
     return user_id in paid_users
 
 def has_trial(uid: str):
-    return uid not in trial_users
+    return str(uid) not in trial_users
 
 # --- دوال مساعدة ---
 def clean_response(text, lang="ar"):
@@ -70,11 +57,7 @@ async def ask_groq(prompt, lang="ar"):
     data = {"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}]}
     try:
         async with httpx.AsyncClient(timeout=60) as client:
-            res = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=headers,
-                json=data
-            )
+            res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data)
             result = res.json()
             content = result["choices"][0]["message"]["content"]
             return clean_response(content, lang=lang).strip()
@@ -88,239 +71,137 @@ async def get_price_cmc(symbol):
     try:
         async with httpx.AsyncClient() as client:
             res = await client.get(url, headers=headers)
-            if res.status_code != 200:
-                return None
+            if res.status_code != 200: return None
             data = res.json()
             return data["data"][symbol.upper()]["quote"]["USD"]["price"]
-    except:
-        return None
+    except: return None
 
 async def create_nowpayments_invoice(user_id: int):
     url = "https://api.nowpayments.io/v1/invoice"
-    headers = {
-        "x-api-key": NOWPAYMENTS_API_KEY,
-        "Content-Type": "application/json"
-    }
+    headers = {"x-api-key": NOWPAYMENTS_API_KEY, "Content-Type": "application/json"}
     data = {
-        "price_amount": 10,
-        "price_currency": "usd",
-        "order_id": str(user_id),
+        "price_amount": 10, "price_currency": "usd", "order_id": str(user_id),
         "ipn_callback_url": f"{WEBHOOK_URL}/webhook/nowpayments",
         "success_url": f"https://t.me/{(await bot.get_me()).username}",
     }
     try:
         async with httpx.AsyncClient() as client:
             res = await client.post(url, headers=headers, json=data)
-            if 200 <= res.status_code < 300:
-                return res.json().get("invoice_url")
-            else:
-                print(f"NOWPayments Error: {res.status_code} - {res.text}")
-    except Exception as e:
-        print(f"❌ CRITICAL ERROR in create_nowpayments_invoice: {e}")
+            if 200 <= res.status_code < 300: return res.json().get("invoice_url")
+    except Exception as e: print(f"❌ NOWPayments error: {e}")
     return None
 
-# --- إرسال فاتورة النجوم ---
 async def send_stars_invoice(chat_id: int, lang="ar"):
     prices = [LabeledPrice(label=" اشتراك البوت بـ 500 نجمة مدى الحياة⭐" if lang=="ar" else "Subscribe Now with 500 ⭐ Lifetime", amount=500)]
-    title = "اشتراك البوت" if lang=="ar" else "Subscribe Now"
-    description = "اشترك الآن باستخدام 500 ⭐ للوصول الكامل" if lang=="ar" else "Subscribe Now with 500 ⭐ Lifetime"
-    payload = "stars_subscription"
-    currency = "XTR"
     await bot.send_invoice(
-        chat_id=chat_id,
-        title=title,
-        description=description,
-        provider_token=STARS_PROVIDER_TOKEN,
-        currency=currency,
-        prices=prices,
-        payload=payload
+        chat_id=chat_id, title="اشتراك البوت" if lang=="ar" else "Subscribe Now",
+        description="اشترك الآن باستخدام 500 ⭐ للوصول الكامل" if lang=="ar" else "Subscribe Now with 500 ⭐ Lifetime",
+        provider_token=STARS_PROVIDER_TOKEN, currency="XTR", prices=prices, payload="stars_subscription"
     )
 
-# --- وظيفة الرادار القوية مع التوصية المضللة ---
+# --- وظيفة الرادار القوية مرتبطة بقاعدة البيانات ---
 async def ai_opportunity_radar():
-    """رادار الذكاء الاصطناعي - يراقب السوق ويبحث عن انفجارات سعرية محتملة للمشتركين والمجانيين"""
     watch_list = ["BTC", "ETH", "SOL", "BNB", "TIA", "FET", "INJ", "LINK"]
-    print("🚀 AI Breakout Radar with Blurred Signals is active...")
+    print("🚀 AI Breakout Radar (DB-Linked) is active...")
     
     while True:
-        await asyncio.sleep(14400)  # يتم الفحص كل 4 ساعات
+        await asyncio.sleep(14400) # كل 4 ساعات
         for symbol in watch_list:
             price = await get_price_cmc(symbol)
             if not price: continue
             
-            prompt = (
-                f"Analyze the current price of {symbol} at ${price:,.2f}. "
-                "Write a very short, high-impact 'VIP Opportunity Alert' in Arabic. "
-                "Focus on potential breakout or whale accumulation. Tone: Professional, Urgent."
-            )
+            prompt = f"Analyze {symbol} at ${price:,.2f}. Write a short, high-impact 'VIP Opportunity Alert' in Arabic. Tone: Professional, Urgent."
             ai_insight = await ask_groq(prompt, lang="ar")
 
-            # استخراج قائمة كل المستخدمين من ملف JSON
-            all_users = user_lang.keys()
-            
-            for uid_str in all_users:
-                try:
-                    # تحويل الـ ID من نص إلى رقم (مع تجنب مفاتيح السيمبل والسعر)
-                    if not uid_str.isdigit(): continue
-                    user_id = int(uid_str)
-                    lang = user_lang.get(uid_str, "ar")
+            pool = dp['db_pool']
+            async with pool.acquire() as conn:
+                all_users_db = await conn.fetch("SELECT user_id, lang FROM users_info")
 
+            for row in all_users_db:
+                try:
+                    user_id, lang = row['user_id'], row['lang'] or "ar"
                     if is_user_paid(user_id):
-                        # --- رسالة المشترك المدفوع: تفاصيل كاملة ---
-                        alert_text = (
-                            f"🚨 **[ VIP BREAKOUT ALERT ]** 🚨\n"
-                            f"───────────────────\n"
-                            f"💎 **العملة:** #{symbol.upper()}\n"
-                            f"💵 **السعر الحالي:** `${price:,.4f}`\n"
-                            f"📈 **رؤية الذكاء الاصطناعي:**\n\n"
-                            f"*{ai_insight}*\n\n"
-                            f"───────────────────\n"
-                            f"⚡️ *الفرصة لا تنتظر المترددين!*"
-                        )
-                        await bot.send_message(user_id, alert_text, parse_mode=ParseMode.MARKDOWN)
+                        msg = (f"🚨 **[ VIP BREAKOUT ALERT ]** 🚨\n───────────────────\n"
+                               f"💎 **العملة:** #{symbol.upper()}\n💵 **السعر الحالي:** `${price:,.4f}`\n"
+                               f"📈 **رؤية الذكاء الاصطناعي:**\n\n*{ai_insight}*\n\n───────────────────\n⚡️ *الفرصة لا تنتظر المترددين!*")
+                        await bot.send_message(user_id, msg, parse_mode=ParseMode.MARKDOWN)
                     else:
-                        # --- رسالة المستخدم المجاني: توصية مضللة (Blurred) ---
                         kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
-                        blurred_text = (
-                            f"📡 **[ رادار الذكاء الاصطناعي ]**\n"
-                            f"───────────────────\n"
-                            f"⚠️ **تم رصد انفجار سعري محتمل لعملة من القائمة الذهبية!**\n\n"
-                            f"💎 **العملة:** `****` (مخفي للمشتركين فقط)\n"
-                            f"📈 **الحالة:** تجميع حيتان واختراق وشيك.\n\n"
-                            f"🔥 اشترك الآن لكشف العملة والحصول على أهداف الدخول والخروج الدقيقة قبل فوات الأوان!"
-                        ) if lang == "ar" else (
-                            f"📡 **[ AI MARKET RADAR ]**\n"
-                            f"───────────────────\n"
-                            f"⚠️ **Potential breakout detected for a Top-Tier coin!**\n\n"
-                            f"💎 **Symbol:** `****` (Hidden for VIP only)\n"
-                            f"📈 **Status:** Whale accumulation detected.\n\n"
-                            f"🔥 Subscribe now to unlock the symbol and get precise entry/exit targets!"
-                        )
-                        await bot.send_message(user_id, blurred_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
-                except Exception as e:
-                    print(f"Error sending radar alert to {uid_str}: {e}")
-            break # عملة واحدة لكل دورة رادار
+                        blurred = (f"📡 **[ رادار الذكاء الاصطناعي ]**\n───────────────────\n"
+                                   f"⚠️ **تم رصد انفجار سعري محتمل لعملة من القائمة الذهبية!**\n\n"
+                                   f"💎 **العملة:** `****` (مخفي للمشتركين فقط)\n📈 **الحالة:** تجميع حيتان واختراق وشيك.\n\n"
+                                   f"🔥 اشترك الآن لكشف العملة والحصول على أهداف الدخول والخروج الدقيقة!") if lang == "ar" else \
+                                  (f"📡 **[ AI MARKET RADAR ]**\n───────────────────\n"
+                                   f"⚠️ **Potential breakout detected for a Top-Tier coin!**\n\n"
+                                   f"💎 **Symbol:** `****` (Hidden for VIP only)\n📈 **Status:** Whale accumulation detected.\n\n"
+                                   f"🔥 Subscribe now to unlock the symbol!")
+                        await bot.send_message(user_id, blurred, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+                except: continue
+            break
 
 # --- لوحات الأزرار ---
-language_keyboard = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")],
-        [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]
-    ]
-)
-
-payment_keyboard_ar = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="💎 اشترك الآن (10 USDT مدى الحياة)", callback_data="pay_with_crypto")],
-        [InlineKeyboardButton(text=" اشترك الآن بـ 500 نجمة مدى الحياة⭐", callback_data="pay_with_stars")]
-    ]
-)
-
-payment_keyboard_en = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="💎 Subscribe Now (10 USDT Lifetime)", callback_data="pay_with_crypto")],
-        [InlineKeyboardButton(text="⭐ Subscribe Now with 500 Stars Lifetime", callback_data="pay_with_stars")]
-    ]
-)
-
-timeframe_keyboard = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [
-            InlineKeyboardButton(text="أسبوعي", callback_data="tf_weekly"),
-            InlineKeyboardButton(text="يومي", callback_data="tf_daily"),
-            InlineKeyboardButton(text="4 ساعات", callback_data="tf_4h")
-        ]
-    ]
-)
-
-timeframe_keyboard_en = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [
-            InlineKeyboardButton(text="Weekly", callback_data="tf_weekly"),
-            InlineKeyboardButton(text="Daily", callback_data="tf_daily"),
-            InlineKeyboardButton(text="4H", callback_data="tf_4h")
-        ]
-    ]
-)
+language_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar")],
+    [InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]
+])
+payment_keyboard_ar = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="💎 اشترك الآن (10 USDT مدى الحياة)", callback_data="pay_with_crypto")],
+    [InlineKeyboardButton(text=" اشترك الآن بـ 500 نجمة مدى الحياة⭐", callback_data="pay_with_stars")]
+])
+payment_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="💎 Subscribe Now (10 USDT Lifetime)", callback_data="pay_with_crypto")],
+    [InlineKeyboardButton(text="⭐ Subscribe Now with 500 Stars Lifetime", callback_data="pay_with_stars")]
+])
+timeframe_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="أسبوعي", callback_data="tf_weekly"), InlineKeyboardButton(text="يومي", callback_data="tf_daily"), InlineKeyboardButton(text="4 ساعات", callback_data="tf_4h")]
+])
+timeframe_keyboard_en = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="Weekly", callback_data="tf_weekly"), InlineKeyboardButton(text="Daily", callback_data="tf_daily"), InlineKeyboardButton(text="4H", callback_data="tf_4h")]
+])
 
 # --- أوامر البوت ---
 @dp.message(F.text.in_({'/start', 'start'}))
 async def start(m: types.Message):
-    await m.answer(
-        "👋 أهلاً بك، يرجى اختيار لغتك للمتابعة:\nWelcome, please choose your language to continue:",
-        reply_markup=language_keyboard
-    )
+    async with dp['db_pool'].acquire() as conn:
+        await conn.execute("INSERT INTO users_info (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", m.from_user.id)
+    await m.answer("👋 أهلاً بك، اختر لغتك للمتابعة | Welcome, choose your language:", reply_markup=language_keyboard)
 
 @dp.callback_query(F.data.startswith("lang_"))
 async def set_lang(cb: types.CallbackQuery):
     lang = cb.data.split("_")[1]
-    uid = str(cb.from_user.id)
-    user_lang[uid] = lang
-    save_users(user_lang)
-
-    # إذا المستخدم مشترك
-    if is_user_paid(cb.from_user.id):
-        await cb.message.edit_text(
-            "✅ أهلاً بك مجدداً! اشتراكك مفعل.\nأرسل رمز العملة للتحليل."
-            if lang == "ar"
-            else "✅ Welcome back! Your subscription is active.\nSend a coin symbol to analyze."
-        )
-        return
-
-    # المستخدم غير مشترك، تحقق من التجربة المجانية
-    if has_trial(uid):
-        # لا يزال يمكنه تجربة مجانية
-        await cb.message.edit_text(
-            "🎁 لديك تجربة مجانية واحدة! أرسل رمز العملة للتحليل."
-            if lang == "ar"
-            else "🎁 You have one free trial! Send a coin symbol for analysis."
-        )
-        return
-
-    # إذا انتهت التجربة المجانية
-    kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
-    await cb.message.edit_text(
-        "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة."
-        if lang == "ar"
-        else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐.",
-        reply_markup=kb
-    )
+    uid = cb.from_user.id
+    async with dp['db_pool'].acquire() as conn:
+        await conn.execute("UPDATE users_info SET lang = $1 WHERE user_id = $2", lang, uid)
+    user_data_cache[uid] = {"lang": lang}
+    if is_user_paid(uid):
+        await cb.message.edit_text("✅ اشتراكك مفعل. أرسل رمز العملة." if lang == "ar" else "✅ Subscription active. Send symbol.")
+    elif has_trial(str(uid)):
+        await cb.message.edit_text("🎁 لديك تجربة مجانية واحدة! أرسل رمز العملة." if lang == "ar" else "🎁 One free trial available! Send symbol.")
+    else:
+        await cb.message.edit_text("⚠️ انتهت التجربة. اشترك للوصول الكامل.", reply_markup=payment_keyboard_ar if lang=="ar" else payment_keyboard_en)
 
 @dp.callback_query(F.data == "pay_with_crypto")
 async def process_crypto_payment(cb: types.CallbackQuery):
-    lang = user_lang.get(str(cb.from_user.id), "ar")
-    await cb.message.edit_text(
-        "⏳ يتم إنشاء رابط الدفع، يرجى الانتظار..."
-        if lang == "ar"
-        else "⏳ Generating payment link, please wait..."
-    )
-
-    invoice_url = await create_nowpayments_invoice(cb.from_user.id)
+    uid = cb.from_user.id
+    async with dp['db_pool'].acquire() as conn:
+        row = await conn.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", uid)
+    lang = row['lang'] if row else "ar"
+    await cb.message.edit_text("⏳ جاري إنشاء الرابط..." if lang == "ar" else "⏳ Generating link...")
+    invoice_url = await create_nowpayments_invoice(uid)
     if invoice_url:
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="💳 ادفع الآن" if lang=="ar" else "💳 Pay Now", url=invoice_url)]]
-        )
-        msg = (
-            "✅ تم إنشاء رابط الدفع.\nلإتمام الاشتراك، ادفع عبر الرابط أدناه.\n\nUSDT (BEP20)"
-            if lang == "ar"
-            else "✅ Payment link created.\nTo complete your subscription, pay via the link below.\n\nUSDT (BEP20)"
-        )
-        await cb.message.edit_text(msg, reply_markup=kb)
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 ادفع الآن" if lang=="ar" else "💳 Pay Now", url=invoice_url)]])
+        await cb.message.edit_text("✅ ادفع عبر الرابط (USDT BEP20):" if lang == "ar" else "✅ Pay via link (USDT BEP20):", reply_markup=kb)
     else:
-        await cb.message.edit_text(
-            "❌ حدث خطأ. يرجى المحاولة مرة أخرى لاحقاً."
-            if lang == "ar"
-            else "❌ An error occurred. Please try again later."
-        )
+        await cb.message.edit_text("❌ خطأ، حاول لاحقاً.")
     await cb.answer()
 
 @dp.callback_query(F.data == "pay_with_stars")
 async def process_stars_payment(cb: types.CallbackQuery):
-    lang = user_lang.get(str(cb.from_user.id), "ar")
+    async with dp['db_pool'].acquire() as conn:
+        row = await conn.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", cb.from_user.id)
+    await send_stars_invoice(cb.from_user.id, row['lang'] if row else "ar")
     await cb.answer()
-    await send_stars_invoice(cb.from_user.id, lang)
 
-# --- Precheckout & Successful Payment ---
 @dp.pre_checkout_query()
 async def pre_checkout(pre_checkout_q: PreCheckoutQuery):
     await bot.answer_pre_checkout_query(pre_checkout_q.id, ok=True)
@@ -328,309 +209,96 @@ async def pre_checkout(pre_checkout_q: PreCheckoutQuery):
 @dp.message(F.content_type == "successful_payment")
 async def successful_payment(msg: types.Message):
     user_id = msg.from_user.id
+    async with dp['db_pool'].acquire() as conn:
+        await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", user_id)
     paid_users.add(user_id)
-    lang = user_lang.get(str(user_id), "ar")
-    await msg.answer(
-        "✅ تم تأكيد الدفع بالنجوم! يمكنك الآن استخدام البوت بالكامل."
-        if lang == "ar" else
-        "✅ Payment with Stars confirmed! You can now use the bot fully."
-    )
+    await msg.answer("✅ تم تفعيل الاشتراك بنجاح!")
 
-# --- حالة البوت وأوامر الدعم ---
 @dp.message(Command("status"))
 async def status_cmd(m: types.Message):
-    await m.answer(f"ℹ️ عدد المستخدمين الذين ضغطوا /start: {len(user_lang)}")
+    async with dp['db_pool'].acquire() as conn:
+        count = await conn.fetchval("SELECT count(*) FROM users_info")
+    await m.answer(f"ℹ️ عدد المستخدمين المسجلين: {count}")
 
 @dp.message(Command("admin"))
 async def admin_cmd(m: types.Message):
-    await m.answer(
-        "📌 للتواصل مع الدعم، يرجى التواصل مع هذا الحساب:\n@AiCrAdmin\n\n"
-        "📌 For support, contact:\n@AiCrAdmin"
-    )
+    await m.answer("📌 للدعم: @AiCrAdmin")
 
 @dp.message(Command("reset_trials"))
 async def reset_trials_cmd(m: types.Message):
-    # للأدمن فقط
-    if m.from_user.id != ADMIN_USER_ID:
-        await m.answer("❌ هذا الأمر مخصص للإدارة فقط.")
-        return
-
-    pool = m.bot['db_pool']
-
-    # مسح التجارب من قاعدة البيانات
-    async with pool.acquire() as conn:
+    if m.from_user.id != ADMIN_USER_ID: return
+    async with dp['db_pool'].acquire() as conn:
         await conn.execute("DELETE FROM trial_users")
-
-    # مسح التجارب من الذاكرة
     trial_users.clear()
+    await m.answer("✅ تم تصفير التجارب المجانية.")
 
-    await m.answer(
-        "✅ تم مسح جميع مستخدمي التجربة المجانية.\n"
-        "يمكن للجميع الآن استخدام التجربة مرة أخرى 🎁"
-    )
-
-# --- التعامل مع رموز العملات ---
 @dp.message(F.text)
 async def handle_symbol(m: types.Message):
-    if m.text.startswith('/'):
+    if m.text.startswith('/'): return
+    uid = m.from_user.id
+    async with dp['db_pool'].acquire() as conn:
+        row = await conn.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", uid)
+    lang = row['lang'] if row else "ar"
+    if not is_user_paid(uid) and not has_trial(str(uid)):
+        await m.answer("⚠️ انتهت تجربتك.", reply_markup=payment_keyboard_ar if lang=="ar" else payment_keyboard_en)
         return
-
-    uid = str(m.from_user.id)
-    lang = user_lang.get(uid, "ar")
-
-    # تحقق أولًا إذا انتهت التجربة ولم يشترك
-    if not is_user_paid(m.from_user.id) and not has_trial(uid):
-        kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
-        await m.answer(
-            "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة."
-            if lang == "ar"
-            else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐.",
-            reply_markup=kb
-        )
-        return
-        
     sym = m.text.strip().lower()
-    await m.answer("⏳ جاري جلب السعر..." if lang == "ar" else "⏳ Fetching price...")
     price = await get_price_cmc(sym)
-
     if not price:
-        await m.answer(
-            "❌ لم أتمكن من جلب السعر الحالي للعملة."
-            if lang == "ar"
-            else "❌ Couldn't fetch current price."
-        )
+        await m.answer("❌ تعذر جلب السعر.")
         return
+    if uid not in user_data_cache: user_data_cache[uid] = {}
+    user_data_cache[uid].update({"symbol": sym, "price": price})
+    await m.answer(f"💵 السعر: ${price:.6f}\nاختر الإطار الزمني:", reply_markup=timeframe_keyboard if lang=="ar" else timeframe_keyboard_en)
 
-    await m.answer(
-        f"💵 السعر الحالي: ${price:.6f}"
-        if lang == "ar"
-        else f"💵 Current price: ${price:.6f}"
-    )
-
-    user_lang[uid + "_symbol"] = sym
-    user_lang[uid + "_price"] = price
-    save_users(user_lang)
-
-    kb = timeframe_keyboard if lang == "ar" else timeframe_keyboard_en
-    await m.answer(
-        "⏳ اختر الإطار الزمني للتحليل:"
-        if lang == "ar"
-        else "⏳ Select timeframe for analysis:",
-        reply_markup=kb
-    )
-
-# --- اختيار الإطار الزمني مع تجربة مجانية ---
 @dp.callback_query(F.data.startswith("tf_"))
 async def set_timeframe(cb: types.CallbackQuery):
-    uid = str(cb.from_user.id)
-    lang = user_lang.get(uid, "ar")
-
-    tf_map = {
-        "tf_weekly": "weekly",
-        "tf_daily": "daily",
-        "tf_4h": "4h"
-    }
-
-    timeframe = tf_map.get(cb.data)
-    if not timeframe:
-        await cb.answer("❌ خطأ في اختيار الإطار الزمني." if lang=="ar" else "❌ Invalid timeframe.", show_alert=True)
-        return
-
-    sym = user_lang.get(uid + "_symbol")
-    price = user_lang.get(uid + "_price")
-
-    if not sym or not price:
-        await cb.answer("❌ لم يتم تحديد العملة بعد." if lang=="ar" else "❌ No symbol selected yet.", show_alert=True)
-        return
-
-    # --- التحقق من الاشتراك أو التجربة ---
-    if not is_user_paid(cb.from_user.id):
-        # المستخدم لديه تجربة مجانية أول مرة
-        if has_trial(uid):
-            # يسمح بالتحليل أول مرة
-            pass
-        else:
-            # انتهت التجربة، يطلب الاشتراك
-            kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
-            await cb.message.edit_text(
-                "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة."
-                if lang == "ar"
-                else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐.",
-                reply_markup=kb
-            )
-            return
+    uid = cb.from_user.id
+    async with dp['db_pool'].acquire() as conn:
+        row = await conn.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", uid)
+    lang = row['lang'] if row else "ar"
+    tf = cb.data.replace("tf_", "")
+    u_cache = user_data_cache.get(uid, {})
+    sym, price = u_cache.get("symbol"), u_cache.get("price")
+    if not is_user_paid(uid) and not has_trial(str(uid)): return
 
     await cb.message.edit_text("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
     
-    # --- تحليل بواسطة Groq ---
+    # --- البرومبت التفصيلي (الذي طلبته) ---
     if lang == "ar":
-        prompt = (
-            f"سعر العملة {sym.upper()} الآن هو {price:.6f}$.\n"
-            f"قم بتحليل التشارت للإطار الزمني {timeframe} باستخدام مؤشرات شاملة:\n"
-            f"- خطوط الدعم والمقاومة\n"
-            f"- RSI, MACD, MA\n"
-            f"- Bollinger Bands\n"
-            f"- Fibonacci Levels\n"
-            f"- Stochastic Oscillator\n"
-            f"- Volume Analysis\n"
-            f"- Trendlines باستخدام Regression\n"
-            f"ثم قدم:\n"
-            f"1. تقييم عام (صعود أم هبوط؟)\n"
-            f"2. أقرب مقاومة ودعم\n"
-            f"3. ثلاثة أهداف مستقبلية (قصير، متوسط، بعيد المدى)\n"
-            f"✅ استخدم العربية فقط\n"
-            f"❌ لا تشرح المشروع، فقط تحليل التشارت"
-        )
+        prompt = (f"سعر العملة {sym.upper()} الآن هو {price:.6f}$.\nقم بتحليل التشارت للإطار الزمني {tf} باستخدام مؤشرات شاملة:\n"
+                  f"- خطوط الدعم والمقاومة\n- RSI, MACD, MA\n- Bollinger Bands\n- Fibonacci Levels\n- Stochastic Oscillator\n- Volume Analysis\n- Trendlines باستخدام Regression\n"
+                  f"ثم قدم:\n1. تقييم عام (صعود أم هبوط؟)\n2. أقرب مقاومة ودعم\n3. ثلاثة أهداف مستقبلية (قصير، متوسط، بعيد المدى)\n✅ استخدم العربية فقط\n❌ لا تشرح المشروع، فقط تحليل التشارت")
     else:
-        prompt = (
-            f"The current price of {sym.upper()} is ${price:.6f}.\n"
-            f"Analyze the {timeframe} chart using comprehensive indicators:\n"
-            f"- Support and Resistance\n"
-            f"- RSI, MACD, MA\n"
-            f"- Bollinger Bands\n"
-            f"- Fibonacci Levels\n"
-            f"- Stochastic Oscillator\n"
-            f"- Volume Analysis\n"
-            f"- Trendlines using Regression\n"
-            f"Then provide:\n"
-            f"1. General trend (up/down)\n"
-            f"2. Nearest resistance/support\n"
-            f"3. Three future price targets\n"
-            f"✅ Answer in English only\n"
-            f"❌ Don't explain the project, only chart analysis"
-        )
+        prompt = (f"The current price of {sym.upper()} is ${price:.6f}.\nAnalyze the {tf} chart using comprehensive indicators:\n"
+                  f"- Support and Resistance\n- RSI, MACD, MA\n- Bollinger Bands\n- Fibonacci Levels\n- Stochastic Oscillator\n- Volume Analysis\n- Trendlines using Regression\n"
+                  f"Then provide:\n1. General trend (up/down)\n2. Nearest resistance/support\n3. Three future price targets\n✅ Answer in English only\n❌ Don't explain the project, only chart analysis")
 
     analysis = await ask_groq(prompt, lang=lang)
     await cb.message.answer(analysis)
+    if not is_user_paid(uid) and has_trial(str(uid)):
+        trial_users.add(str(uid))
+        async with dp['db_pool'].acquire() as conn:
+            await conn.execute("INSERT INTO trial_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
+    if not is_user_paid(uid):
+        await cb.message.answer("للوصول الكامل، اشترك بـ 10 USDT.", reply_markup=payment_keyboard_ar if lang=="ar" else payment_keyboard_en)
 
-    # --- بعد التحليل لأول مرة، نسجل المستخدم كمستخدم جرب التجربة ---
-    if not is_user_paid(cb.from_user.id) and has_trial(uid):
-        trial_users.add(uid)
-        pool = cb.bot['db_pool']
-        async with pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO trial_users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
-                cb.from_user.id
-            )
-
-    # --- اقتراح الاشتراك بعد التحليل إذا المستخدم لم يشترك ---
-    if not is_user_paid(cb.from_user.id):
-        kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
-        await cb.message.answer(
-            "للوصول الكامل، يرجى الاشتراك مقابل 10 USDT لمرة واحدة."
-            if lang == "ar"
-            else "For full access, please subscribe for a one-time fee of 10 USDT.",
-            reply_markup=kb
-        )
-
-# --- Webhook Handlers ---
-async def handle_telegram_webhook(req: web.Request):
-    try:
-        update_data = await req.json()
-        update = types.Update(**update_data)
-        await dp.feed_update(bot=bot, update=update)
-    except Exception as e:
-        print(f"❌ Error processing update: {e}")
-    finally:
-        return web.Response(status=200)
-
-async def handle_nowpayments_webhook(req: web.Request):
-    pool = req.app['db_pool']
-    try:
-        signature = req.headers.get("x-nowpayments-sig")
-        body = await req.read()
-
-        if not signature or not NOWPAYMENTS_IPN_SECRET:
-            return web.Response(status=400, text="Configuration error")
-
-        h = hmac.new(NOWPAYMENTS_IPN_SECRET.encode(), body, hashlib.sha512)
-        expected_signature = h.hexdigest()
-
-        if not hmac.compare_digest(expected_signature, signature):
-            return web.Response(status=401, text="Invalid signature")
-
-        data = json.loads(body)
-
-        if data.get("payment_status") == "finished":
-            user_id = int(data.get("order_id"))
-
-            if user_id not in paid_users:
-                async with pool.acquire() as conn:
-                    await conn.execute(
-                        "INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
-                        user_id
-                    )
-
-                paid_users.add(user_id)
-                lang = user_lang.get(str(user_id), "ar")
-
-                await bot.send_message(
-                    user_id,
-                    "✅ تم تأكيد الدفع بنجاح! شكراً لاشتراكك. يمكنك الآن استخدام البوت بشكل كامل."
-                    if lang == "ar"
-                    else "✅ Payment confirmed! Thank you for subscribing. You can now use the bot fully."
-                )
-
-        return web.Response(status=200, text="OK")
-
-    except Exception as e:
-        print(f"❌ Error in NOWPayments webhook: {e}")
-        return web.Response(status=500, text="Internal Server Error")
-
-# --- Healthcheck ---
-async def health_check(req: web.Request):
-    print("Health check endpoint was called by Render.")
-    return web.Response(text="OK", status=200)
-
-# --- Startup / Shutdown ---
-async def on_startup(app_instance: web.Application):
-    print("Connecting to database...")
+# --- تشغيل التطبيق وقاعدة البيانات ---
+async def on_startup(app_instance):
     pool = await asyncpg.create_pool(DATABASE_URL)
     app_instance['db_pool'] = pool
-
+    dp['db_pool'] = pool
     async with pool.acquire() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS paid_users (
-                user_id BIGINT PRIMARY KEY
-            );
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS trial_users (
-                user_id BIGINT PRIMARY KEY
-            );
-        """)
-        await conn.execute(
-            "INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
-            ADMIN_USER_ID
-        )
-
-        records = await conn.fetch("SELECT user_id FROM paid_users")
-        paid_users.update(r['user_id'] for r in records)
-
-        trial_records = await conn.fetch("SELECT user_id FROM trial_users")
-        trial_users.update(str(r['user_id']) for r in trial_records)
-
-    # تشغيل رادار الفرص (VIP + Blurred) في الخلفية
+        await conn.execute("CREATE TABLE IF NOT EXISTS users_info (user_id BIGINT PRIMARY KEY, lang TEXT)")
+        await conn.execute("CREATE TABLE IF NOT EXISTS paid_users (user_id BIGINT PRIMARY KEY)")
+        await conn.execute("CREATE TABLE IF NOT EXISTS trial_users (user_id BIGINT PRIMARY KEY)")
+        p_records = await conn.fetch("SELECT user_id FROM paid_users"); paid_users.update(r['user_id'] for r in p_records)
+        t_records = await conn.fetch("SELECT user_id FROM trial_users"); trial_users.update(str(r['user_id']) for r in t_records)
     asyncio.create_task(ai_opportunity_radar())
+    await bot.set_webhook(f"{WEBHOOK_URL}/")
 
-    webhook_url = f"{WEBHOOK_URL}/"
-    await bot.set_webhook(webhook_url)
-    print(f"✅ Webhook set to {webhook_url}")
-
-async def on_shutdown(app_instance: web.Application):
-    print("ℹ️ Shutting down...")
-    await app_instance['db_pool'].close()
-    await bot.delete_webhook()
-    await bot.session.close()
-
-# --- App Init ---
 app = web.Application()
-app.router.add_get("/health", health_check)
-app.router.add_post("/", handle_telegram_webhook)
-app.router.add_post("/webhook/nowpayments", handle_nowpayments_webhook)
+app.router.add_post("/", lambda r: dp.feed_update(bot, types.Update(**(asyncio.run(r.json()))))) 
 app.on_startup.append(on_startup)
-app.on_shutdown.append(on_shutdown)
-
 if __name__ == "__main__":
-    print("🚀 Starting bot locally for testing...")
     web.run_app(app, host="0.0.0.0", port=PORT)
