@@ -330,9 +330,41 @@ async def on_timeframe_selected(cb: types.CallbackQuery):
     await cb.message.edit_text("🤖 جاري التحليل..." if lang == "ar" else "🤖 Analyzing...")
     
     if lang == "ar":
-        prompt = f"سعر {sym} هو {price:.6f}$. حلل {tf} باستخدام: RSI, MACD, Fibonacci, Support/Resistance. عربي فقط."
+        prompt = (
+            f"سعر العملة {sym.upper()} الآن هو {price:.6f}$.\n"
+            f"قم بتحليل التشارت للإطار الزمني {timeframe} باستخدام مؤشرات شاملة:\n"
+            f"- خطوط الدعم والمقاومة\n"
+            f"- RSI, MACD, MA\n"
+            f"- Bollinger Bands\n"
+            f"- Fibonacci Levels\n"
+            f"- Stochastic Oscillator\n"
+            f"- Volume Analysis\n"
+            f"- Trendlines باستخدام Regression\n"
+            f"ثم قدم:\n"
+            f"1. تقييم عام (صعود أم هبوط؟)\n"
+            f"2. أقرب مقاومة ودعم\n"
+            f"3. ثلاثة أهداف مستقبلية (قصير، متوسط، بعيد المدى)\n"
+            f"✅ استخدم العربية فقط\n"
+            f"❌ لا تشرح المشروع، فقط تحليل التشارت"
+        )
     else:
-        prompt = f"Price of {sym} is ${price:.6f}. Analyze {tf} using: RSI, MACD, Fibonacci, Support/Resistance. English only."
+        prompt = (
+            f"The current price of {sym.upper()} is ${price:.6f}.\n"
+            f"Analyze the {timeframe} chart using comprehensive indicators:\n"
+            f"- Support and Resistance\n"
+            f"- RSI, MACD, MA\n"
+            f"- Bollinger Bands\n"
+            f"- Fibonacci Levels\n"
+            f"- Stochastic Oscillator\n"
+            f"- Volume Analysis\n"
+            f"- Trendlines using Regression\n"
+            f"Then provide:\n"
+            f"1. General trend (up/down)\n"
+            f"2. Nearest resistance/support\n"
+            f"3. Three future price targets\n"
+            f"✅ Answer in English only\n"
+            f"❌ Don't explain the project, only chart analysis"
+        )
 
     analysis = await ask_groq(prompt, lang=lang)
     await cb.message.answer(analysis)
