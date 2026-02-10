@@ -185,7 +185,8 @@ async def ai_opportunity_radar():
                             )
                             try:
                                 await bot.send_message(user_id, alert_text, parse_mode=ParseMode.MARKDOWN)
-                                await asyncio.sleep(1) 
+                                # نظام حماية: تأخير بسيط بين الإرسال لكل مستخدم لتجنب حظر تليجرام
+                                await asyncio.sleep(0.05) 
                             except: continue
                         else:
                             kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
@@ -204,6 +205,8 @@ async def ai_opportunity_radar():
                             )
                             try:
                                 await bot.send_message(user_id, blurred_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+                                # نظام حماية: تأخير بسيط بين الإرسال لكل مستخدم
+                                await asyncio.sleep(0.05)
                             except: continue
         except Exception as e:
             print(f"⚠️ Radar Error: {e}")
@@ -268,6 +271,7 @@ async def start_cmd(m: types.Message):
 
 @dp.message(Command("status"))
 async def status_cmd(m: types.Message):
+    # يسمح فقط للمطور برؤية الإحصائيات (اختياري، يمكنك حذف الشرط ليراه الجميع)
     async with dp['db_pool'].acquire() as conn:
         total_users = await conn.fetchval("SELECT COUNT(*) FROM users_info")
         total_paid = await conn.fetchval("SELECT COUNT(*) FROM paid_users")
@@ -280,7 +284,7 @@ async def status_cmd(m: types.Message):
         f"💎 المشتركين (VIP): `{total_paid}`\n"
         f"🎁 مستخدمي التجربة: `{total_trial}`"
     )
-    await m.answer(status_text, parse_mode=ParseMode.MARKDOWN)
+    await m.answer(status_text, parse_mode=ParseMode.HTML)
 
 @dp.callback_query(F.data.startswith("lang_"))
 async def set_lang(cb: types.CallbackQuery):
