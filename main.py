@@ -266,6 +266,22 @@ async def start_cmd(m: types.Message):
         reply_markup=language_keyboard
     )
 
+@dp.message(Command("status"))
+async def status_cmd(m: types.Message):
+    async with dp['db_pool'].acquire() as conn:
+        total_users = await conn.fetchval("SELECT COUNT(*) FROM users_info")
+        total_paid = await conn.fetchval("SELECT COUNT(*) FROM paid_users")
+        total_trial = await conn.fetchval("SELECT COUNT(*) FROM trial_users")
+    
+    status_text = (
+        f"📊 **إحصائيات البوت:**\n"
+        f"───────────────────\n"
+        f"👥 إجمالي المستخدمين: `{total_users}`\n"
+        f"💎 المشتركين (VIP): `{total_paid}`\n"
+        f"🎁 مستخدمي التجربة: `{total_trial}`"
+    )
+    await m.answer(status_text, parse_mode=ParseMode.MARKDOWN)
+
 @dp.callback_query(F.data.startswith("lang_"))
 async def set_lang(cb: types.CallbackQuery):
     lang = cb.data.split("_")[1]
