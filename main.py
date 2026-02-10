@@ -134,7 +134,7 @@ async def ai_opportunity_radar():
     print("🚀 AI Breakout Radar is active...")
     
     while True:
-        await asyncio.sleep(14400) # كل 4 ساعات
+        await asyncio.sleep(1440) # كل 4 ساعات
         for symbol in watch_list:
             price = await get_price_cmc(symbol)
             if not price: continue
