@@ -14,6 +14,7 @@ import httpx
 from dotenv import load_dotenv
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command
+import random
 
 # --- تحميل الإعدادات ---
 load_dotenv()
@@ -132,67 +133,77 @@ async def send_stars_invoice(chat_id: int, lang="ar"):
 
 # --- ميزة الرادار (AI Opportunity Radar) ---
 async def ai_opportunity_radar():
-    """رادار الذكاء الاصطناعي - تم التعديل ليعمل فوراً عند التشغيل ثم كل 4 ساعات"""
-    watch_list = ["BTC", "ETH", "SOL", "BNB", "TIA", "FET", "INJ", "LINK"]
-    print("🚀 AI Breakout Radar is active...")
+    """رادار الذكاء الاصطناعي - تم التعديل لجلب أفضل 50 عملة تلقائياً كل 4 ساعات"""
+    print("🚀 AI Breakout Radar is active (Top 50 Binance Coins)...")
     
     while True:
-        # الفحص يبدأ فوراً داخل الحلقة
-        for symbol in watch_list:
-            price = await get_price_cmc(symbol)
-            if not price: continue
+        try:
+            # جلب قائمة أفضل 50 عملة من كوين ماركت كاب
+            url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
+            params = {"start": "1", "limit": "50", "convert": "USD"}
+            headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
             
-            pool = dp.get('db_pool')
-            if not pool: continue
-            
-            async with pool.acquire() as conn:
-                users = await conn.fetch("SELECT user_id, lang FROM users_info")
-
-            for row in users:
-                user_id = row['user_id']
-                lang = row['lang'] or "ar"
-                
-                # إرسال التنبيه للمشتركين (تحليل كامل)
-                if is_user_paid(user_id):
-                    prompt = (
-                        f"Analyze the current price of {symbol} at ${price:,.2f}. "
-                        f"Write a very short urgent breakout alert in {'Arabic' if lang=='ar' else 'English'}."
-                    )
-                    ai_insight = await ask_groq(prompt, lang=lang)
-                    alert_text = (
-                        f"🚨 **[ VIP BREAKOUT ALERT ]** 🚨\n"
-                        f"───────────────────\n"
-                        f"💎 **العملة:** #{symbol.upper()}\n"
-                        f"💵 **السعر الحالي:** `${price:,.4f}`\n"
-                        f"📈 **رؤية الذكاء الاصطناعي:**\n\n"
-                        f"*{ai_insight}*\n"
-                    )
-                    try:
-                        await bot.send_message(user_id, alert_text, parse_mode=ParseMode.MARKDOWN)
-                        await asyncio.sleep(1) # تأخير بسيط لتجنب الـ Rate Limit
-                    except: continue
-                
-                # إرسال التنبيه لغير المشتركين (رسالة تشويقية)
+            async with httpx.AsyncClient() as client:
+                res = await client.get(url, headers=headers, params=params)
+                if res.status_code == 200:
+                    watch_list = res.json()["data"]
+                    # اختيار عملة واحدة عشوائياً من الـ 50 للفحص في كل دورة
+                    selected_coin = random.choice(watch_list)
+                    symbol = selected_coin["symbol"]
+                    price = selected_coin["quote"]["USD"]["price"]
                 else:
-                    kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
-                    blurred_text = (
-                        f"📡 **[ رادار الذكاء الاصطناعي ]**\n"
-                        f"───────────────────\n"
-                        f"⚠️ **تم رصد انفجار سعري محتمل لعملة من القائمة الذهبية!**\n\n"
-                        f"💎 **العملة:** `****` (مخفي للمشتركين فقط)\n"
-                        f"🔥 اشترك الآن لكشف العملة والحصول على الأهداف!"
-                    ) if lang == "ar" else (
-                        f"📡 **[ AI RADAR ]**\n"
-                        f"───────────────────\n"
-                        f"⚠️ **Potential breakout detected!**\n\n"
-                        f"💎 **Symbol:** `****` (VIP Only)\n"
-                        f"🔥 Subscribe now to unlock!"
-                    )
-                    try:
-                        await bot.send_message(user_id, blurred_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
-                    except: continue
-            break # يرسل عملة واحدة في كل دورة رادار
-        
+                    print("⚠️ Failed to fetch CMC list, using fallback...")
+                    symbol, price = "BTC", await get_price_cmc("BTC")
+
+            if symbol and price:
+                pool = dp.get('db_pool')
+                if pool:
+                    async with pool.acquire() as conn:
+                        users = await conn.fetch("SELECT user_id, lang FROM users_info")
+
+                    for row in users:
+                        user_id = row['user_id']
+                        lang = row['lang'] or "ar"
+                        
+                        if is_user_paid(user_id):
+                            prompt = (
+                                f"Analyze the current price of {symbol} at ${price:,.2f}. "
+                                f"Write a very short urgent breakout alert in {'Arabic' if lang=='ar' else 'English'}."
+                            )
+                            ai_insight = await ask_groq(prompt, lang=lang)
+                            alert_text = (
+                                f"🚨 **[ VIP BREAKOUT ALERT ]** 🚨\n"
+                                f"───────────────────\n"
+                                f"💎 **العملة:** #{symbol.upper()}\n"
+                                f"💵 **السعر الحالي:** `${price:,.4f}`\n"
+                                f"📈 **رؤية الذكاء الاصطناعي:**\n\n"
+                                f"*{ai_insight}*\n"
+                            )
+                            try:
+                                await bot.send_message(user_id, alert_text, parse_mode=ParseMode.MARKDOWN)
+                                await asyncio.sleep(1) 
+                            except: continue
+                        else:
+                            kb = payment_keyboard_ar if lang == "ar" else payment_keyboard_en
+                            blurred_text = (
+                                f"📡 **[ رادار الذكاء الاصطناعي ]**\n"
+                                f"───────────────────\n"
+                                f"⚠️ **تم رصد انفجار سعري محتمل لعملة قوية في بايننس!**\n\n"
+                                f"💎 **العملة:** `****` (مخفي للمشتركين فقط)\n"
+                                f"🔥 اشترك الآن لكشف العملة والحصول على الأهداف!"
+                            ) if lang == "ar" else (
+                                f"📡 **[ AI RADAR ]**\n"
+                                f"───────────────────\n"
+                                f"⚠️ **Potential breakout detected in Binance coin!**\n\n"
+                                f"💎 **Symbol:** `****` (VIP Only)\n"
+                                f"🔥 Subscribe now to unlock!"
+                            )
+                            try:
+                                await bot.send_message(user_id, blurred_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+                            except: continue
+        except Exception as e:
+            print(f"⚠️ Radar Error: {e}")
+
         print("⏳ Radar finished round. Waiting 4 hours...")
         await asyncio.sleep(14400) # الانتظار 4 ساعات
 
