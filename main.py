@@ -173,8 +173,12 @@ async def handle_symbol(m: types.Message):
     user = await pool.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", uid)
     lang = user['lang'] if user else "ar"
     
+    # --- تعديل: إظهار أزرار الاشتراك عند انتهاء التجربة ---
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
-        return await m.answer("⚠️ اشترك للمتابعة", reply_markup=get_payment_kb(lang))
+        msg = ("✨ انتهت تجربتك المجانية. نأمل أن يكون التحليل قد نال إعجابك! اشترك الآن لفتح ميزات VIP غير المحدودة." 
+               if lang=="ar" else 
+               "✨ Your free trial has ended. We hope you enjoyed the analysis! Subscribe now to unlock unlimited VIP features.")
+        return await m.answer(msg, reply_markup=get_payment_kb(lang))
     
     sym = m.text.strip().upper()
     price = await get_price_cmc(sym)
@@ -228,12 +232,11 @@ async def handle_webhook(req: web.Request):
     try:
         data = await req.json()
         update = types.Update(**data)
-        # تشغيل المعالجة في الخلفية لمنع التايم أوت
         asyncio.create_task(dp.feed_update(bot, update))
     except Exception:
         pass
         
-    return web.Response(text="ok") # الرد الفوري على ريندر
+    return web.Response(text="ok")
 
 async def on_startup(app_instance):
     pool = await asyncpg.create_pool(DATABASE_URL)
