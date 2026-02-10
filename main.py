@@ -130,11 +130,12 @@ async def send_stars_invoice(chat_id: int, lang="ar"):
 
 # --- ميزة الرادار (AI Opportunity Radar) ---
 async def ai_opportunity_radar():
+    """رادار الذكاء الاصطناعي - تم التعديل ليعمل فوراً عند التشغيل ثم كل 4 ساعات"""
     watch_list = ["BTC", "ETH", "SOL", "BNB", "TIA", "FET", "INJ", "LINK"]
     print("🚀 AI Breakout Radar is active...")
     
     while True:
-        await asyncio.sleep(1440) # كل 4 ساعات
+        # الفحص يبدأ فوراً داخل الحلقة
         for symbol in watch_list:
             price = await get_price_cmc(symbol)
             if not price: continue
@@ -174,11 +175,20 @@ async def ai_opportunity_radar():
                             f"⚠️ **تم رصد انفجار سعري محتمل لعملة من القائمة الذهبية!**\n\n"
                             f"💎 **العملة:** `****` (مخفي للمشتركين فقط)\n"
                             f"🔥 اشترك الآن لكشف العملة والحصول على الأهداف!"
+                        ) if lang == "ar" else (
+                            f"📡 **[ AI RADAR ]**\n"
+                            f"───────────────────\n"
+                            f"⚠️ **Potential breakout detected!**\n\n"
+                            f"💎 **Symbol:** `****` (VIP Only)\n"
+                            f"🔥 Subscribe now to unlock!"
                         )
                         await bot.send_message(user_id, blurred_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
                 except:
                     continue
-            break
+            break # يرسل عملة واحدة في كل دورة
+        
+        print("⏳ Radar finished round. Waiting 4 hours...")
+        await asyncio.sleep(14400) # الانتظار 4 ساعات
 
 # --- لوحات الأزرار ---
 language_keyboard = InlineKeyboardMarkup(
@@ -331,7 +341,7 @@ async def on_timeframe_selected(cb: types.CallbackQuery):
     if lang == "ar":
         prompt = (
             f"سعر العملة {sym.upper()} الآن هو {price:.6f}$.\n"
-            f"قم بتحليل التشارت للإطار الزمني {timeframe} باستخدام مؤشرات شاملة:\n"
+            f"قم بتحليل التشارت للإطار الزمني {tf} باستخدام مؤشرات شاملة:\n"
             f"- خطوط الدعم والمقاومة\n"
             f"- RSI, MACD, MA\n"
             f"- Bollinger Bands\n"
@@ -349,7 +359,7 @@ async def on_timeframe_selected(cb: types.CallbackQuery):
     else:
         prompt = (
             f"The current price of {sym.upper()} is ${price:.6f}.\n"
-            f"Analyze the {timeframe} chart using comprehensive indicators:\n"
+            f"Analyze the {tf} chart using comprehensive indicators:\n"
             f"- Support and Resistance\n"
             f"- RSI, MACD, MA\n"
             f"- Bollinger Bands\n"
