@@ -246,7 +246,7 @@ async def run_analysis(cb: types.CallbackQuery):
     if not (await is_user_paid(pool, uid)):
         async with pool.acquire() as conn:
             await conn.execute("INSERT INTO trial_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
-        await cb.message.answer("للوصول الكامل، يرجى الاشتراك مقابل 10 USDT لمرة واحدة." if lang=="ar" else "For full access, please subscribe for a one-time fee of 10 USDT.", reply_markup=get_payment_kb(lang))
+        await cb.message.answer("⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة." if lang=="ar" else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐.", reply_markup=get_payment_kb(lang))
 
 # --- الدفع الكريبتو (إصلاح وتعديل اللغات) ---
 @dp.callback_query(F.data == "pay_crypto")
