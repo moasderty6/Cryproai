@@ -23,7 +23,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CMC_KEY = os.getenv("CMC_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL") # الرابط بدون / في النهاية
+WEBHOOK_URL = os.getenv("WEBHOOK_URL") 
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()[:20]
 PORT = int(os.getenv("PORT", 10000))
 
@@ -68,28 +68,31 @@ async def ask_groq(prompt, lang="ar"):
             return "❌"
     except Exception: return "❌"
 
-async def get_price_cmc(symbol):
-    url = f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={symbol.upper()}"
-    headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
-    try:
-        async with httpx.AsyncClient() as client:
-            res = await client.get(url, headers=headers)
-            if res.status_code == 200:
-                return res.json()["data"][symbol.upper()]["quote"]["USD"]["price"]
-    except: return None
-
 def get_payment_kb(lang):
     if lang == "ar":
         return InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="💎 اشترك الآن (10 USDT مدى الحياة)", callback_data="pay_with_crypto")],
-            [InlineKeyboardButton(text="⭐ اشترك الآن بـ 500 نجمة مدى الحياة", callback_data="pay_with_stars")]
+            [InlineKeyboardButton(text=" اشترك الآن بـ 500 نجمة مدى الحياة⭐", callback_data="pay_with_stars")]
         ])
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💎 Subscribe Now (10 USDT Lifetime)", callback_data="pay_with_crypto")],
         [InlineKeyboardButton(text="⭐ Subscribe Now with 500 Stars Lifetime", callback_data="pay_with_stars")]
     ])
 
-# --- أمر تنظيف التجربة (Reset Trials) ---
+# --- أوامر الإدارة والدعم ---
+@dp.message(Command("status"))
+async def status_cmd(m: types.Message):
+    async with dp['db_pool'].acquire() as conn:
+        count = await conn.fetchval("SELECT count(*) FROM users_info")
+    await m.answer(f"ℹ️ عدد المستخدمين الذين ضغطوا /start: {count}")
+
+@dp.message(Command("admin"))
+async def admin_cmd(m: types.Message):
+    await m.answer(
+        "📌 للتواصل مع الدعم، يرجى التواصل مع هذا الحساب:\n@AiCrAdmin\n\n"
+        "📌 For support, contact:\n@AiCrAdmin"
+    )
+
 @dp.message(Command("reset_trials"))
 async def cmd_reset_trials(m: types.Message):
     if m.from_user.id != ADMIN_USER_ID:
@@ -157,14 +160,26 @@ async def start_cmd(m: types.Message):
     async with dp['db_pool'].acquire() as conn:
         await conn.execute("INSERT INTO users_info (user_id) VALUES ($1) ON CONFLICT DO NOTHING", m.from_user.id)
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🇸🇦 العربية", callback_data="lang_ar"), InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]])
-    await m.answer("👋 اختر لغتك / Choose Language:", reply_markup=kb)
+    await m.answer("👋 أهلاً بك، يرجى اختيار لغتك للمتابعة:\nWelcome, please choose your language to continue:", reply_markup=kb)
 
 @dp.callback_query(F.data.startswith("lang_"))
 async def set_lang(cb: types.CallbackQuery):
     lang = cb.data.split("_")[1]
+    uid = cb.from_user.id
     async with dp['db_pool'].acquire() as conn:
-        await conn.execute("UPDATE users_info SET lang = $1 WHERE user_id = $2", lang, cb.from_user.id)
-    await cb.message.edit_text("✅ أرسل رمز العملة (مثلاً BTC)" if lang=="ar" else "✅ Send coin symbol (e.g. BTC)")
+        await conn.execute("UPDATE users_info SET lang = $1 WHERE user_id = $2", lang, uid)
+        is_paid = await is_user_paid(dp['db_pool'], uid)
+        trial_available = await has_trial(dp['db_pool'], uid)
+
+    if is_paid:
+        msg = "✅ أهلاً بك مجدداً! اشتراكك مفعل.\nأرسل رمز العملة للتحليل." if lang == "ar" else "✅ Welcome back! Your subscription is active.\nSend a coin symbol to analyze."
+        await cb.message.edit_text(msg)
+    elif trial_available:
+        msg = "🎁 لديك تجربة مجانية واحدة! أرسل رمز العملة للتحليل." if lang == "ar" else "🎁 You have one free trial! Send a coin symbol for analysis."
+        await cb.message.edit_text(msg)
+    else:
+        msg = "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة." if lang == "ar" else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐."
+        await cb.message.edit_text(msg, reply_markup=get_payment_kb(lang))
 
 @dp.message(F.text)
 async def handle_symbol(m: types.Message):
@@ -174,14 +189,18 @@ async def handle_symbol(m: types.Message):
     lang = user['lang'] if user else "ar"
     
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
-        msg = ("✨ انتهت تجربتك المجانية. نأمل أن يكون التحليل قد نال إعجابك! اشترك الآن لفتح ميزات VIP غير المحدودة." 
-               if lang=="ar" else 
-               "✨ Your free trial has ended. We hope you enjoyed the analysis! Subscribe now to unlock unlimited VIP features.")
+        msg = "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة." if lang=="ar" else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐."
         return await m.answer(msg, reply_markup=get_payment_kb(lang))
     
     sym = m.text.strip().upper()
-    price = await get_price_cmc(sym)
-    if not price: return await m.answer("❌ عملة غير مدعومة")
+    await m.answer("⏳ جاري جلب السعر..." if lang == "ar" else "⏳ Fetching price...")
+    
+    url = f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={sym}"
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.get(url, headers={"X-CMC_PRO_API_KEY": CMC_KEY})
+            price = res.json()["data"][sym]["quote"]["USD"]["price"]
+    except: return await m.answer("❌ عملة غير مدعومة أو خطأ في جلب البيانات")
     
     user_session_data[uid] = {"sym": sym, "price": price, "lang": lang}
     kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -189,7 +208,7 @@ async def handle_symbol(m: types.Message):
         InlineKeyboardButton(text="يومي" if lang=="ar" else "Daily", callback_data="tf_daily"),
         InlineKeyboardButton(text="4 ساعات" if lang=="ar" else "4H", callback_data="tf_4h")
     ]])
-    await m.answer(f"💵 {sym}: ${price:.6f}\nاختر الإطار الزمني:", reply_markup=kb)
+    await m.answer(f"💵 {sym}: ${price:.6f}\n" + ("⏳ اختر الإطار الزمني للتحليل:" if lang=="ar" else "⏳ Select timeframe for analysis:"), reply_markup=kb)
 
 @dp.callback_query(F.data.startswith("tf_"))
 async def run_full_analysis(cb: types.CallbackQuery):
@@ -197,8 +216,13 @@ async def run_full_analysis(cb: types.CallbackQuery):
     data = user_session_data.get(uid)
     if not data: return
     lang, sym, price, tf = data['lang'], data['sym'], data['price'], cb.data.replace("tf_", "")
+    
+    if not (await is_user_paid(dp['db_pool'], uid)) and not (await has_trial(dp['db_pool'], uid)):
+        return await cb.message.edit_text("⚠️ انتهت التجربة.", reply_markup=get_payment_kb(lang))
+
     await cb.message.edit_text("🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing...")
     
+    # --- البرومبت الأصلي بدون أي تغيير ---
     if lang == "ar":
         prompt = (
             f"سعر العملة {sym} الآن هو {price:.6f}$.\n"
@@ -222,25 +246,19 @@ async def run_full_analysis(cb: types.CallbackQuery):
     if not (await is_user_paid(dp['db_pool'], uid)):
         async with dp['db_pool'].acquire() as conn:
             await conn.execute("INSERT INTO trial_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
+        await cb.message.answer("للوصول الكامل، يرجى الاشتراك مقابل 10 USDT لمرة واحدة." if lang=="ar" else "For full access, please subscribe for a one-time fee of 10 USDT.", reply_markup=get_payment_kb(lang))
 
-# --- نظام التشغيل وإصلاح التايم أوت لـ Render ---
-
-# دالة مخصصة لفحص الصحة (Health Check)
+# --- نظام التشغيل وفحص الصحة ---
 async def health_check(request):
     return web.Response(text="ok", status=200)
 
 async def handle_webhook(req: web.Request):
     if req.headers.get("X-Telegram-Bot-Api-Secret-Token") != SECRET_TOKEN: 
         return web.Response(status=403)
-    
     try:
         data = await req.json()
-        update = types.Update(**data)
-        # معالجة التحديث في الخلفية للرد فوراً على Render وتجنب التايم أوت
-        asyncio.create_task(dp.feed_update(bot, update))
-    except Exception:
-        pass
-        
+        asyncio.create_task(dp.feed_update(bot, types.Update(**data)))
+    except: pass
     return web.Response(text="ok")
 
 async def on_startup(app_instance):
@@ -251,12 +269,11 @@ async def on_startup(app_instance):
         await conn.execute("CREATE TABLE IF NOT EXISTS paid_users (user_id BIGINT PRIMARY KEY)")
         await conn.execute("CREATE TABLE IF NOT EXISTS trial_users (user_id BIGINT PRIMARY KEY)")
     asyncio.create_task(ai_opportunity_radar(pool))
-    # تعيين الويب هوك بدون سلاش في النهاية كما في الرابط الخاص بك
     await bot.set_webhook(url=WEBHOOK_URL, secret_token=SECRET_TOKEN)
 
 app = web.Application()
-app.router.add_post("/", handle_webhook) # استقبال التحديثات من تلجرام
-app.router.add_get("/health", health_check) # استجابة لفحص الصحة الخاص بـ Render
+app.router.add_post("/", handle_webhook)
+app.router.add_get("/health", health_check)
 app.on_startup.append(on_startup)
 
 if __name__ == "__main__":
