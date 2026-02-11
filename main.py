@@ -224,6 +224,11 @@ async def run_full_analysis(cb: types.CallbackQuery):
             await conn.execute("INSERT INTO trial_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
 
 # --- نظام التشغيل وإصلاح التايم أوت لـ Render ---
+
+# دالة مخصصة لفحص الصحة (Health Check)
+async def health_check(request):
+    return web.Response(text="ok", status=200)
+
 async def handle_webhook(req: web.Request):
     if req.headers.get("X-Telegram-Bot-Api-Secret-Token") != SECRET_TOKEN: 
         return web.Response(status=403)
@@ -250,7 +255,8 @@ async def on_startup(app_instance):
     await bot.set_webhook(url=WEBHOOK_URL, secret_token=SECRET_TOKEN)
 
 app = web.Application()
-app.router.add_post("/", handle_webhook) # استقبال الطلبات على المسار الرئيسي
+app.router.add_post("/", handle_webhook) # استقبال التحديثات من تلجرام
+app.router.add_get("/health", health_check) # استجابة لفحص الصحة الخاص بـ Render
 app.on_startup.append(on_startup)
 
 if __name__ == "__main__":
