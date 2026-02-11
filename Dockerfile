@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# تثبيت curl للتأكد من الـ Healthcheck
+# تثبيت curl ضروري لعمل فحص الصحة
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -10,9 +10,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# تعديل الـ Healthcheck ليتناسب مع كودنا (سيرفر aiohttp)
-HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
-  CMD curl -f http://localhost:${PORT}/ || exit 1
+# الغاء الـ Healthcheck القديم تماماً لتجنب تعليق ريندر
+HEALTHCHECK NONE
 
-# تشغيل البوت مباشرة باستخدام python وليس gunicorn
-CMD ["sh", "-c", "python main.py"]
+# تشغيل البوت مباشرة
+CMD ["python", "main.py"]
