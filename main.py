@@ -248,11 +248,33 @@ async def run_analysis(cb: types.CallbackQuery):
         await cb.message.answer("للوصول الكامل، يرجى الاشتراك.", reply_markup=get_payment_kb(lang))
 
 # --- الدفع ---
-@dp.callback_query(F.data == "pay_crypto")
-async def crypto_pay(cb: types.CallbackQuery):
-    url = await create_nowpayments_invoice(cb.from_user.id)
-    if url: await cb.message.edit_text("💳 ادفع عبر الرابط:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="فتح الرابط", url=url)]]))
-    else: await cb.answer("❌ خطأ")
+@dp.callback_query(F.data == "pay_with_crypto")
+async def process_crypto_payment(cb: types.CallbackQuery):
+    lang = user_lang.get(str(cb.from_user.id), "ar")
+    await cb.message.edit_text(
+        "⏳ يتم إنشاء رابط الدفع، يرجى الانتظار..."
+        if lang == "ar"
+        else "⏳ Generating payment link, please wait..."
+    )
+
+    invoice_url = await create_nowpayments_invoice(cb.from_user.id)
+    if invoice_url:
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="💳 ادفع الآن" if lang=="ar" else "💳 Pay Now", url=invoice_url)]]
+        )
+        msg = (
+            "✅ تم إنشاء رابط الدفع.\nلإتمام الاشتراك، ادفع عبر الرابط أدناه.\n\nUSDT (BEP20)"
+            if lang == "ar"
+            else "✅ Payment link created.\nTo complete your subscription, pay via the link below.\n\nUSDT (BEP20)"
+        )
+        await cb.message.edit_text(msg, reply_markup=kb)
+    else:
+        await cb.message.edit_text(
+            "❌ حدث خطأ. يرجى المحاولة مرة أخرى لاحقاً."
+            if lang == "ar"
+            else "❌ An error occurred. Please try again later."
+        )
+    await cb.answer()
 
 @dp.callback_query(F.data == "pay_stars")
 async def stars_pay(cb: types.CallbackQuery):
