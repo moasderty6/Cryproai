@@ -66,11 +66,11 @@ async def create_nowpayments_invoice(user_id: int):
     except: return None
 
 async def send_stars_invoice(chat_id: int, lang="ar"):
-    prices = [LabeledPrice(label="اشتراك مدى الحياة ⭐" if lang=="ar" else "Lifetime Subscription ⭐", amount=500)]
+    prices = [LabeledPrice(label="اشتراك البوت بـ 500 نجمة مدى الحياة ⭐" if lang=="ar" else "Subscribe Now with 500 ⭐ Lifetime", amount=500)]
     await bot.send_invoice(
         chat_id=chat_id,
         title="اشتراك VIP" if lang=="ar" else "VIP Subscription",
-        description="فتح جميع ميزات البوت مدى الحياة" if lang=="ar" else "Unlock all features forever",
+        description="اشترك الآن باستخدام 500 ⭐ للوصول الكامل" if lang=="ar" else "Subscribe Now with 500 ⭐ for full access",
         payload="stars_pay",
         provider_token="", 
         currency="XTR",
@@ -81,11 +81,11 @@ def get_payment_kb(lang):
     if lang == "ar":
         return InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="💎 اشترك الآن (10 USDT مدى الحياة)", callback_data="pay_crypto")],
-            [InlineKeyboardButton(text=" اشتراك الآن بـ 500 نجمة مدى الحياة⭐", callback_data="pay_stars")]
+            [InlineKeyboardButton(text=" اشترك الآن بـ 500 نجمة مدى الحياة⭐", callback_data="pay_stars")]
         ])
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💎 Subscribe (10 USDT Lifetime)", callback_data="pay_crypto")],
-        [InlineKeyboardButton(text="⭐ Subscribe with 500 Stars", callback_data="pay_stars")]
+        [InlineKeyboardButton(text="💎 Subscribe Now (10 USDT Lifetime)", callback_data="pay_crypto")],
+        [InlineKeyboardButton(text="⭐ Subscribe Now with 500 Stars Lifetime", callback_data="pay_stars")]
     ])
 
 # --- رادار الفرص الذكي (الشكل الأصلي) ---
@@ -184,9 +184,9 @@ async def set_lang(cb: types.CallbackQuery):
     has_tr = await has_trial(dp['db_pool'], cb.from_user.id)
 
     if is_paid:
-        msg = "✅ أهلاً بك مجدداً! اشتراكك مفعل.\nأرسل رمز العملة للتحليل." if lang == "ar" else "✅ Welcome back! Send a symbol to analyze."
+        msg = "✅ أهلاً بك مجدداً! اشتراكك مفعل.\nأرسل رمز العملة للتحليل." if lang == "ar" else "✅ Welcome back! Your subscription is active.\nSend a coin symbol to analyze."
     elif has_tr:
-        msg = "🎁 لديك تجربة مجانية واحدة! أرسل رمز العملة." if lang == "ar" else "🎁 You have one free trial! Send a symbol."
+        msg = "🎁 لديك تجربة مجانية واحدة! أرسل رمز العملة للتحليل." if lang == "ar" else "🎁 You have one free trial! Send a coin symbol for analysis."
     else:
         msg = "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة." if lang == "ar" else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐."
     
@@ -200,7 +200,7 @@ async def handle_symbol(m: types.Message):
     lang = user['lang'] if user else "ar"
     
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
-        return await m.answer("⚠️ انتهت تجربتك المجانية.", reply_markup=get_payment_kb(lang))
+        return await m.answer("⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة." if lang=="ar" else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐.", reply_markup=get_payment_kb(lang))
     
     sym = m.text.strip().upper()
     await m.answer("⏳ جاري جلب السعر..." if lang=="ar" else "⏳ Fetching price...")
@@ -208,7 +208,7 @@ async def handle_symbol(m: types.Message):
         async with httpx.AsyncClient() as client:
             res = await client.get(f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={sym}", headers={"X-CMC_PRO_API_KEY": CMC_KEY})
             price = res.json()["data"][sym]["quote"]["USD"]["price"]
-    except: return await m.answer("❌ عملة غير مدعومة")
+    except: return await m.answer("❌ لم أتمكن من جلب السعر الحالي للعملة." if lang=="ar" else "❌ Couldn't fetch current price.")
     
     user_session_data[uid] = {"sym": sym, "price": price, "lang": lang}
     kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -216,7 +216,7 @@ async def handle_symbol(m: types.Message):
         InlineKeyboardButton(text="يومي" if lang=="ar" else "Daily", callback_data="tf_daily"),
         InlineKeyboardButton(text="4 ساعات" if lang=="ar" else "4H", callback_data="tf_4h")
     ]])
-    await m.answer(f"💵 {sym}: ${price:.6f}\n⏳ اختر الإطار الزمني للتحليل:", reply_markup=kb)
+    await m.answer(f"💵 السعر الحالي: ${price:.6f}\n⏳ اختر الإطار الزمني للتحليل:" if lang=="ar" else f"💵 Current price: ${price:.6f}\n⏳ Select timeframe for analysis:", reply_markup=kb)
 
 @dp.callback_query(F.data.startswith("tf_"))
 async def run_analysis(cb: types.CallbackQuery):
@@ -226,7 +226,7 @@ async def run_analysis(cb: types.CallbackQuery):
     lang, sym, price, tf = data['lang'], data['sym'], data['price'], cb.data.replace("tf_", "")
     
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
-        return await cb.message.edit_text("⚠️ انتهت التجربة.", reply_markup=get_payment_kb(lang))
+        return await cb.message.edit_text("⚠️ انتهت تجربتك المجانية." if lang=="ar" else "⚠️ Trial ended.", reply_markup=get_payment_kb(lang))
 
     await cb.message.edit_text("🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing...")
     
@@ -234,10 +234,11 @@ async def run_analysis(cb: types.CallbackQuery):
     if lang == "ar":
         prompt = (f"سعر العملة {sym} الآن هو {price:.6f}$.\nقم بتحليل التشارت للإطار الزمني {tf} باستخدام مؤشرات شاملة:\n"
                   f"- خطوط الدعم والمقاومة\n- RSI, MACD, MA\n- Bollinger Bands\n- Fibonacci Levels\n- Stochastic Oscillator\n- Volume Analysis\n- Trendlines باستخدام Regression\n"
-                  f"ثم قدم:\n1. تقييم عام (صعود أم هبوط؟)\n2. أقرب مقاومة ودعم\n3. ثلاثة أهداف مستقبلية\n✅ العربية فقط | ❌ لا تشرح المشروع")
+                  f"ثم قدم:\n1. تقييم عام (صعود أم هبوط؟)\n2. أقرب مقاومة ودعم\n3. ثلاثة أهداف مستقبلية (قصير، متوسط، بعيد المدى)\n✅ استخدم العربية فقط\n❌ لا تشرح المشروع، فقط تحليل التشارت")
     else:
-        prompt = (f"Price of {sym}: ${price:.6f}. Analyze {tf} timeframe:\n- Support/Resistance, RSI, MACD, MA, BB, Fibonacci, Volume.\n"
-                  f"Provide: 1. Trend, 2. Levels, 3. 3 Targets.\n✅ English only | ❌ No project info")
+        prompt = (f"The current price of {sym} is ${price:.6f}.\nAnalyze the {tf} chart using comprehensive indicators:\n"
+                  f"- Support and Resistance\n- RSI, MACD, MA\n- Bollinger Bands\n- Fibonacci Levels\n- Stochastic Oscillator\n- Volume Analysis\n- Trendlines using Regression\n"
+                  f"Then provide:\n1. General trend (up/down)\n2. Nearest resistance/support\n3. Three future price targets\n✅ Answer in English only\n❌ Don't explain the project, only chart analysis")
 
     res = await ask_groq(prompt, lang=lang)
     await cb.message.answer(res)
@@ -245,23 +246,22 @@ async def run_analysis(cb: types.CallbackQuery):
     if not (await is_user_paid(pool, uid)):
         async with pool.acquire() as conn:
             await conn.execute("INSERT INTO trial_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
-        await cb.message.answer("للوصول الكامل، يرجى الاشتراك.", reply_markup=get_payment_kb(lang))
+        await cb.message.answer("للوصول الكامل، يرجى الاشتراك مقابل 10 USDT لمرة واحدة." if lang=="ar" else "For full access, please subscribe for a one-time fee of 10 USDT.", reply_markup=get_payment_kb(lang))
 
-# --- الدفع ---
-@dp.callback_query(F.data == "pay_with_crypto")
-async def process_crypto_payment(cb: types.CallbackQuery):
-    lang = user_lang.get(str(cb.from_user.id), "ar")
+# --- الدفع الكريبتو (إصلاح وتعديل اللغات) ---
+@dp.callback_query(F.data == "pay_crypto")
+async def crypto_pay(cb: types.CallbackQuery):
+    uid, pool = cb.from_user.id, dp['db_pool']
+    user = await pool.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", uid)
+    lang = user['lang'] if user else "ar"
+    
     await cb.message.edit_text(
-        "⏳ يتم إنشاء رابط الدفع، يرجى الانتظار..."
-        if lang == "ar"
-        else "⏳ Generating payment link, please wait..."
+        "⏳ يتم إنشاء رابط الدفع، يرجى الانتظار..." if lang == "ar" else "⏳ Generating payment link, please wait..."
     )
 
     invoice_url = await create_nowpayments_invoice(cb.from_user.id)
     if invoice_url:
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="💳 ادفع الآن" if lang=="ar" else "💳 Pay Now", url=invoice_url)]]
-        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 ادفع الآن" if lang=="ar" else "💳 Pay Now", url=invoice_url)]])
         msg = (
             "✅ تم إنشاء رابط الدفع.\nلإتمام الاشتراك، ادفع عبر الرابط أدناه.\n\nUSDT (BEP20)"
             if lang == "ar"
@@ -270,16 +270,14 @@ async def process_crypto_payment(cb: types.CallbackQuery):
         await cb.message.edit_text(msg, reply_markup=kb)
     else:
         await cb.message.edit_text(
-            "❌ حدث خطأ. يرجى المحاولة مرة أخرى لاحقاً."
-            if lang == "ar"
-            else "❌ An error occurred. Please try again later."
+            "❌ حدث خطأ. يرجى المحاولة مرة أخرى لاحقاً." if lang == "ar" else "❌ An error occurred. Please try again later."
         )
-    await cb.answer()
 
 @dp.callback_query(F.data == "pay_stars")
-async def stars_pay(cb: types.CallbackQuery):
+async def stars_pay_call(cb: types.CallbackQuery):
     await cb.answer()
-    user = await dp['db_pool'].fetchrow("SELECT lang FROM users_info WHERE user_id = $1", cb.from_user.id)
+    uid, pool = cb.from_user.id, dp['db_pool']
+    user = await pool.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", uid)
     await send_stars_invoice(cb.from_user.id, lang=user['lang'] if user else "ar")
 
 @dp.pre_checkout_query()
@@ -287,9 +285,16 @@ async def pre_checkout(q: PreCheckoutQuery): await bot.answer_pre_checkout_query
 
 @dp.message(F.successful_payment)
 async def success_pay(m: types.Message):
-    async with dp['db_pool'].acquire() as conn:
+    uid, pool = m.from_user.id, dp['db_pool']
+    user = await pool.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", uid)
+    lang = user['lang'] if user else "ar"
+    async with pool.acquire() as conn:
         await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", m.from_user.id)
-    await m.answer("✅ تم تفعيل VIP!")
+    await m.answer(
+        "✅ تم تأكيد الدفع بنجاح! شكراً لاشتراكك. يمكنك الآن استخدام البوت بشكل كامل."
+        if lang == "ar" else
+        "✅ Payment confirmed! Thank you for subscribing. You can now use the bot fully."
+    )
 
 # --- السيرفر ---
 async def handle_webhook(req: web.Request):
