@@ -188,7 +188,7 @@ async def set_lang(cb: types.CallbackQuery):
     elif has_tr:
         msg = "🎁 لديك تجربة مجانية واحدة! أرسل رمز العملة." if lang == "ar" else "🎁 You have one free trial! Send a symbol."
     else:
-        msg = "⚠️ انتهت التجربة. يرجى الاشتراك." if lang == "ar" else "⚠️ Trial ended. Please subscribe."
+        msg = "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة." if lang == "ar" else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐."
     
     await cb.message.edit_text(msg, reply_markup=None if (is_paid or has_tr) else get_payment_kb(lang))
 
