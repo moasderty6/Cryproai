@@ -23,9 +23,9 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CMC_KEY = os.getenv("CMC_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL") # الرابط بدون / في النهاية
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()[:20]
-PORT = int(os.getenv("PORT", 8000))
+PORT = int(os.getenv("PORT", 10000))
 
 NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY")
 NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET")
@@ -173,7 +173,6 @@ async def handle_symbol(m: types.Message):
     user = await pool.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", uid)
     lang = user['lang'] if user else "ar"
     
-    # --- تعديل: إظهار أزرار الاشتراك عند انتهاء التجربة ---
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
         msg = ("✨ انتهت تجربتك المجانية. نأمل أن يكون التحليل قد نال إعجابك! اشترك الآن لفتح ميزات VIP غير المحدودة." 
                if lang=="ar" else 
@@ -224,7 +223,7 @@ async def run_full_analysis(cb: types.CallbackQuery):
         async with dp['db_pool'].acquire() as conn:
             await conn.execute("INSERT INTO trial_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
 
-# --- نظام التشغيل وإصلاح التايم أوت ---
+# --- نظام التشغيل وإصلاح التايم أوت لـ Render ---
 async def handle_webhook(req: web.Request):
     if req.headers.get("X-Telegram-Bot-Api-Secret-Token") != SECRET_TOKEN: 
         return web.Response(status=403)
@@ -232,6 +231,7 @@ async def handle_webhook(req: web.Request):
     try:
         data = await req.json()
         update = types.Update(**data)
+        # معالجة التحديث في الخلفية للرد فوراً على Render وتجنب التايم أوت
         asyncio.create_task(dp.feed_update(bot, update))
     except Exception:
         pass
@@ -246,10 +246,11 @@ async def on_startup(app_instance):
         await conn.execute("CREATE TABLE IF NOT EXISTS paid_users (user_id BIGINT PRIMARY KEY)")
         await conn.execute("CREATE TABLE IF NOT EXISTS trial_users (user_id BIGINT PRIMARY KEY)")
     asyncio.create_task(ai_opportunity_radar(pool))
-    await bot.set_webhook(url=f"{WEBHOOK_URL}/", secret_token=SECRET_TOKEN)
+    # تعيين الويب هوك بدون سلاش في النهاية كما في الرابط الخاص بك
+    await bot.set_webhook(url=WEBHOOK_URL, secret_token=SECRET_TOKEN)
 
 app = web.Application()
-app.router.add_post("/", handle_webhook)
+app.router.add_post("/", handle_webhook) # استقبال الطلبات على المسار الرئيسي
 app.on_startup.append(on_startup)
 
 if __name__ == "__main__":
