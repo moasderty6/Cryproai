@@ -166,7 +166,14 @@ async def status_cmd(m: types.Message):
            f"💎 **المشتركين (VIP):** `{vips}`\n"
            f"🎁 **مستخدمي التجربة:** `{trials}`")
     await m.answer(msg, parse_mode=ParseMode.MARKDOWN)
-
+    
+@dp.message(Command("admin"))
+async def admin_cmd(m: types.Message):
+    await m.answer(
+        "📌 للتواصل مع الدعم، يرجى التواصل مع هذا الحساب:\n@AiCrAdmin\n\n"
+        "📌 For support, contact:\n@AiCrAdmin"
+    )
+    
 @dp.message(Command("start"))
 async def start_cmd(m: types.Message):
     async with dp['db_pool'].acquire() as conn:
