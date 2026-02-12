@@ -138,7 +138,7 @@ async def ai_opportunity_radar(pool):
                         except: pass
                         await asyncio.sleep(0.05)
         except: pass
-        await asyncio.sleep(14400)
+        await asyncio.sleep(86400)
 
 # --- نظام الـ AI ---
 async def ask_groq(prompt, lang="ar"):
@@ -199,6 +199,7 @@ async def set_lang(cb: types.CallbackQuery):
     
     await cb.message.edit_text(msg, reply_markup=None if (is_paid or has_tr) else get_payment_kb(lang))
 
+# --- التعامل مع الرموز ---
 @dp.message(F.text)
 async def handle_symbol(m: types.Message):
     if m.text.startswith('/'): return
@@ -338,8 +339,9 @@ async def on_startup(app):
         await conn.execute("CREATE TABLE IF NOT EXISTS paid_users (user_id BIGINT PRIMARY KEY)")
         await conn.execute("CREATE TABLE IF NOT EXISTS trial_users (user_id BIGINT PRIMARY KEY)")
         
-        # ✅ إضافة المستخدمين المدفوعين مباشرة
-        for uid in [1811762192, 458002084]:
+        # ✅ إضافة المستخدمين المدفوعين مباشرة بدون تكرار
+        initial_paid_users = {1811762192, 458002084}  # استخدام مجموعة لتجنب التكرار
+        for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
     
     asyncio.create_task(ai_opportunity_radar(pool))
@@ -347,7 +349,7 @@ async def on_startup(app):
 
 app = web.Application()
 app.router.add_post("/", handle_webhook)
-app.router.add_post("/webhook/nowpayments", nowpayments_ipn)  # <-- IPN
+app.router.add_post("/webhook/nowpayments", nowpayments_ipn)
 app.router.add_get("/health", lambda r: web.Response(text="ok"))
 app.on_startup.append(on_startup)
 
