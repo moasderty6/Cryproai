@@ -339,7 +339,7 @@ async def on_startup(app):
         await conn.execute("CREATE TABLE IF NOT EXISTS trial_users (user_id BIGINT PRIMARY KEY)")
         
         # ✅ إضافة المستخدمين المدفوعين مباشرة
-        for uid in [5361605882, 565965404]:
+        for uid in [1811762192, 458002084]:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
     
     asyncio.create_task(ai_opportunity_radar(pool))
