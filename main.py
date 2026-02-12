@@ -88,7 +88,7 @@ def get_payment_kb(lang):
         [InlineKeyboardButton(text="⭐ Subscribe Now with 500 Stars Lifetime", callback_data="pay_stars")]
     ])
 
-# --- رادار الفرص الذكي (الشكل الأصلي) ---
+# --- رادار الفرص الذكي ---
 async def ai_opportunity_radar(pool):
     while True:
         try:
@@ -237,7 +237,7 @@ async def run_analysis(cb: types.CallbackQuery):
 
     await cb.message.edit_text("🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing...")
     
-    # --- برومبت التحليل (المحمي من التغيير) ---
+    # --- برومبت التحليل ---
     if lang == "ar":
         prompt = (f"سعر العملة {sym} الآن هو {price:.6f}$.\nقم بتحليل التشارت للإطار الزمني {tf} باستخدام مؤشرات شاملة:\n"
                   f"- خطوط الدعم والمقاومة\n- RSI, MACD, MA\n- Bollinger Bands\n- Fibonacci Levels\n- Stochastic Oscillator\n- Volume Analysis\n- Trendlines باستخدام Regression\n"
@@ -255,7 +255,7 @@ async def run_analysis(cb: types.CallbackQuery):
             await conn.execute("INSERT INTO trial_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
         await cb.message.answer("⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة." if lang=="ar" else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐.", reply_markup=get_payment_kb(lang))
 
-# --- الدفع الكريبتو (إصلاح وتعديل اللغات) ---
+# --- الدفع الكريبتو ---
 @dp.callback_query(F.data == "pay_crypto")
 async def crypto_pay(cb: types.CallbackQuery):
     uid, pool = cb.from_user.id, dp['db_pool']
@@ -303,6 +303,27 @@ async def success_pay(m: types.Message):
         "✅ Payment confirmed! Thank you for subscribing. You can now use the bot fully."
     )
 
+# --- Webhook NOWPayments (IPN) ---
+async def nowpayments_ipn(req: web.Request):
+    data = await req.json()
+    signature = req.headers.get("x-nowpayments-signature")
+    
+    expected_sig = hmac.new(
+        NOWPAYMENTS_IPN_SECRET.encode(),
+        msg=json.dumps(data).encode(),
+        digestmod=hashlib.sha512
+    ).hexdigest()
+    
+    if signature != expected_sig:
+        return web.Response(status=400, text="Invalid signature")
+    
+    if data.get("payment_status") == "finished":
+        user_id = int(data.get("order_id"))
+        pool = req.app['db_pool']
+        async with pool.acquire() as conn:
+            await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", user_id)
+    return web.Response(text="ok")
+
 # --- السيرفر ---
 async def handle_webhook(req: web.Request):
     data = await req.json()
@@ -316,11 +337,17 @@ async def on_startup(app):
         await conn.execute("CREATE TABLE IF NOT EXISTS users_info (user_id BIGINT PRIMARY KEY, lang TEXT)")
         await conn.execute("CREATE TABLE IF NOT EXISTS paid_users (user_id BIGINT PRIMARY KEY)")
         await conn.execute("CREATE TABLE IF NOT EXISTS trial_users (user_id BIGINT PRIMARY KEY)")
+        
+        # ✅ إضافة المستخدمين المدفوعين مباشرة
+        for uid in [5361605882, 4975074234]:
+            await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
+    
     asyncio.create_task(ai_opportunity_radar(pool))
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
 app = web.Application()
 app.router.add_post("/", handle_webhook)
+app.router.add_post("/webhook/nowpayments", nowpayments_ipn)  # <-- IPN
 app.router.add_get("/health", lambda r: web.Response(text="ok"))
 app.on_startup.append(on_startup)
 
