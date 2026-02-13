@@ -96,27 +96,36 @@ async def ai_opportunity_radar(pool):
             async with httpx.AsyncClient() as client:
                 res = await client.get("https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest", 
                                      headers=headers, params={"limit": "50"})
+                
                 if res.status_code == 200:
                     selected_coin = random.choice(res.json()["data"])
                     symbol = selected_coin["symbol"]
                     price = selected_coin["quote"]["USD"]["price"]
                     price_display = f"{price:.8f}" if price < 1 else f"{price:,.2f}"
 
+                    # --- توليد التحليل مرة واحدة فقط لكل لغة لتوفير الـ API والوقت ---
+                    # تحليل للـ VIP (عربي وانجليزي)
+                    insight_vip_ar = await ask_groq(f"Give a very short 2-line technical breakout insight for #{symbol} at ${price_display}. Answer strictly in Arabic.", lang="ar")
+                    insight_vip_en = await ask_groq(f"Give a very short 2-line technical breakout insight for #{symbol} at ${price_display}. Answer strictly in English.", lang="en")
+                    
+                    # تلميح للمجاني (عربي وانجليزي)
+                    hint_free_ar = await ask_groq(f"Write a 1-line technical breakout hint for a coin at ${price_display}. DO NOT mention the coin name. Answer strictly in Arabic.", lang="ar")
+                    hint_free_en = await ask_groq(f"Write a 1-line technical breakout hint for a coin at ${price_display}. DO NOT mention the coin name. Answer strictly in English.", lang="en")
+
                     users = await pool.fetch("SELECT user_id, lang FROM users_info")
+                    
                     for row in users:
                         uid, lang = row['user_id'], row['lang'] or "ar"
                         is_paid = await is_user_paid(pool, uid)
                         
                         if is_paid:
-                            prompt = f"Give a very short 2-line technical breakout insight for #{symbol} at ${price_display}. Answer strictly in {lang} language only."
-                            insight = await ask_groq(prompt, lang=lang)
+                            insight = insight_vip_ar if lang == "ar" else insight_vip_en
                             text = (f"🚨 **VIP BREAKOUT ALERT**\n\n"
                                     f"💎 **العملة:** #{symbol.upper()}\n"
                                     f"💵 **السعر:** `${price_display}`\n"
                                     f"📈 **الرؤية:**\n{insight}")
                         else:
-                            prompt = f"Write a 1-line technical breakout hint for a coin at ${price_display}. DO NOT mention the coin name. Answer strictly in {lang}."
-                            insight = await ask_groq(prompt, lang=lang)
+                            insight = hint_free_ar if lang == "ar" else hint_free_en
                             if lang == "ar":
                                 text = (f"📡 **رادار الفرص الذكي**\n"
                                         f"───────────────────\n"
@@ -133,12 +142,17 @@ async def ai_opportunity_radar(pool):
                                         f"💰 **Price:** `${price_display}`\n"
                                         f"📈 **Technical Hint:**\n_{insight}_\n\n"
                                         f"📢 **Subscribe VIP to unlock the symbol!**")
+                        
                         try:
                             await bot.send_message(uid, text, reply_markup=None if is_paid else get_payment_kb(lang), parse_mode=ParseMode.MARKDOWN)
-                        except: pass
-                        await asyncio.sleep(0.05)
-        except: pass
-        await asyncio.sleep(84000)
+                            await asyncio.sleep(0.05) # تأخير بسيط لتجنب حظر التليجرام (Flood limit)
+                        except Exception:
+                            continue
+        except Exception as e:
+            print(f"Radar Error: {e}")
+            
+        await asyncio.sleep(84000) # انتطار الدورة القادمة
+
 
 # --- نظام الـ AI ---
 async def ask_groq(prompt, lang="ar"):
