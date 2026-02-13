@@ -110,10 +110,10 @@ async def ai_opportunity_radar(pool):
                         if is_paid:
                             prompt = f"Give a very short 2-line technical breakout insight for #{symbol} at ${price_display}. Answer strictly in {lang} language only."
                             insight = await ask_groq(prompt, lang=lang)
-                            text = (f"🚨 **VIP BREAKOUT ALERT**\n\n"
-                                    f"💎 **العملة:** #{symbol.upper()}\n"
-                                    f"💵 **السعر:** `${price_display}`\n"
-                                    f"📈 **الرؤية:**\n{insight}")
+                            text = (f"🚨 <b>VIP BREAKOUT ALERT</b>\n\n"
+        f"💎 <b>العملة:</b> #{symbol.upper()}\n"
+        f"💵 <b>السعر:</b> ${price_display}\n"
+        f"📈 <b>الرؤية:</b>\n{insight}")
                         else:
                             prompt = f"Write a 1-line technical breakout hint for a coin at ${price_display}. DO NOT mention the coin name. Answer strictly in {lang}."
                             insight = await ask_groq(prompt, lang=lang)
