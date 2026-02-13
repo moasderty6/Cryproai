@@ -134,7 +134,7 @@ async def ai_opportunity_radar(pool):
                                         f"📈 **Technical Hint:**\n_{insight}_\n\n"
                                         f"📢 **Subscribe VIP to unlock the symbol!**")
                         try:
-                            await bot.send_message(uid, text, reply_markup=None if is_paid else get_payment_kb(lang), parse_mode=ParseMode.MARKDOWN)
+                            await bot.send_message(uid, text, reply_markup=None if is_paid else get_payment_kb(lang))
                         except: pass
                         await asyncio.sleep(0.05)
         except: pass
