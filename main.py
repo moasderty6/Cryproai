@@ -138,7 +138,7 @@ async def ai_opportunity_radar(pool):
                         except: pass
                         await asyncio.sleep(0.05)
         except: pass
-        await asyncio.sleep(86400)
+        await asyncio.sleep(300)
 
 # --- نظام الـ AI ---
 async def ask_groq(prompt, lang="ar"):
