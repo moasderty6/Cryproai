@@ -230,8 +230,9 @@ async def handle_symbol(m: types.Message):
         )
     
     sym = m.text.strip().upper()
-    await m.answer("⏳ جاري جلب السعر..." if lang=="ar" else "⏳ Fetching price...")
-    
+    # نرسل رسالة مؤقتة
+    temp_msg = await m.answer("⏳ جاري جلب السعر..." if lang=="ar" else "⏳ Fetching price...")
+
     try:
         async with httpx.AsyncClient() as client:
             res = await client.get(
@@ -243,19 +244,23 @@ async def handle_symbol(m: types.Message):
                 raise ValueError("Invalid symbol")
             price = data[sym]["quote"]["USD"]["price"]
     except Exception:
-        return await m.answer(
+        return await temp_msg.edit_text(
             "❌ رمز العملة غير صحيح، الرجاء إدخال رمز عملة صحيح." 
             if lang=="ar" else 
             "❌ Invalid coin symbol, please enter a correct coin symbol."
         )
     
+    await temp_msg.edit_text(
+        f"💵 السعر الحالي: ${price:.6f}" if lang=="ar" else f"💵 Current price: ${price:.6f}"
+    )
+
     user_session_data[uid] = {"sym": sym, "price": price, "lang": lang}
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="أسبوعي" if lang=="ar" else "Weekly", callback_data="tf_weekly"),
         InlineKeyboardButton(text="يومي" if lang=="ar" else "Daily", callback_data="tf_daily"),
         InlineKeyboardButton(text="4 ساعات" if lang=="ar" else "4H", callback_data="tf_4h")
     ]])
-    await m.answer(
+    await temp_msg.edit_text(
         f"💵 السعر الحالي: ${price:.6f}\n⏳ اختر الإطار الزمني للتحليل:" if lang=="ar" 
         else f"💵 Current price: ${price:.6f}\n⏳ Select timeframe for analysis:", 
         reply_markup=kb
@@ -379,7 +384,7 @@ async def on_startup(app):
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
     
-    asyncio.create_task(ai_opportunity_radar(pool))
+    # asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
 app = web.Application()
