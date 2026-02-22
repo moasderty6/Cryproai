@@ -217,17 +217,13 @@ async def set_lang(cb: types.CallbackQuery):
 @dp.message(F.text)
 async def handle_symbol(m: types.Message):
     if m.text.startswith('/'): return
+    
     uid, pool = m.from_user.id, dp['db_pool']
-    
-    # جلب بيانات المستخدم
     user = await pool.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", uid)
-    lang = user['lang'] if (user and user['lang']) else "ar"
+    lang = user['lang'] if user else "ar"
     
-    # التحقق من الصلاحية (VIP أو تجربة)
-    is_paid = await is_user_paid(pool, uid)
-    has_tr = await has_trial(pool, uid)
-    
-    if not is_paid and not has_tr:
+    # 1. التحقق من الصلاحية
+    if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
         return await m.answer(
             "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك." if lang=="ar" 
             else "⚠️ Your free trial has ended. Please subscribe.", 
@@ -235,6 +231,8 @@ async def handle_symbol(m: types.Message):
         )
     
     sym = m.text.strip().upper()
+    
+    # 2. إرسال رسالة الانتظار وتخزينها في متغير
     status_msg = await m.answer("⏳ جاري جلب السعر..." if lang=="ar" else "⏳ Fetching price...")
 
     try:
@@ -246,33 +244,36 @@ async def handle_symbol(m: types.Message):
             )
             data = res.json()
 
-            # التأكد من أن العملة موجودة في البيانات المستلمة
-            if res.status_code != 200 or sym not in data.get("data", {}):
+            # التحقق مما إذا كان الـ API قد أعاد خطأ أو لم يجد العملة
+            if res.status_code != 200 or "data" not in data or sym not in data["data"]:
                 raise ValueError("Symbol not found")
 
             price = data["data"][sym]["quote"]["USD"]["price"]
             
+            # تخزين البيانات في الجلسة
+            user_session_data[uid] = {"sym": sym, "price": price, "lang": lang}
+            
+            # 3. تحديث رسالة الانتظار بالخيارات الجديدة في حال النجاح
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="أسبوعي" if lang=="ar" else "Weekly", callback_data="tf_weekly"),
+                InlineKeyboardButton(text="يومي" if lang=="ar" else "Daily", callback_data="tf_daily"),
+                InlineKeyboardButton(text="4 ساعات" if lang=="ar" else "4H", callback_data="tf_4h")
+            ]])
+            
+            await status_msg.edit_text(
+                f"✅ العملة: {sym}\n💵 السعر: ${price:.6f}\n⏳ اختر الإطار الزمني:" if lang=="ar" 
+                else f"✅ Symbol: {sym}\n💵 Price: ${price:.6f}\n⏳ Select timeframe:", 
+                reply_markup=kb
+            )
+
     except Exception as e:
-        # حذف رسالة "جاري جلب السعر" وإبلاغ المستخدم بالخطأ
-        await status_msg.delete()
-        return await m.answer(
-            f"❌ رمز العملة ({sym}) غير صحيح أو غير مدعوم حالياً." if lang=="ar" 
-            else f"❌ Symbol ({sym}) is invalid or not supported."
+        # 4. في حال حدوث أي خطأ، يتم تعديل رسالة "جاري الجلب" لتوضيح الخطأ
+        error_text = (
+            f"❌ الرمز `{sym}` غير صحيح. تأكد من كتابة الرمز بشكل صحيح (مثل BTC أو ETH)." if lang=="ar" 
+            else f"❌ Symbol `{sym}` is invalid. Please check the ticker (e.g., BTC, ETH)."
         )
-    
-    # إذا نجح جلب السعر، نكمل العملية
-    user_session_data[uid] = {"sym": sym, "price": price, "lang": lang}
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="أسبوعي" if lang=="ar" else "Weekly", callback_data="tf_weekly"),
-        InlineKeyboardButton(text="يومي" if lang=="ar" else "Daily", callback_data="tf_daily"),
-        InlineKeyboardButton(text="4 ساعات" if lang=="ar" else "4H", callback_data="tf_4h")
-    ]])
-    
-    await status_msg.edit_text(
-        f"✅ تم العثور على {sym}\n💵 السعر الحالي: ${price:.6f}\n⏳ اختر الإطار الزمني للتحليل:" if lang=="ar" 
-        else f"✅ {sym} found\n💵 Current price: ${price:.6f}\n⏳ Select timeframe:", 
-        reply_markup=kb
-    )
+        await status_msg.edit_text(error_text, parse_mode=ParseMode.MARKDOWN)
+
 
 
 @dp.callback_query(F.data.startswith("tf_"))
