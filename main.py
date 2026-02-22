@@ -225,8 +225,8 @@ async def handle_symbol(m: types.Message):
     # 1. التحقق من الصلاحية
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
         return await m.answer(
-            "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك." if lang=="ar" 
-            else "⚠️ Your free trial has ended. Please subscribe.", 
+            "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة." if lang=="ar" 
+            else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐.", 
             reply_markup=get_payment_kb(lang)
         )
     
@@ -261,8 +261,8 @@ async def handle_symbol(m: types.Message):
             ]])
             
             await status_msg.edit_text(
-                f"✅ العملة: {sym}\n💵 السعر: ${price:.6f}\n⏳ اختر الإطار الزمني:" if lang=="ar" 
-                else f"✅ Symbol: {sym}\n💵 Price: ${price:.6f}\n⏳ Select timeframe:", 
+                f"✅ العملة: {sym}\n💵 السعر: ${price:.6f}\n⏳ اختر الإطار الزمني للتحليل:" if lang=="ar" 
+                else f"✅ Symbol: {sym}\n💵 Price: ${price:.6f}\n⏳ Select timeframe for analysis:", 
                 reply_markup=kb
             )
 
