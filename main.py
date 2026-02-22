@@ -227,10 +227,21 @@ async def handle_symbol(m: types.Message):
     sym = m.text.strip().upper()
     await m.answer("⏳ جاري جلب السعر..." if lang=="ar" else "⏳ Fetching price...")
     try:
-        async with httpx.AsyncClient() as client:
-            res = await client.get(f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={sym}", headers={"X-CMC_PRO_API_KEY": CMC_KEY})
-            price = res.json()["data"][sym]["quote"]["USD"]["price"]
-    except: return await m.answer("❌ لم أتمكن من جلب السعر الحالي للعملة." if lang=="ar" else "❌ Couldn't fetch current price.")
+    async with httpx.AsyncClient() as client:
+        res = await client.get(
+            f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={sym}", 
+            headers={"X-CMC_PRO_API_KEY": CMC_KEY}
+        )
+        data = res.json().get("data", {})
+        if sym not in data:
+            raise ValueError("Invalid symbol")
+        price = data[sym]["quote"]["USD"]["price"]
+except Exception:
+    return await m.answer(
+        "❌ رمز العملة غير صحيح، الرجاء إدخال رمز عملة صحيح." 
+        if lang=="ar" else 
+        "❌ Invalid coin symbol, please enter a correct coin symbol."
+    )
     
     user_session_data[uid] = {"sym": sym, "price": price, "lang": lang}
     kb = InlineKeyboardMarkup(inline_keyboard=[[
