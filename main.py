@@ -218,52 +218,62 @@ async def set_lang(cb: types.CallbackQuery):
 async def handle_symbol(m: types.Message):
     if m.text.startswith('/'): return
     uid, pool = m.from_user.id, dp['db_pool']
+    
+    # جلب بيانات المستخدم
     user = await pool.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", uid)
-    lang = user['lang'] if user else "ar"
-
-    if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
+    lang = user['lang'] if (user and user['lang']) else "ar"
+    
+    # التحقق من الصلاحية (VIP أو تجربة)
+    is_paid = await is_user_paid(pool, uid)
+    has_tr = await has_trial(pool, uid)
+    
+    if not is_paid and not has_tr:
         return await m.answer(
-            "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة."
-            if lang=="ar" else
-            "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐.",
+            "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك." if lang=="ar" 
+            else "⚠️ Your free trial has ended. Please subscribe.", 
             reply_markup=get_payment_kb(lang)
         )
-
+    
     sym = m.text.strip().upper()
-    temp_msg = await m.answer("⏳ جاري جلب السعر..." if lang=="ar" else "⏳ Fetching price...")
+    status_msg = await m.answer("⏳ جاري جلب السعر..." if lang=="ar" else "⏳ Fetching price...")
 
-    price = None
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient() as client:
             res = await client.get(
-                f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest",
-                params={"symbol": sym},
-                headers={"X-CMC_PRO_API_KEY": CMC_KEY}
+                f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={sym}", 
+                headers={"X-CMC_PRO_API_KEY": CMC_KEY},
+                timeout=10
             )
-            res_json = res.json()
-            if "data" not in res_json or sym not in res_json["data"]:
-                raise ValueError("Invalid symbol")
-            price = res_json["data"][sym]["quote"]["USD"]["price"]
-    except Exception:
-        await temp_msg.edit_text(
-            "❌ رمز العملة غير صحيح، الرجاء إدخال رمز عملة صحيح." 
-            if lang=="ar" else 
-            "❌ Invalid coin symbol, please enter a correct coin symbol."
-        )
-        return
+            data = res.json()
 
-    # إرسال الرسالة النهائية مرة واحدة فقط
+            # التأكد من أن العملة موجودة في البيانات المستلمة
+            if res.status_code != 200 or sym not in data.get("data", {}):
+                raise ValueError("Symbol not found")
+
+            price = data["data"][sym]["quote"]["USD"]["price"]
+            
+    except Exception as e:
+        # حذف رسالة "جاري جلب السعر" وإبلاغ المستخدم بالخطأ
+        await status_msg.delete()
+        return await m.answer(
+            f"❌ رمز العملة ({sym}) غير صحيح أو غير مدعوم حالياً." if lang=="ar" 
+            else f"❌ Symbol ({sym}) is invalid or not supported."
+        )
+    
+    # إذا نجح جلب السعر، نكمل العملية
     user_session_data[uid] = {"sym": sym, "price": price, "lang": lang}
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="أسبوعي" if lang=="ar" else "Weekly", callback_data="tf_weekly"),
         InlineKeyboardButton(text="يومي" if lang=="ar" else "Daily", callback_data="tf_daily"),
         InlineKeyboardButton(text="4 ساعات" if lang=="ar" else "4H", callback_data="tf_4h")
     ]])
-    await temp_msg.edit_text(
-        f"💵 السعر الحالي: ${price:.6f}\n⏳ اختر الإطار الزمني للتحليل:" if lang=="ar" 
-        else f"💵 Current price: ${price:.6f}\n⏳ Select timeframe for analysis:",
+    
+    await status_msg.edit_text(
+        f"✅ تم العثور على {sym}\n💵 السعر الحالي: ${price:.6f}\n⏳ اختر الإطار الزمني للتحليل:" if lang=="ar" 
+        else f"✅ {sym} found\n💵 Current price: ${price:.6f}\n⏳ Select timeframe:", 
         reply_markup=kb
     )
+
 
 @dp.callback_query(F.data.startswith("tf_"))
 async def run_analysis(cb: types.CallbackQuery):
