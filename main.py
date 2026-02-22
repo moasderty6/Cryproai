@@ -220,7 +220,7 @@ async def handle_symbol(m: types.Message):
     uid, pool = m.from_user.id, dp['db_pool']
     user = await pool.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", uid)
     lang = user['lang'] if user else "ar"
-    
+
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
         return await m.answer(
             "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة."
@@ -228,32 +228,31 @@ async def handle_symbol(m: types.Message):
             "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐.",
             reply_markup=get_payment_kb(lang)
         )
-    
+
     sym = m.text.strip().upper()
-    # نرسل رسالة مؤقتة
     temp_msg = await m.answer("⏳ جاري جلب السعر..." if lang=="ar" else "⏳ Fetching price...")
 
+    price = None
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=15) as client:
             res = await client.get(
-                f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={sym}", 
+                f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest",
+                params={"symbol": sym},
                 headers={"X-CMC_PRO_API_KEY": CMC_KEY}
             )
-            data = res.json().get("data", {})
-            if sym not in data:
+            res_json = res.json()
+            if "data" not in res_json or sym not in res_json["data"]:
                 raise ValueError("Invalid symbol")
-            price = data[sym]["quote"]["USD"]["price"]
+            price = res_json["data"][sym]["quote"]["USD"]["price"]
     except Exception:
-        return await temp_msg.edit_text(
+        await temp_msg.edit_text(
             "❌ رمز العملة غير صحيح، الرجاء إدخال رمز عملة صحيح." 
             if lang=="ar" else 
             "❌ Invalid coin symbol, please enter a correct coin symbol."
         )
-    
-    await temp_msg.edit_text(
-        f"💵 السعر الحالي: ${price:.6f}" if lang=="ar" else f"💵 Current price: ${price:.6f}"
-    )
+        return
 
+    # إرسال الرسالة النهائية مرة واحدة فقط
     user_session_data[uid] = {"sym": sym, "price": price, "lang": lang}
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="أسبوعي" if lang=="ar" else "Weekly", callback_data="tf_weekly"),
@@ -262,7 +261,7 @@ async def handle_symbol(m: types.Message):
     ]])
     await temp_msg.edit_text(
         f"💵 السعر الحالي: ${price:.6f}\n⏳ اختر الإطار الزمني للتحليل:" if lang=="ar" 
-        else f"💵 Current price: ${price:.6f}\n⏳ Select timeframe for analysis:", 
+        else f"💵 Current price: ${price:.6f}\n⏳ Select timeframe for analysis:",
         reply_markup=kb
     )
 
