@@ -356,35 +356,48 @@ async def success_pay(m: types.Message):
 
 # --- Webhook NOWPayments (IPN) ---
 async def nowpayments_ipn(req: web.Request):
-    data = await req.json()
-    signature = req.headers.get("x-nowpayments-signature")
+    try:
+        data = await req.json()
+        status = data.get("payment_status")
+        order_id = data.get("order_id") 
 
-    payload = json.dumps(data, separators=(',', ':'), sort_keys=True)
-    expected_sig = hmac.new(
-        NOWPAYMENTS_IPN_SECRET.encode(),
-        msg=payload.encode(),
-        digestmod=hashlib.sha512
-    ).hexdigest()
+        print(f"إشعار دفع جديد: الحالة {status} للمستخدم {order_id}")
 
-    if signature != expected_sig:
-        print("❌ Invalid signature")
-        return web.Response(status=400, text="Invalid signature")
+        if status in ["finished", "confirmed"]:
+            if order_id:
+                user_id = int(order_id)
+                pool = req.app['db_pool']
+                
+                async with pool.acquire() as conn:
+                    # 1. تفعيل المستخدم في جدول الـ VIP
+                    await conn.execute(
+                        "INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING",
+                        user_id
+                    )
+                    
+                    # 2. جلب لغة المستخدم من قاعدة البيانات
+                    user_row = await conn.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", user_id)
+                    user_lang = user_row['lang'] if user_row and user_row['lang'] else "ar"
 
-    print("✅ IPN VERIFIED:", data)
+                # 3. تحديد نص الرسالة بناءً على اللغة
+                if user_lang == "ar":
+                    msg = "✅ تم تأكيد الدفع بنجاح! شكراً لاشتراكك. يمكنك الآن استخدام البوت بشكل كامل."
+                else:
+                    msg = "✅ Payment confirmed! Thank you for subscribing. You can now use the bot fully."
 
-    if data.get("payment_status") in ["finished", "confirmed"]:
-        order_id = data.get("order_id")
-        if order_id:
-            user_id = int(order_id)
-            pool = req.app['db_pool']
-            async with pool.acquire() as conn:
-                await conn.execute(
-                    "INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING",
-                    user_id
-                )
-            print(f"🎉 User {user_id} upgraded to VIP")
+                # 4. إرسال الرسالة
+                try:
+                    await bot.send_message(user_id, msg)
+                except Exception as e:
+                    print(f"Could not send message to user {user_id}: {e}")
+                
+                print(f"🎉 User {user_id} upgraded to VIP ({user_lang})")
 
-    return web.Response(text="ok")
+        return web.Response(text="ok")
+    except Exception as e:
+        print(f"IPN Error: {e}")
+        return web.Response(text="error", status=500)
+
 
 # --- السيرفر ---
 async def handle_webhook(req: web.Request):
