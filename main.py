@@ -390,7 +390,7 @@ async def on_startup(app):
         await conn.execute("CREATE TABLE IF NOT EXISTS trial_users (user_id BIGINT PRIMARY KEY)")
         
         # ✅ إضافة المستخدمين المدفوعين مباشرة بدون تكرار
-        initial_paid_users = {1811762192, 458002084}  # استخدام مجموعة لتجنب التكرار
+        initial_paid_users = {1811762192, 756814703}  # استخدام مجموعة لتجنب التكرار
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
     
