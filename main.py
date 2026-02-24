@@ -53,7 +53,7 @@ async def create_nowpayments_invoice(user_id: int):
     url = "https://api.nowpayments.io/v1/invoice"
     headers = {"x-api-key": NOWPAYMENTS_API_KEY, "Content-Type": "application/json"}
     data = {
-        "price_amount": 10,
+        "price_amount": 1,
         "price_currency": "usd",
         "order_id": str(user_id),
         "ipn_callback_url": f"{WEBHOOK_URL}/webhook/nowpayments",
@@ -358,21 +358,32 @@ async def success_pay(m: types.Message):
 async def nowpayments_ipn(req: web.Request):
     data = await req.json()
     signature = req.headers.get("x-nowpayments-signature")
-    
+
+    payload = json.dumps(data, separators=(',', ':'), sort_keys=True)
     expected_sig = hmac.new(
         NOWPAYMENTS_IPN_SECRET.encode(),
-        msg=json.dumps(data).encode(),
+        msg=payload.encode(),
         digestmod=hashlib.sha512
     ).hexdigest()
-    
+
     if signature != expected_sig:
+        print("❌ Invalid signature")
         return web.Response(status=400, text="Invalid signature")
-    
-    if data.get("payment_status") == "finished":
-        user_id = int(data.get("order_id"))
-        pool = req.app['db_pool']
-        async with pool.acquire() as conn:
-            await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", user_id)
+
+    print("✅ IPN VERIFIED:", data)
+
+    if data.get("payment_status") in ["finished", "confirmed"]:
+        order_id = data.get("order_id")
+        if order_id:
+            user_id = int(order_id)
+            pool = req.app['db_pool']
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING",
+                    user_id
+                )
+            print(f"🎉 User {user_id} upgraded to VIP")
+
     return web.Response(text="ok")
 
 # --- السيرفر ---
@@ -394,7 +405,7 @@ async def on_startup(app):
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
     
-    asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
+    #asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
 app = web.Application()
