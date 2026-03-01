@@ -217,7 +217,7 @@ async def daily_channel_post():
             print(f"Error in channel post: {e}")
             
         # الانتظار 24 ساعة (86400 ثانية)
-        await asyncio.sleep(400) 
+        await asyncio.sleep(2160) 
 
 
 # --- نظام الـ AI ---
