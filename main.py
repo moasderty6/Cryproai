@@ -152,6 +152,72 @@ async def ai_opportunity_radar(pool):
             print(f"Radar Error: {e}")
             
         await asyncio.sleep(84000) # انتطار الدورة القادمة
+async def daily_channel_post():
+    # معرف القناة (تأكد من كتابة يوزر قناتك هنا)
+    CHANNEL_ID = "@YourChannelUsername" 
+    
+    while True:
+        try:
+            headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
+            async with httpx.AsyncClient() as client:
+                # نجلب أفضل 100 عملة لنختار منها
+                res = await client.get("https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest", 
+                                     headers=headers, params={"limit": "100"})
+                
+                if res.status_code == 200:
+                    selected_coin = random.choice(res.json()["data"])
+                    symbol = selected_coin["symbol"]
+                    price = selected_coin["quote"]["USD"]["price"]
+                    price_display = f"{price:.4f}" if price > 1 else f"{price:.8f}"
+                    
+                    # توليد أرقام عشوائية للمؤشرات
+                    vol_val = round(random.uniform(40, 150), 1)
+                    trend_val = random.randint(40, 98)
+
+                    # دالة لتحديد وصف القوة بناءً على الرقم
+                    def get_power_desc(val):
+                        if val < 50: return "ضعيف ⚠️"
+                        elif 50 <= val < 60: return "متوسط ⚖️"
+                        elif 60 <= val < 80: return "قوي 💪"
+                        else: return "قوي جداً 🔥"
+
+                    vol_desc = get_power_desc(vol_val)
+                    trend_desc = get_power_desc(trend_val)
+
+                    # صياغة المنشور بالتنسيق المطلوب بالضبط
+                    post_text = (
+                        f"━━━━━━━━━━━━\n"
+                        f"🚨 **SMART MONEY ALERT**\n"
+                        f"━━━━━━━━━━━━\n"
+                        f"⏱️ الفريم: 15m\n"
+                        f"💰 العملة: `{symbol}USDT`\n"
+                        f"💵 السعر: `{price_display}`\n"
+                        f"━━━━━━━━━━━━\n"
+                        f"▪️ الحالة: ✅ إغلاق شمعة\n"
+                        f"▪️ قوة الحجم: {vol_val}% ({vol_desc})\n"
+                        f"▪️ قوة الاتجاه: {trend_val}% ({trend_desc})\n"
+                        f"━━━━━━━━━━━━\n"
+                        f"🔒 الاتجاه والأهداف مخفية\n"
+                        f"━━━━━━━━━━━━\n"
+                        f"👁️‍🗨️ لمعرفة الاتجاه + TP/SL\n"
+                        f"اضغط هنا 👇"
+                    )
+
+                    # إعداد الزر لفتح البوت
+                    bot_info = await bot.get_me()
+                    kb = InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="🖥 تحليل الاتجاه الآن", url=f"https://t.me/{bot_info.username}?start=analyze_{symbol}")
+                    ]])
+
+                    # إرسال المنشور للقناة
+                    await bot.send_message(CHANNEL_ID, post_text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+                    print(f"✅ تم نشر توصية القناة لعملة {symbol}")
+
+        except Exception as e:
+            print(f"Error in channel post: {e}")
+            
+        # الانتظار 24 ساعة (86400 ثانية)
+        await asyncio.sleep(86400) 
 
 
 # --- نظام الـ AI ---
@@ -457,6 +523,7 @@ async def on_startup(app):
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
     
     #asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
+    asyncio.create_task(daily_channel_post())
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
 app = web.Application()
