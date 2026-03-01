@@ -198,8 +198,17 @@ async def start_cmd(m: types.Message):
 @dp.callback_query(F.data.startswith("lang_"))
 async def set_lang(cb: types.CallbackQuery):
     lang = cb.data.split("_")[1]
-    async with dp['db_pool'].acquire() as conn:
-        await conn.execute("UPDATE users_info SET lang = $1 WHERE user_id = $2", lang, cb.from_user.id)
+
+    try:
+        async with dp['db_pool'].acquire() as conn:
+            await conn.execute(
+                "UPDATE users_info SET lang = $1 WHERE user_id = $2",
+                lang,
+                cb.from_user.id
+            )
+    except Exception as e:
+        print(f"DB Error in set_lang: {e}")
+        return await cb.answer("Server busy, try again...", show_alert=True)
     
     is_paid = await is_user_paid(dp['db_pool'], cb.from_user.id)
     has_tr = await has_trial(dp['db_pool'], cb.from_user.id)
@@ -286,7 +295,12 @@ async def run_analysis(cb: types.CallbackQuery):
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
         return await cb.message.edit_text("⚠️ انتهت تجربتك المجانية." if lang=="ar" else "⚠️ Trial ended.", reply_markup=get_payment_kb(lang))
 
-    await cb.message.edit_text("🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing...")
+try:
+    await cb.message.edit_text(
+        "🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing..."
+    )
+except:
+    pass
     
     # --- برومبت التحليل ---
     if lang == "ar":
@@ -401,13 +415,32 @@ async def nowpayments_ipn(req: web.Request):
 
 # --- السيرفر ---
 async def handle_webhook(req: web.Request):
-    data = await req.json()
-    asyncio.create_task(dp.feed_update(bot, types.Update(**data)))
-    return web.Response(text="ok")
+    try:
+        data = await req.json()
+        asyncio.create_task(dp.feed_update(bot, types.Update(**data)))
+        return web.Response(text="ok")
+    except Exception as e:
+        print(f"Webhook error: {e}")
+        return web.Response(text="error", status=500)
 
 async def on_startup(app):
-    pool = await asyncpg.create_pool(DATABASE_URL)
+    pool = await asyncpg.create_pool(
+        DATABASE_URL,
+        min_size=1,
+        max_size=10,
+        command_timeout=60,
+        timeout=60
+    )
+
     app['db_pool'] = dp['db_pool'] = pool
+
+    # 🔥 تأكد الاتصال اشتغل قبل استقبال المستخدمين
+    try:
+        async with pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        print("✅ Database connected successfully")
+    except Exception as e:
+        print(f"❌ Database connection failed: {e}")
     async with pool.acquire() as conn:
         await conn.execute("CREATE TABLE IF NOT EXISTS users_info (user_id BIGINT PRIMARY KEY, lang TEXT)")
         await conn.execute("CREATE TABLE IF NOT EXISTS paid_users (user_id BIGINT PRIMARY KEY)")
@@ -418,7 +451,7 @@ async def on_startup(app):
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
     
-    asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
+    #asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
 app = web.Application()
