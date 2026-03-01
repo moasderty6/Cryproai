@@ -289,18 +289,23 @@ async def handle_symbol(m: types.Message):
 async def run_analysis(cb: types.CallbackQuery):
     uid, pool = cb.from_user.id, dp['db_pool']
     data = user_session_data.get(uid)
-    if not data: return
+    if not data:
+        return
+
     lang, sym, price, tf = data['lang'], data['sym'], data['price'], cb.data.replace("tf_", "")
     
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
-        return await cb.message.edit_text("⚠️ انتهت تجربتك المجانية." if lang=="ar" else "⚠️ Trial ended.", reply_markup=get_payment_kb(lang))
+        return await cb.message.edit_text(
+            "⚠️ انتهت تجربتك المجانية." if lang=="ar" else "⚠️ Trial ended.",
+            reply_markup=get_payment_kb(lang)
+        )
 
-try:
-    await cb.message.edit_text(
-        "🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing..."
-    )
-except:
-    pass
+    try:
+        await cb.message.edit_text(
+            "🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing..."
+        )
+    except:
+        pass
     
     # --- برومبت التحليل ---
     if lang == "ar":
