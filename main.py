@@ -154,7 +154,7 @@ async def ai_opportunity_radar(pool):
         await asyncio.sleep(84000) # انتطار الدورة القادمة
 async def daily_channel_post():
     # معرف القناة (تأكد من كتابة يوزر قناتك هنا)
-    CHANNEL_ID = "@p2p_LRN" 
+    CHANNEL_ID = "@AiCryptoGPT" 
     
     while True:
         try:
