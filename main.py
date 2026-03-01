@@ -236,15 +236,33 @@ async def ask_groq(prompt, lang="ar"):
 @dp.message(Command("status"))
 async def status_cmd(m: types.Message):
     pool = dp['db_pool']
+    
+    # إحصائيات المستخدمين
     total = await pool.fetchval("SELECT count(*) FROM users_info")
     vips = await pool.fetchval("SELECT count(*) FROM paid_users")
-    trials = await pool.fetchval("SELECT count(*) FROM trial_users")
     
-    msg = (f"📊 **إحصائيات البوت:**\n"
+    # إحصائيات النشاط (Activity) في آخر 24 ساعة
+    active_last_24h = await pool.fetchval("""
+        SELECT count(*) FROM activity_stats 
+        WHERE received_at > CURRENT_TIMESTAMP - INTERVAL '1 day'
+    """)
+    
+    # عدد المستخدمين الفريدين الذين أرسلوا رسائل اليوم
+    unique_active_users = await pool.fetchval("""
+        SELECT count(DISTINCT user_id) FROM activity_stats 
+        WHERE received_at > CURRENT_TIMESTAMP - INTERVAL '1 day'
+    """)
+
+    msg = (f"📊 **إحصائيات البوت الاحترافية:**\n"
            f"───────────────────\n"
            f"👥 **إجمالي المستخدمين:** `{total}`\n"
-           f"💎 **المشتركين (VIP):** `{vips}`\n"
-           f"🎁 **مستخدمي التجربة:** `{trials}`")
+           f"💎 **المشتركين (VIP):** `{vips}`\n\n"
+           f"⚡ **نشاط الـ Activity (آخر 24س):**\n"
+           f"📩 **عدد الرسائل المستلمة:** `{active_last_24h}`\n"
+           f"👤 **مستخدمين نشطين حالياً:** `{unique_active_users}`\n"
+           f"───────────────────\n"
+           f"💡 *إذا كان عدد الرسائل عالياً والمستخدمين قليل، فخدمة الـ Activity تعمل بقوة.*")
+    
     await m.answer(msg, parse_mode=ParseMode.MARKDOWN)
     
 @dp.message(Command("admin"))
@@ -294,6 +312,11 @@ async def handle_symbol(m: types.Message):
     if m.text.startswith('/'): return
     
     uid, pool = m.from_user.id, dp['db_pool']
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute("INSERT INTO activity_stats (user_id, message_text) VALUES ($1, $2)", uid, m.text[:50])
+    except Exception as e:
+        print(f"Stats Error: {e}")
     user = await pool.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", uid)
     lang = user['lang'] if user else "ar"
     
@@ -516,7 +539,16 @@ async def on_startup(app):
         await conn.execute("CREATE TABLE IF NOT EXISTS users_info (user_id BIGINT PRIMARY KEY, lang TEXT)")
         await conn.execute("CREATE TABLE IF NOT EXISTS paid_users (user_id BIGINT PRIMARY KEY)")
         await conn.execute("CREATE TABLE IF NOT EXISTS trial_users (user_id BIGINT PRIMARY KEY)")
-        
+        # أضفه داخل وظيفة on_startup مع باقي جداول الـ CREATE TABLE
+        await conn.execute("""
+    CREATE TABLE IF NOT EXISTS activity_stats (
+        id SERIAL PRIMARY KEY,
+        user_id BIGINT,
+        message_text TEXT,
+        received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+""")
+
         # ✅ إضافة المستخدمين المدفوعين مباشرة بدون تكرار
         initial_paid_users = {1811762192, 756814703}  # استخدام مجموعة لتجنب التكرار
         for uid in initial_paid_users:
