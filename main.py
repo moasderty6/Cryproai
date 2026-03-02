@@ -236,16 +236,25 @@ async def ask_groq(prompt, lang="ar"):
 @dp.message(Command("status"))
 async def status_cmd(m: types.Message):
     pool = dp['db_pool']
-    total = await pool.fetchval("SELECT count(*) FROM users_info")
-    vips = await pool.fetchval("SELECT count(*) FROM paid_users")
-    trials = await pool.fetchval("SELECT count(*) FROM trial_users")
     
-    msg = (f"📊 **إحصائيات البوت:**\n"
+    # 1. إجمالي المستخدمين
+    total = await pool.fetchval("SELECT count(*) FROM users_info")
+    # 2. إجمالي المشتركين VIP
+    vips = await pool.fetchval("SELECT count(*) FROM paid_users")
+    # 3. إجمالي الذين استخدموا التجربة المجانية (الموجودين في جدول trial_users)
+    total_trials = await pool.fetchval("SELECT count(*) FROM trial_users")
+    # 4. النشطين اليوم (الذين أرسلوا رسائل اليوم)
+    active_today = await pool.fetchval("SELECT count(*) FROM users_info WHERE last_active = CURRENT_DATE")
+    
+    msg = (f"📊 **إحصائيات البوت المتقدمة:**\n"
            f"───────────────────\n"
-           f"👥 **إجمالي المستخدمين:** `{total}`\n"
-           f"💎 **المشتركين (VIP):** `{vips}`\n"
-           f"🎁 **مستخدمي التجربة:** `{trials}`")
+           f"👥 **إجمالي القاعدة:** `{total}` مستخدم\n"
+           f"🔥 **النشاط اليومي:** `{active_today}` مستخدم نشط\n"
+           f"🎁 **مستخدمي التجربة:** `{total_trials}` شخص\n"
+           f"💎 **المشتركين VIP:** `{vips}` مشترك")
+    
     await m.answer(msg, parse_mode=ParseMode.MARKDOWN)
+
     
 @dp.message(Command("admin"))
 async def admin_cmd(m: types.Message):
@@ -294,7 +303,15 @@ async def handle_symbol(m: types.Message):
     if m.text.startswith('/'): return
     
     uid, pool = m.from_user.id, dp['db_pool']
+
+    # --- أضف هذا الجزء هنا لتسجيل تاريخ النشاط ---
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users_info SET last_active = CURRENT_DATE WHERE user_id = $1", uid)
+    # --------------------------------------------
+
     user = await pool.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", uid)
+    # ... باقي كود الدالة كما هو ...
+
     lang = user['lang'] if user else "ar"
     
     # 1. التحقق من الصلاحية
@@ -514,6 +531,8 @@ async def on_startup(app):
         print(f"❌ Database connection failed: {e}")
     async with pool.acquire() as conn:
         await conn.execute("CREATE TABLE IF NOT EXISTS users_info (user_id BIGINT PRIMARY KEY, lang TEXT)")
+        # داخل دالة on_startup ابحث عن سطر إنشاء الجداول وأضف هذا:
+        await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS last_active DATE")
         await conn.execute("CREATE TABLE IF NOT EXISTS paid_users (user_id BIGINT PRIMARY KEY)")
         await conn.execute("CREATE TABLE IF NOT EXISTS trial_users (user_id BIGINT PRIMARY KEY)")
         
@@ -522,8 +541,8 @@ async def on_startup(app):
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
     
-    asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
-    asyncio.create_task(daily_channel_post())
+    #asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
+    #asyncio.create_task(daily_channel_post())
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
 app = web.Application()
