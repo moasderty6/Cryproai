@@ -224,13 +224,18 @@ async def daily_channel_post():
 async def ask_groq(prompt, lang="ar"):
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     data = {"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}]}
+
     try:
         async with httpx.AsyncClient(timeout=45) as client:
-            res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data)
+            res = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=headers,
+                json=data
+            )
             ans = res.json()["choices"][0]["message"]["content"]
-            if lang == "ar": return re.sub(r'[^\u0600-\u06FF0-9A-Za-z.,:%$؟! \n\-]+', '', ans)
             return ans
-    except: return "..."
+    except:
+        return "⚠️ Error generating analysis"
 
 # --- الأوامر ---
 @dp.message(Command("status"))
@@ -409,56 +414,76 @@ async def run_analysis(cb: types.CallbackQuery):
     # --- برومبت التحليل منسق ---
     if lang == "ar":
         prompt = (
-            f"سعر العملة {sym} الحالي: {price:.6f}$\n"
-            f"الإطار الزمني للتحليل: {tf}\n\n"
-            f"📊 **تحليل شامل:**\n"
-            f"- الاتجاه العام: \n"
-            f"- أقرب دعم: \n"
-            f"- أقرب مقاومة: \n\n"
-            f"🎯 **الأهداف المستقبلية:**\n"
-            f"1️⃣ قصير المدى: \n"
-            f"2️⃣ متوسط المدى: \n"
-            f"3️⃣ بعيد المدى: \n\n"
-            f"💹 **مستويات تداول مقترحة:**\n"
-            f"- Stop Loss: \n"
-            f"- Take Profit: \n\n"
-            f"📈 **تحليل المؤشرات الفنية:**\n"
-            f"- RSI, MACD, MA\n"
-            f"- Bollinger Bands\n"
-            f"- Fibonacci Levels\n"
-            f"- Stochastic Oscillator\n"
-            f"- Volume Analysis\n"
-            f"- Trendlines باستخدام Regression\n\n"
-            f"✅ استخدم العربية فقط، لا تشرح المشروع، ركز على التحليل الفني وتوقعات الأسعار فقط."
-        )
+f"""قم بتحليل عملة {sym}
+
+السعر الحالي: {price:.6f}$
+الإطار الزمني: {tf}
+
+اكتب التحليل بنفس التنسيق التالي تمامًا باستخدام HTML:
+
+📊 <b>التحليل العام</b>
+الاتجاه: (صاعد / هابط / جانبي)
+
+📉 <b>الدعم والمقاومة</b>
+الدعم الأقرب:
+المقاومة الأقرب:
+
+🎯 <b>الأهداف السعرية</b>
+TP1:
+TP2:
+TP3:
+
+🛑 <b>وقف الخسارة</b>
+Stop Loss:
+
+📈 <b>تحليل المؤشرات</b>
+RSI:
+MACD:
+Bollinger Bands:
+Volume:
+
+اجعل التحليل احترافي وقصير.
+لا تشرح المشروع.
+استخدم العربية فقط.
+""")
     else:
         prompt = (
-            f"Current price of {sym}: ${price:.6f}\n"
-            f"Timeframe: {tf}\n\n"
-            f"📊 **Comprehensive Analysis:**\n"
-            f"- General Trend: \n"
-            f"- Nearest Support: \n"
-            f"- Nearest Resistance: \n\n"
-            f"🎯 **Future Targets:**\n"
-            f"1️⃣ Short-term: \n"
-            f"2️⃣ Medium-term: \n"
-            f"3️⃣ Long-term: \n\n"
-            f"💹 **Suggested Trading Levels:**\n"
-            f"- Stop Loss: \n"
-            f"- Take Profit: \n\n"
-            f"📈 **Technical Indicators Analysis:**\n"
-            f"- RSI, MACD, MA\n"
-            f"- Bollinger Bands\n"
-            f"- Fibonacci Levels\n"
-            f"- Stochastic Oscillator\n"
-            f"- Volume Analysis\n"
-            f"- Trendlines using Regression\n\n"
-            f"✅ Answer strictly in English, do not explain the project. Focus only on technical chart analysis."
-        )
+f"""Analyze {sym}
+
+Current price: ${price:.6f}
+Timeframe: {tf}
+
+Write the analysis EXACTLY in this HTML format:
+
+📊 <b>Market Overview</b>
+Trend: (Bullish / Bearish / Sideways)
+
+📉 <b>Support & Resistance</b>
+Nearest Support:
+Nearest Resistance:
+
+🎯 <b>Price Targets</b>
+TP1:
+TP2:
+TP3:
+
+🛑 <b>Stop Loss</b>
+Stop Loss:
+
+📈 <b>Indicator Analysis</b>
+RSI:
+MACD:
+Bollinger Bands:
+Volume:
+
+Keep it short and professional.
+Do not explain the project.
+English only.
+""")
 
     # --- استدعاء API داخل الدالة فقط ---
     res = await ask_groq(prompt, lang=lang)
-    await cb.message.answer(res)
+    await cb.message.answer(res, parse_mode=ParseMode.HTML)
     
     if not (await is_user_paid(pool, uid)):
         async with pool.acquire() as conn:
