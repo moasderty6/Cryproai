@@ -228,7 +228,7 @@ async def ask_groq(prompt, lang="ar"):
         async with httpx.AsyncClient(timeout=45) as client:
             res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data)
             ans = res.json()["choices"][0]["message"]["content"]
-            if lang == "ar": return ans
+            if lang == "ar": return re.sub(r'[^\u0600-\u06FF0-9A-Za-z.,:%$؟! \n\-]+', '', ans)
             return ans
     except: return "..."
 
