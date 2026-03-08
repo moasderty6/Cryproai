@@ -228,7 +228,7 @@ async def ask_groq(prompt, lang="ar"):
         async with httpx.AsyncClient(timeout=45) as client:
             res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data)
             ans = res.json()["choices"][0]["message"]["content"]
-            if lang == "ar": return re.sub(r'[^\u0600-\u06FF0-9A-Za-z.,:%$؟! \n\-]+', '', ans)
+            if lang == "ar": return ans
             return ans
     except: return "..."
 
@@ -408,53 +408,53 @@ async def run_analysis(cb: types.CallbackQuery):
 
     # --- برومبت التحليل منسق ---
     if lang == "ar":
-        prompt = (
-            f"سعر العملة {sym} الحالي: {price:.6f}$\n"
-            f"الإطار الزمني للتحليل: {tf}\n\n"
-            f"📊 **تحليل شامل:**\n"
-            f"- الاتجاه العام: \n"
-            f"- أقرب دعم: \n"
-            f"- أقرب مقاومة: \n\n"
-            f"🎯 **الأهداف المستقبلية:**\n"
-            f"1️⃣ قصير المدى: \n"
-            f"2️⃣ متوسط المدى: \n"
-            f"3️⃣ بعيد المدى: \n\n"
-            f"💹 **مستويات تداول مقترحة:**\n"
-            f"- Stop Loss: \n"
-            f"- Take Profit: \n\n"
-            f"📈 **تحليل المؤشرات الفنية:**\n"
-            f"- RSI, MACD, MA\n"
-            f"- Bollinger Bands\n"
-            f"- Fibonacci Levels\n"
-            f"- Stochastic Oscillator\n"
-            f"- Volume Analysis\n"
-            f"- Trendlines باستخدام Regression\n\n"
-            f"✅ استخدم العربية فقط، لا تشرح المشروع، ركز على التحليل الفني وتوقعات الأسعار فقط."
-        )
-    else:
-        prompt = (
-            f"Current price of {sym}: ${price:.6f}\n"
-            f"Timeframe: {tf}\n\n"
-            f"📊 **Comprehensive Analysis:**\n"
-            f"- General Trend: \n"
-            f"- Nearest Support: \n"
-            f"- Nearest Resistance: \n\n"
-            f"🎯 **Future Targets:**\n"
-            f"1️⃣ Short-term: \n"
-            f"2️⃣ Medium-term: \n"
-            f"3️⃣ Long-term: \n\n"
-            f"💹 **Suggested Trading Levels:**\n"
-            f"- Stop Loss: \n"
-            f"- Take Profit: \n\n"
-            f"📈 **Technical Indicators Analysis:**\n"
-            f"- RSI, MACD, MA\n"
-            f"- Bollinger Bands\n"
-            f"- Fibonacci Levels\n"
-            f"- Stochastic Oscillator\n"
-            f"- Volume Analysis\n"
-            f"- Trendlines using Regression\n\n"
-            f"✅ Answer strictly in English, do not explain the project. Focus only on technical chart analysis."
-        )
+    prompt = (
+        f"سعر العملة {sym} الحالي: {price:.6f}$\n"
+        f"الإطار الزمني للتحليل: {tf}\n\n"
+        f"📊 <b>تحليل شامل:</b>\n"
+        f"- الاتجاه العام:\n"
+        f"- أقرب دعم:\n"
+        f"- أقرب مقاومة:\n\n"
+        f"🎯 <b>الأهداف المستقبلية:</b>\n"
+        f"1️⃣ قصير المدى:\n"
+        f"2️⃣ متوسط المدى:\n"
+        f"3️⃣ بعيد المدى:\n\n"
+        f"💹 <b>مستويات تداول مقترحة:</b>\n"
+        f"- Stop Loss:\n"
+        f"- Take Profit:\n\n"
+        f"📈 <b>تحليل المؤشرات الفنية:</b>\n"
+        f"- RSI, MACD, MA\n"
+        f"- Bollinger Bands\n"
+        f"- Fibonacci Levels\n"
+        f"- Stochastic Oscillator\n"
+        f"- Volume Analysis\n"
+        f"- Trendlines باستخدام Regression\n\n"
+        f"اكتب التحليل بنفس التنسيق تمامًا."
+    )
+else:
+    prompt = (
+        f"Current price of {sym}: ${price:.6f}\n"
+        f"Timeframe: {tf}\n\n"
+        f"📊 <b>Comprehensive Analysis:</b>\n"
+        f"- General Trend:\n"
+        f"- Nearest Support:\n"
+        f"- Nearest Resistance:\n\n"
+        f"🎯 <b>Future Targets:</b>\n"
+        f"1️⃣ Short-term:\n"
+        f"2️⃣ Medium-term:\n"
+        f"3️⃣ Long-term:\n\n"
+        f"💹 <b>Suggested Trading Levels:</b>\n"
+        f"- Stop Loss:\n"
+        f"- Take Profit:\n\n"
+        f"📈 <b>Technical Indicators Analysis:</b>\n"
+        f"- RSI, MACD, MA\n"
+        f"- Bollinger Bands\n"
+        f"- Fibonacci Levels\n"
+        f"- Stochastic Oscillator\n"
+        f"- Volume Analysis\n"
+        f"- Trendlines using Regression\n\n"
+        f"Keep the same formatting."
+    )
 
     # --- استدعاء API داخل الدالة فقط ---
     res = await ask_groq(prompt, lang=lang)
