@@ -391,7 +391,8 @@ async def run_analysis(cb: types.CallbackQuery):
         return
 
     lang, sym, price, tf = data['lang'], data['sym'], data['price'], cb.data.replace("tf_", "")
-    
+
+    # --- تحقق من الاشتراك / التجربة ---
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
         return await cb.message.edit_text(
             "⚠️ انتهت تجربتك المجانية." if lang=="ar" else "⚠️ Trial ended.",
@@ -404,58 +405,58 @@ async def run_analysis(cb: types.CallbackQuery):
         )
     except:
         pass
-    
-    # --- برومبت التحليل ---
-    # --- برومبت التحليل منسق ---
-if lang == "ar":
-    prompt = (
-        f"سعر العملة {sym} الحالي: {price:.6f}$\n"
-        f"الإطار الزمني للتحليل: {tf}\n\n"
-        f"📊 **تحليل شامل:**\n"
-        f"- الاتجاه العام: \n"
-        f"- أقرب دعم: \n"
-        f"- أقرب مقاومة: \n\n"
-        f"🎯 **الأهداف المستقبلية:**\n"
-        f"1️⃣ قصير المدى: \n"
-        f"2️⃣ متوسط المدى: \n"
-        f"3️⃣ بعيد المدى: \n\n"
-        f"💹 **مستويات تداول مقترحة:**\n"
-        f"- Stop Loss: \n"
-        f"- Take Profit: \n\n"
-        f"📈 **تحليل المؤشرات الفنية:**\n"
-        f"- RSI, MACD, MA\n"
-        f"- Bollinger Bands\n"
-        f"- Fibonacci Levels\n"
-        f"- Stochastic Oscillator\n"
-        f"- Volume Analysis\n"
-        f"- Trendlines باستخدام Regression\n\n"
-        f"✅ استخدم العربية فقط، لا تشرح المشروع، ركز على التحليل الفني وتوقعات الأسعار فقط."
-    )
-else:
-    prompt = (
-        f"Current price of {sym}: ${price:.6f}\n"
-        f"Timeframe: {tf}\n\n"
-        f"📊 **Comprehensive Analysis:**\n"
-        f"- General Trend: \n"
-        f"- Nearest Support: \n"
-        f"- Nearest Resistance: \n\n"
-        f"🎯 **Future Targets:**\n"
-        f"1️⃣ Short-term: \n"
-        f"2️⃣ Medium-term: \n"
-        f"3️⃣ Long-term: \n\n"
-        f"💹 **Suggested Trading Levels:**\n"
-        f"- Stop Loss: \n"
-        f"- Take Profit: \n\n"
-        f"📈 **Technical Indicators Analysis:**\n"
-        f"- RSI, MACD, MA\n"
-        f"- Bollinger Bands\n"
-        f"- Fibonacci Levels\n"
-        f"- Stochastic Oscillator\n"
-        f"- Volume Analysis\n"
-        f"- Trendlines using Regression\n\n"
-        f"✅ Answer strictly in English, do not explain the project. Focus only on technical chart analysis."
-    )
 
+    # --- برومبت التحليل منسق ---
+    if lang == "ar":
+        prompt = (
+            f"سعر العملة {sym} الحالي: {price:.6f}$\n"
+            f"الإطار الزمني للتحليل: {tf}\n\n"
+            f"📊 **تحليل شامل:**\n"
+            f"- الاتجاه العام: \n"
+            f"- أقرب دعم: \n"
+            f"- أقرب مقاومة: \n\n"
+            f"🎯 **الأهداف المستقبلية:**\n"
+            f"1️⃣ قصير المدى: \n"
+            f"2️⃣ متوسط المدى: \n"
+            f"3️⃣ بعيد المدى: \n\n"
+            f"💹 **مستويات تداول مقترحة:**\n"
+            f"- Stop Loss: \n"
+            f"- Take Profit: \n\n"
+            f"📈 **تحليل المؤشرات الفنية:**\n"
+            f"- RSI, MACD, MA\n"
+            f"- Bollinger Bands\n"
+            f"- Fibonacci Levels\n"
+            f"- Stochastic Oscillator\n"
+            f"- Volume Analysis\n"
+            f"- Trendlines باستخدام Regression\n\n"
+            f"✅ استخدم العربية فقط، لا تشرح المشروع، ركز على التحليل الفني وتوقعات الأسعار فقط."
+        )
+    else:
+        prompt = (
+            f"Current price of {sym}: ${price:.6f}\n"
+            f"Timeframe: {tf}\n\n"
+            f"📊 **Comprehensive Analysis:**\n"
+            f"- General Trend: \n"
+            f"- Nearest Support: \n"
+            f"- Nearest Resistance: \n\n"
+            f"🎯 **Future Targets:**\n"
+            f"1️⃣ Short-term: \n"
+            f"2️⃣ Medium-term: \n"
+            f"3️⃣ Long-term: \n\n"
+            f"💹 **Suggested Trading Levels:**\n"
+            f"- Stop Loss: \n"
+            f"- Take Profit: \n\n"
+            f"📈 **Technical Indicators Analysis:**\n"
+            f"- RSI, MACD, MA\n"
+            f"- Bollinger Bands\n"
+            f"- Fibonacci Levels\n"
+            f"- Stochastic Oscillator\n"
+            f"- Volume Analysis\n"
+            f"- Trendlines using Regression\n\n"
+            f"✅ Answer strictly in English, do not explain the project. Focus only on technical chart analysis."
+        )
+
+    # --- استدعاء API داخل الدالة فقط ---
     res = await ask_groq(prompt, lang=lang)
     await cb.message.answer(res)
     
