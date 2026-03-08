@@ -262,6 +262,21 @@ async def admin_cmd(m: types.Message):
         "📌 للتواصل مع الدعم، يرجى التواصل مع هذا الحساب:\n@AiCrAdmin\n\n"
         "📌 For support, contact:\n@AiCrAdmin"
     )
+@dp.message(Command("clean"))
+async def clean_db_cmd(m: types.Message):
+    if m.from_user.id != ADMIN_USER_ID:
+        return await m.answer("❌ لا تملك صلاحية استخدام هذا الأمر.")
+    
+    pool = dp['db_pool']
+    async with pool.acquire() as conn:
+        # حذف المستخدمين الذين ليس لديهم تجربة ولم يشتركوا
+        deleted_count = await conn.execute("""
+            DELETE FROM users_info
+            WHERE user_id NOT IN (SELECT user_id FROM paid_users)
+            AND user_id NOT IN (SELECT user_id FROM trial_users)
+        """)
+    
+    await m.answer(f"✅ تم تنظيف قاعدة البيانات. عدد المستخدمين المحذوفين: {deleted_count}")
     
 @dp.message(Command("start"))
 async def start_cmd(m: types.Message):
@@ -541,8 +556,8 @@ async def on_startup(app):
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
     
-    asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
-    asyncio.create_task(daily_channel_post())
+    #asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
+    #asyncio.create_task(daily_channel_post())
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
 app = web.Application()
