@@ -320,13 +320,19 @@ async def set_lang(cb: types.CallbackQuery):
 # --- التعامل مع الرموز ---
 @dp.message(F.text)
 async def handle_symbol(m: types.Message):
-    if m.text.startswith('/'): return
-    
-    uid, pool = m.from_user.id, dp['db_pool']
+    if m.text.startswith('/'):
+        return
 
-    # --- أضف هذا الجزء هنا لتسجيل تاريخ النشاط ---
+    uid = m.from_user.id
+    pool = dp['db_pool']
+
     async with pool.acquire() as conn:
-        await conn.execute("UPDATE users_info SET last_active = CURRENT_DATE WHERE user_id = $1", uid)
+        await conn.execute("""
+            INSERT INTO users_info (user_id, last_active)
+            VALUES ($1, CURRENT_DATE)
+            ON CONFLICT (user_id)
+            DO UPDATE SET last_active = CURRENT_DATE
+        """, uid)
     # --------------------------------------------
 
     user = await pool.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", uid)
@@ -623,8 +629,8 @@ async def on_startup(app):
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
     
-    asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
-    asyncio.create_task(daily_channel_post())
+    #asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
+    #asyncio.create_task(daily_channel_post())
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
 app = web.Application()
