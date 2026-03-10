@@ -419,8 +419,8 @@ async def run_analysis(cb: types.CallbackQuery):
 
     # --- برومبت التحليل منسق ---
     if lang == "ar":
-    prompt = (
-f"""قم بتحليل عملة {sym}
+        prompt = (
+        f"""قم بتحليل عملة {sym}
 
 السعر الحالي: {price:.6f}$
 الإطار الزمني: {tf}
@@ -450,11 +450,11 @@ RSI: (مثال: هبوطي / صعودي / محايد)
 MACD: (مثال: هبوطي / صعودي / محايد)
 Bollinger Bands: (مثال: هبوطي / صعودي / محايد)
 Volume: (مثال: ضعيف / متوسط / قوي)
-
-""")
+"""
+    )
 else:
     prompt = (
-f"""Analyze {sym}
+        f"""Analyze {sym}
 
 Current price: ${price:.6f}
 Timeframe: {tf}
@@ -484,8 +484,8 @@ RSI: (example: Bearish / Bullish / Neutral)
 MACD: (example: Bearish / Bullish / Neutral)
 Bollinger Bands: (example: Bearish / Bullish / Neutral)
 Volume: (example: Weak / Medium / Strong)
-
-""")
+"""
+    )
 
     # --- استدعاء API داخل الدالة فقط ---
     res = await ask_groq(prompt, lang=lang)
