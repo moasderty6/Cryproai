@@ -32,7 +32,7 @@ NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_USER_ID = 6172153716
 
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = "openai/gpt-oss-120b"
 
 # --- إعداد البوت ---
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -443,7 +443,7 @@ TP3:
 Stop Loss:
 
 📈 <b>تحليل المؤشرات</b>
-RSI: اكتب سطر واحد نسبة وتوضيح بالعربي فقططط ولا حرف غير لعربي
+RSI: اكتب سطر واحد النسبة وتوضيح بالعربي فقططط ولا حرف غير لعربي
 MACD: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
 Bollinger Bands: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
 Volume: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
