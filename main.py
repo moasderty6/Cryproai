@@ -424,11 +424,11 @@ async def run_analysis(cb: types.CallbackQuery):
 
 اكتب التحليل بنفس التنسيق التالي تمامًا باستخدام HTML.
 - لا تستخدم أي لغة أخرى غير العربية.
-- لا تضف أي نصوص عشوائية.
+- لا تضف أي نصوص او رموز عشوائية ولا حرف غير العربية.
 - ركز على التحليل الفني فقط، احترافي وقصير.
 
 📊 <b>التحليل العام</b>
-الاتجاه: (صاعد / هابط / جانبي)
+الاتجاه: (صاعد / هابط)
 
 📉 <b>الدعم والمقاومة</b>
 الدعم الأقرب:
@@ -443,10 +443,10 @@ TP3:
 Stop Loss:
 
 📈 <b>تحليل المؤشرات</b>
-RSI: اكتب سطر واحد يوضح
-MACD: اكتب سطر واحد يوضح
-Bollinger Bands: اكتب سطر واحد يوضح
-Volume: اكتب سطر واحد يوضح
+RSI: اكتب سطر واحد يشرح
+MACD: اكتب سطر واحد يشرح
+Bollinger Bands: اكتب سطر واحد يشرح
+Volume: اكتب سطر واحد يشرح
 """
         )
     else:
@@ -462,7 +462,7 @@ Write the analysis EXACTLY in this HTML format.
 - Focus only on technical analysis, short and professional.
 
 📊 <b>Market Overview</b>
-Trend: (Bullish / Bearish / Sideways)
+Trend: (Bullish / Bearish)
 
 📉 <b>Support & Resistance</b>
 Nearest Support:
@@ -477,10 +477,10 @@ TP3:
 Stop Loss:
 
 📈 <b>Indicator Analysis</b>
-RSI: (Bullish / Bearish / Neutral) — write one short line explaining momentum
-MACD: (Bullish / Bearish / Neutral) — write one short line explaining current trend
+RSI: (Bullish / Bearish) — write one short line explaining momentum
+MACD: (Bullish / Bearish) — write one short line explaining current trend
 Bollinger Bands: (Bullish / Bearish / Neutral) — write one short line explaining price vs moving average
-Volume: (Weak / Medium / Strong) — write one short line explaining trading activity
+Volume: (Weak / Medium) — write one short line explaining trading activity
 """
         )
 
