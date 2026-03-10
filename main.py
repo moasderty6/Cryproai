@@ -391,9 +391,6 @@ async def handle_symbol(m: types.Message):
             else f"❌ Symbol `{sym}` is invalid. Please check the ticker (e.g., BTC, ETH)."
         )
         await status_msg.edit_text(error_text, parse_mode=ParseMode.MARKDOWN)
-
-
-
 @dp.callback_query(F.data.startswith("tf_"))
 async def run_analysis(cb: types.CallbackQuery):
     uid, pool = cb.from_user.id, dp['db_pool']
@@ -446,10 +443,10 @@ TP3:
 Stop Loss:
 
 📈 <b>تحليل المؤشرات</b>
-RSI: (مثال: هبوطي / صعودي / محايد)
-MACD: (مثال: هبوطي / صعودي / محايد)
-Bollinger Bands: (مثال: هبوطي / صعودي / محايد)
-Volume: (مثال: ضعيف / متوسط / قوي)
+RSI: (صعودي/هبوطي/محايد) — اكتب سطر قصير يوضح قوة الزخم
+MACD: (صعودي/هبوطي/محايد) — اكتب سطر قصير يوضح الزخم الحالي
+Bollinger Bands: (صعودي/هبوطي/محايد) — اكتب سطر قصير يوضح حالة السعر بالنسبة للمتوسط
+Volume: (ضعيف/متوسط/قوي) — اكتب سطر قصير يوضح قوة حجم التداول
 """
         )
     else:
@@ -480,10 +477,10 @@ TP3:
 Stop Loss:
 
 📈 <b>Indicator Analysis</b>
-RSI: (example: Bearish / Bullish / Neutral)
-MACD: (example: Bearish / Bullish / Neutral)
-Bollinger Bands: (example: Bearish / Bullish / Neutral)
-Volume: (example: Weak / Medium / Strong)
+RSI: (Bullish / Bearish / Neutral) — write one short line explaining momentum
+MACD: (Bullish / Bearish / Neutral) — write one short line explaining current trend
+Bollinger Bands: (Bullish / Bearish / Neutral) — write one short line explaining price vs moving average
+Volume: (Weak / Medium / Strong) — write one short line explaining trading activity
 """
         )
 
