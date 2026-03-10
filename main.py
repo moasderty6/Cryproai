@@ -32,7 +32,7 @@ NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_USER_ID = 6172153716
 
-GROQ_MODEL = "llama-3.1-8b-instant"
+GROQ_MODEL = "llama-3.3-70b-versatile"
 
 # --- إعداد البوت ---
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -419,13 +419,16 @@ async def run_analysis(cb: types.CallbackQuery):
 
     # --- برومبت التحليل منسق ---
     if lang == "ar":
-        prompt = (
+    prompt = (
 f"""قم بتحليل عملة {sym}
 
 السعر الحالي: {price:.6f}$
 الإطار الزمني: {tf}
 
-اكتب التحليل بنفس التنسيق التالي تمامًا باستخدام HTML:
+اكتب التحليل بنفس التنسيق التالي تمامًا باستخدام HTML.
+- لا تستخدم أي لغة أخرى غير العربية.
+- لا تضف أي نصوص عشوائية.
+- ركز على التحليل الفني فقط، احترافي وقصير.
 
 📊 <b>التحليل العام</b>
 الاتجاه: (صاعد / هابط / جانبي)
@@ -443,23 +446,23 @@ TP3:
 Stop Loss:
 
 📈 <b>تحليل المؤشرات</b>
-RSI:
-MACD:
-Bollinger Bands:
-Volume:
+RSI: (مثال: هبوطي / صعودي / محايد)
+MACD: (مثال: هبوطي / صعودي / محايد)
+Bollinger Bands: (مثال: هبوطي / صعودي / محايد)
+Volume: (مثال: ضعيف / متوسط / قوي)
 
-اجعل التحليل احترافي وقصير.
-لا تشرح المشروع.
-استخدم العربية فقط.
 """)
-    else:
-        prompt = (
+else:
+    prompt = (
 f"""Analyze {sym}
 
 Current price: ${price:.6f}
 Timeframe: {tf}
 
-Write the analysis EXACTLY in this HTML format:
+Write the analysis EXACTLY in this HTML format.
+- Use English only.
+- Do not include any random text or other languages.
+- Focus only on technical analysis, short and professional.
 
 📊 <b>Market Overview</b>
 Trend: (Bullish / Bearish / Sideways)
@@ -477,14 +480,11 @@ TP3:
 Stop Loss:
 
 📈 <b>Indicator Analysis</b>
-RSI:
-MACD:
-Bollinger Bands:
-Volume:
+RSI: (example: Bearish / Bullish / Neutral)
+MACD: (example: Bearish / Bullish / Neutral)
+Bollinger Bands: (example: Bearish / Bullish / Neutral)
+Volume: (example: Weak / Medium / Strong)
 
-Keep it short and professional.
-Do not explain the project.
-English only.
 """)
 
     # --- استدعاء API داخل الدالة فقط ---
