@@ -32,7 +32,7 @@ NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_USER_ID = 6172153716
 
-GROQ_MODEL = "openai/gpt-oss-120b"
+GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 # --- إعداد البوت ---
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
