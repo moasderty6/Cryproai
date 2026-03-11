@@ -137,11 +137,11 @@ async def ai_opportunity_radar(pool):
 
                 # تحديد نوع الإشارة
                 if score > 85:
-                    signal = "🐋 Whale Activity"
+                    signal = "Whale Activity 🐋 "
                 elif score > 70:
-                    signal = "🚨 Smart Money"
+                    signal = "Smart Money 🚨 "
                 elif score > 60:
-                    signal = "📈 Breakout"
+                    signal = "Breakout 📈 "
                 else:
                     signal = "🔥 Momentum"
 
