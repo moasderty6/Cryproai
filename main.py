@@ -158,7 +158,7 @@ async def ai_opportunity_radar(pool):
                 hint_ar = "تم رصد نشاط غير اعتيادي في السوق قد يشير إلى حركة قوية قادمة."
                 hint_en = "Unusual market activity detected that may lead to a strong move."
 
-                users = [{"user_id": 6172153716, "lang": "ar"}]
+                users = [{"user_id": 8241472209, "lang": "ar"}]
 
                 for row in users:
 
