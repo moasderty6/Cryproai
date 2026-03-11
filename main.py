@@ -164,7 +164,7 @@ async def ai_opportunity_radar(pool):
                 hint_en = "📊 Quick Analysis: Strong market activity detected, potential opportunity ahead."
 
                 # --- TEST ONLY: إرسال الرادار لمستخدم واحد (ID الأدمن) ---
-                users = [{"user_id": 6172153716, "lang": "ar"}]
+                users = [{"user_id": 8241472209, "lang": "ar"}]
 
                 for row in users:
 
