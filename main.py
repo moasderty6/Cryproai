@@ -143,7 +143,7 @@ async def ai_opportunity_radar(pool):
                 elif score > 60:
                     signal = "Breakout 📈 "
                 else:
-                    signal = "🔥 Momentum"
+                    signal = "Momentum 🔥 "
 
                 # تحليل AI
                 insight_ar = await ask_groq(
