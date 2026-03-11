@@ -212,7 +212,7 @@ async def ai_opportunity_radar(pool):
                             )
                         else:
                             text = (
-                                f"📡 <b>Opportunity Radar</b>\n"
+                                f"📡 <b>Price Explosion Radar</b>\n"
                                 f"━━━━━━━━━━━━━━\n"
                                 f"📊 Coin: ••••• 🔒\n"
                                 f"🔥 Signal: {signal}\n"
