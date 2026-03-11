@@ -207,7 +207,7 @@ async def ai_opportunity_radar(pool):
                                 f"🔥 نوع الإشارة: {signal}\n"
                                 f"💰 السعر الحالي: ${price_display}\n\n"
                                 f"{hint_ar}\n\n"
-                                f"اشترك VIP لكشف الاسم والأهداف.\n"
+                                f"اشترك VIP لكشف اسم العملة والأهداف.\n"
                                 f"━━━━━━━━━━━━━━"
                             )
                         else:
