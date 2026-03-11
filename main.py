@@ -160,7 +160,7 @@ async def ai_opportunity_radar(pool):
                 hint_en = "📈 Quick Analysis: Strong market activity detected, potential opportunity ahead."
 
                 # --- مؤقتاً لإرسال الرادار لمستخدم واحد (ID الأدمن) ---
-                users = [{"user_id": 8241472209, "lang": "ar"}]  # ID الأدمن
+                users = await pool.fetch("SELECT user_id, lang FROM users_info")  # ID الأدمن
 
                 for row in users:
                     uid = row["user_id"]
@@ -712,7 +712,7 @@ async def on_startup(app):
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
     
     asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
-    #asyncio.create_task(daily_channel_post())
+    asyncio.create_task(daily_channel_post())
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
 app = web.Application()
