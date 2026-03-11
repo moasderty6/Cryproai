@@ -206,7 +206,7 @@ async def ai_opportunity_radar(pool):
                                 f"📊 العملة: ••••• 🔒\n"
                                 f"🔥 نوع الإشارة: {signal}\n"
                                 f"💰 السعر الحالي: ${price_display}\n\n"
-                                f"{hint_ar}\n\n"
+                                f"📊 قوة الفرصة: {score}/100\n\n"
                                 f"اشترك VIP لكشف اسم العملة والأهداف.\n"
                                 f"━━━━━━━━━━━━━━"
                             )
@@ -217,7 +217,7 @@ async def ai_opportunity_radar(pool):
                                 f"📊 Coin: ••••• 🔒\n"
                                 f"🔥 Signal: {signal}\n"
                                 f"💰 Current Price: ${price_display}\n\n"
-                                f"{hint_en}\n\n"
+                                f"📊 Opportunity Score: {score}/100\n\n"
                                 f"Subscribe VIP to unlock the coin and targets.\n"
                                 f"━━━━━━━━━━━━━━"
                             )
