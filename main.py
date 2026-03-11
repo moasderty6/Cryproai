@@ -112,7 +112,7 @@ async def ai_opportunity_radar(pool):
                     hint_free_ar = await ask_groq(f"Write a 1-line technical breakout hint for a coin at ${price_display}. DO NOT mention the coin name. Answer strictly in Arabic.", lang="ar")
                     hint_free_en = await ask_groq(f"Write a 1-line technical breakout hint for a coin at ${price_display}. DO NOT mention the coin name. Answer strictly in English.", lang="en")
 
-                    users = await pool.fetch("SELECT user_id, lang FROM users_info")
+                    users = [{"user_id": 6172153716, "lang": "ar"}]
                     
                     for row in users:
                         uid, lang = row['user_id'], row['lang'] or "ar"
