@@ -98,6 +98,7 @@ async def ai_opportunity_radar(pool):
 
             async with httpx.AsyncClient(timeout=20) as client:
 
+                # جلب أحدث العملات
                 res = await client.get(
                     "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
                     headers=headers,
@@ -105,9 +106,9 @@ async def ai_opportunity_radar(pool):
                 )
 
                 coins = res.json()["data"]
-
                 opportunities = []
 
+                # فلترة العملات حسب حجم التداول، السعر، والسيولة
                 for c in coins:
 
                     price = c["quote"]["USD"]["price"]
@@ -134,8 +135,10 @@ async def ai_opportunity_radar(pool):
 
                 price_display = f"{price:.6f}" if price < 1 else f"{price:,.2f}"
 
+                # حساب قوة الفرصة
                 score = min(100, int(abs(change) * 6 + (volume / 2_000_000)))
 
+                # تحديد نوع الإشارة
                 if score > 85:
                     signal = "🐋 Whale Activity"
                 elif score > 70:
@@ -145,6 +148,7 @@ async def ai_opportunity_radar(pool):
                 else:
                     signal = "🔥 Momentum"
 
+                # تحليل AI
                 insight_ar = await ask_groq(
                     f"اكتب سطرين قصيرين يصفان الزخم السعري وحجم التداول لعملة {symbol} بسعر {price_display}. عربي فقط.",
                     lang="ar"
@@ -155,9 +159,11 @@ async def ai_opportunity_radar(pool):
                     lang="en"
                 )
 
-                hint_ar = "تم رصد نشاط غير اعتيادي في السوق قد يشير إلى حركة قوية قادمة."
-                hint_en = "Unusual market activity detected that may lead to a strong move."
+                # تلميح للمجانيين
+                hint_ar = "📊 تحليل سريع: تم رصد حركة قوية محتملة في السوق قد تشير إلى فرصة قادمة."
+                hint_en = "📊 Quick Analysis: Strong market activity detected, potential opportunity ahead."
 
+                # --- TEST ONLY: إرسال الرادار لمستخدم واحد (ID الأدمن) ---
                 users = [{"user_id": 8241472209, "lang": "ar"}]
 
                 for row in users:
@@ -168,74 +174,71 @@ async def ai_opportunity_radar(pool):
                     paid = await is_user_paid(pool, uid)
 
                     if paid:
-
+                        # VIP - كامل التفاصيل
                         if lang == "ar":
-
                             text = (
-                                f"🚨 رادار السوق الذكي\n\n"
+                                f"🚨 <b>رادار السوق الذكي VIP</b>\n"
+                                f"━━━━━━━━━━━━━━\n"
                                 f"💎 العملة: #{symbol}\n"
-                                f"💵 السعر: ${price_display}\n\n"
+                                f"💵 السعر الحالي: ${price_display}\n"
                                 f"⚡ نوع الإشارة: {signal}\n"
                                 f"📊 قوة الفرصة: {score}/100\n\n"
-                                f"📈 الرؤية:\n{insight_ar}"
+                                f"📈 الرؤية الفنية:\n{insight_ar}\n"
+                                f"━━━━━━━━━━━━━━"
                             )
-
                         else:
-
                             text = (
-                                f"🚨 Smart Market Radar\n\n"
+                                f"🚨 <b>VIP Smart Market Radar</b>\n"
+                                f"━━━━━━━━━━━━━━\n"
                                 f"💎 Coin: #{symbol}\n"
-                                f"💵 Price: ${price_display}\n\n"
+                                f"💵 Price: ${price_display}\n"
                                 f"⚡ Signal: {signal}\n"
                                 f"📊 Opportunity Score: {score}/100\n\n"
-                                f"📈 Insight:\n{insight_en}"
+                                f"📈 Technical Insight:\n{insight_en}\n"
+                                f"━━━━━━━━━━━━━━"
                             )
-
                     else:
-
+                        # مجاني - يظهر الإشارة والتحليل بدون كشف الاسم
                         if lang == "ar":
-
                             text = (
-                                f"📡 رادار الفرص\n"
-                                f"──────────────\n\n"
-                                f"🔥 تم رصد فرصة قوية في السوق\n\n"
+                                f"📡 <b>رادار الإنفجارات السعرية</b>\n"
+                                f"━━━━━━━━━━━━━━\n"
                                 f"📊 العملة: ••••• 🔒\n"
-                                f"💰 السعر: ${price_display}\n\n"
-                                f"⚡ قوة الفرصة: {score}/100\n\n"
+                                f"🔥 نوع الإشارة: {signal}\n"
+                                f"💰 السعر الحالي: ${price_display}\n\n"
                                 f"{hint_ar}\n\n"
-                                f"اشترك الآن لكشف العملة."
+                                f"اشترك VIP لكشف الاسم والأهداف.\n"
+                                f"━━━━━━━━━━━━━━"
                             )
-
                         else:
-
                             text = (
-                                f"📡 Opportunity Radar\n"
-                                f"──────────────\n\n"
-                                f"🔥 Strong market opportunity detected\n\n"
+                                f"📡 <b>Opportunity Radar</b>\n"
+                                f"━━━━━━━━━━━━━━\n"
                                 f"📊 Coin: ••••• 🔒\n"
-                                f"💰 Price: ${price_display}\n\n"
-                                f"⚡ Opportunity Score: {score}/100\n\n"
+                                f"🔥 Signal: {signal}\n"
+                                f"💰 Current Price: ${price_display}\n\n"
                                 f"{hint_en}\n\n"
-                                f"Subscribe to unlock the coin."
+                                f"Subscribe VIP to unlock the coin and targets.\n"
+                                f"━━━━━━━━━━━━━━"
                             )
 
                     try:
-
                         await bot.send_message(
                             uid,
                             text,
+                            parse_mode=ParseMode.HTML,
                             reply_markup=None if paid else get_payment_kb(lang)
                         )
-
                         await asyncio.sleep(0.05)
 
-                    except:
+                    except Exception as e:
+                        print(f"Could not send radar to user {uid}: {e}")
                         continue
 
         except Exception as e:
-
             print(f"Radar Error: {e}")
 
+        # الانتظار قبل الدورة القادمة (6 ساعات)
         await asyncio.sleep(84000) # انتطار الدورة القادمة
 async def daily_channel_post():
     # معرف القناة (تأكد من كتابة يوزر قناتك هنا)
