@@ -90,27 +90,22 @@ def get_payment_kb(lang):
 
 # --- رادار الفرص الذكي ---
 async def ai_opportunity_radar(pool):
-
     while True:
         try:
-
             headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
 
             async with httpx.AsyncClient(timeout=20) as client:
-
                 # جلب أحدث العملات
                 res = await client.get(
                     "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
                     headers=headers,
                     params={"limit": "100"}
                 )
-
                 coins = res.json()["data"]
                 opportunities = []
 
                 # فلترة العملات حسب حجم التداول، السعر، والسيولة
                 for c in coins:
-
                     price = c["quote"]["USD"]["price"]
                     volume = c["quote"]["USD"]["volume_24h"]
                     change = c["quote"]["USD"]["percent_change_24h"]
@@ -135,8 +130,10 @@ async def ai_opportunity_radar(pool):
 
                 price_display = f"{price:.6f}" if price < 1 else f"{price:,.2f}"
 
-                # حساب قوة الفرصة
-                score = min(100, int(abs(change) * 6 + (volume / 2_000_000)))
+                # ===== حساب قوة الفرصة بشكل محسّن =====
+                change_score = min(50, abs(change) * 2.5)         # تأثير التغير السعري
+                volume_score = min(50, volume / 2_000_000)        # تأثير حجم التداول
+                score = int(change_score + volume_score)          # مجموع النقاط من 0-100
 
                 # تحديد نوع الإشارة
                 if score > 85:
@@ -153,21 +150,19 @@ async def ai_opportunity_radar(pool):
                     f"اكتب سطرين قصيرين يصفان الزخم السعري وحجم التداول لعملة {symbol} بسعر {price_display}. عربي فقط.",
                     lang="ar"
                 )
-
                 insight_en = await ask_groq(
                     f"Write two short lines describing price momentum and trading activity for {symbol} at {price_display}. English only.",
                     lang="en"
                 )
 
-                # تلميح للمجانيين
-                hint_ar = "📊 تحليل سريع: تم رصد حركة قوية محتملة في السوق قد تشير إلى فرصة قادمة."
-                hint_en = "📊 Quick Analysis: Strong market activity detected, potential opportunity ahead."
+                # تلميح للمجانيين (بدون كشف الاسم)
+                hint_ar = "📈 تحليل سريع: تم رصد حركة قوية محتملة في السوق قد تشير إلى فرصة قادمة."
+                hint_en = "📈 Quick Analysis: Strong market activity detected, potential opportunity ahead."
 
-                # --- TEST ONLY: إرسال الرادار لمستخدم واحد (ID الأدمن) ---
-                users = [{"user_id": 8241472209, "lang": "ar"}]
+                # --- مؤقتاً لإرسال الرادار لمستخدم واحد (ID الأدمن) ---
+                users = [{"user_id": 8241472209, "lang": "ar"}]  # ID الأدمن
 
                 for row in users:
-
                     uid = row["user_id"]
                     lang = row["lang"] or "ar"
 
@@ -203,10 +198,11 @@ async def ai_opportunity_radar(pool):
                             text = (
                                 f"📡 <b>رادار الإنفجارات السعرية</b>\n"
                                 f"━━━━━━━━━━━━━━\n"
-                                f"📊 العملة: ••••• 🔒\n"
+                                f"💎 العملة: ••••• 🔒\n"
                                 f"🔥 نوع الإشارة: {signal}\n"
                                 f"💰 السعر الحالي: ${price_display}\n\n"
-                                f"📊 قوة الفرصة: {score}/100\n\n"
+                                f"📊 قوة الفرصة: {score}/100\n"
+                                f"{hint_ar}\n\n"
                                 f"اشترك VIP لكشف اسم العملة والأهداف.\n"
                                 f"━━━━━━━━━━━━━━"
                             )
@@ -214,10 +210,11 @@ async def ai_opportunity_radar(pool):
                             text = (
                                 f"📡 <b>Price Explosion Radar</b>\n"
                                 f"━━━━━━━━━━━━━━\n"
-                                f"📊 Coin: ••••• 🔒\n"
+                                f"💎 Coin: ••••• 🔒\n"
                                 f"🔥 Signal: {signal}\n"
                                 f"💰 Current Price: ${price_display}\n\n"
-                                f"📊 Opportunity Score: {score}/100\n\n"
+                                f"📊 Opportunity Score: {score}/100\n"
+                                f"{hint_en}\n\n"
                                 f"Subscribe VIP to unlock the coin and targets.\n"
                                 f"━━━━━━━━━━━━━━"
                             )
@@ -239,7 +236,7 @@ async def ai_opportunity_radar(pool):
             print(f"Radar Error: {e}")
 
         # الانتظار قبل الدورة القادمة (6 ساعات)
-        await asyncio.sleep(84000) # انتطار الدورة القادمة
+        await asyncio.sleep(84000)  # 6 ساعات # انتطار الدورة القادمة
 async def daily_channel_post():
     # معرف القناة (تأكد من كتابة يوزر قناتك هنا)
     CHANNEL_ID = "@AiCryptoGPT" 
