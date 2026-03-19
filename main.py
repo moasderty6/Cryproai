@@ -683,12 +683,13 @@ async def handle_webhook(req: web.Request):
 
 async def on_startup(app):
     pool = await asyncpg.create_pool(
-        DATABASE_URL,
-        min_size=1,
-        max_size=10,
-        command_timeout=60,
-        timeout=60
-    )
+    DATABASE_URL,
+    min_size=0,                   # لا اتصالات مفتوحة وقت الخمول
+    max_size=5,                   # عدد الاتصالات المتزامنة كافي للبوت المتوسط
+    command_timeout=60,
+    timeout=60,
+    max_inactive_connection_lifetime=60  # اغلاق الاتصالات الغير مستخدمة
+)
 
     app['db_pool'] = dp['db_pool'] = pool
 
