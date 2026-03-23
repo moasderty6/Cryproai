@@ -311,28 +311,30 @@ from binance.client import Client
 from asyncio import to_thread
 
 # --- إنشاء العميل باستخدام مفاتيحك ---
-binance_client = Client(
-    api_key="vMu33p3FwORiNVQSZuHR6RZop9DYXybQpzDh8x1L5jcHEkMpNiyunAKwxmWGfLqR",
-    api_secret="vGoazbexmLhA52hYVGSS4mCJBjBwQl7YbEnbeiMN9ZaJgaeR8DoBsgNLSulxAB2R"
-)
-
-async def get_klines(symbol: str, interval: str, limit: int = 200):
-    """
-    جلب بيانات الشموع الحقيقية من Binance لكل فريم.
-    interval: "1w", "1d", "4h"
-    """
-    try:
-        klines = await to_thread(
-            lambda: binance_client.get_klines(symbol=f"{symbol}USDT", interval=interval, limit=limit)
+# ===== محاكاة بيانات الشموع باستخدام CMC =====
+async def get_cmc_klines(symbol: str, interval: str, limit: int = 200):
+    headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
+    async with httpx.AsyncClient() as client:
+        res = await client.get(
+            "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest",
+            headers=headers,
+            params={"symbol": symbol}
         )
-        closes = [float(k[4]) for k in klines]
-        highs = [float(k[2]) for k in klines]
-        lows = [float(k[3]) for k in klines]
-        volumes = [float(k[5]) for k in klines]
+        data = res.json().get("data", {}).get(symbol)
+        if not data:
+            raise ValueError("Symbol not found in CMC")
+        
+        price = data["quote"]["USD"]["price"]
+        change_24h = data["quote"]["USD"]["percent_change_24h"]
+        volume_24h = data["quote"]["USD"]["volume_24h"]
+
+        # محاكاة أغلاق الشموع (closes) باستخدام السعر الحالي ± جزء من التغير اليومي
+        closes = [price * (1 + random.uniform(-change_24h/200, change_24h/200)) for _ in range(limit)]
+        highs = [c * (1 + random.uniform(0, 0.01)) for c in closes]
+        lows = [c * (1 - random.uniform(0, 0.01)) for c in closes]
+        volumes = [volume_24h * random.uniform(0.8, 1.2) / limit for _ in closes]
+
         return closes, highs, lows, volumes
-    except Exception as e:
-        print(f"Error fetching klines from Binance: {e}")
-        return [], [], [], []
 
 
 # ===== حساب RSI الحقيقي =====
@@ -549,7 +551,7 @@ async def run_analysis(cb: types.CallbackQuery):
         "4h": "4h"
     }
 
-    closes, highs, lows, volumes = await get_klines(sym, interval_map[tf])
+    closes, highs, lows, volumes = await get_cmc_klines(sym, interval_map[tf])
 
     # ===== حساب RSI =====
     rsi = calculate_rsi(closes)
