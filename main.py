@@ -306,99 +306,6 @@ async def daily_channel_post():
 
 
 # --- نظام الـ AI ---
-# ===== جلب بيانات الشموع من Binance =====
-from binance.client import Client
-from asyncio import to_thread
-
-# --- إنشاء العميل باستخدام مفاتيحك ---
-# ===== محاكاة بيانات الشموع باستخدام CMC =====
-import statistics
-
-# ====== دوال التحليل الفني ======
-
-def calculate_ema(prices, period):
-    ema = []
-    k = 2 / (period + 1)
-    for i, price in enumerate(prices):
-        if i == 0:
-            ema.append(price)
-        else:
-            ema.append(price * k + ema[i-1] * (1 - k))
-    return ema
-
-def calculate_macd(prices, short=12, long=26, signal=9):
-    ema_short = calculate_ema(prices, short)
-    ema_long = calculate_ema(prices, long)
-    macd_line = [s - l for s, l in zip(ema_short, ema_long)]
-    signal_line = calculate_ema(macd_line, signal)
-    hist = [m - s for m, s in zip(macd_line, signal_line)]
-    return macd_line[-1], signal_line[-1], hist[-1]
-
-def calculate_bollinger(prices, period=20, std_dev_mult=2):
-    if len(prices) < period:
-        return None, None, None
-    slice_prices = prices[-period:]
-    sma = sum(slice_prices) / period
-    std_dev = statistics.stdev(slice_prices)
-    upper = sma + std_dev_mult * std_dev
-    lower = sma - std_dev_mult * std_dev
-    return upper, lower, sma
-
-def detect_trend(prices, period=50):
-    ema_long = calculate_ema(prices, period)
-    return "Bullish" if prices[-1] > ema_long[-1] else "Bearish"
-async def get_cmc_klines(symbol: str, interval: str, limit: int = 200):
-    headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
-    async with httpx.AsyncClient() as client:
-        res = await client.get(
-            "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest",
-            headers=headers,
-            params={"symbol": symbol}
-        )
-        data = res.json().get("data", {}).get(symbol)
-        if not data:
-            raise ValueError("Symbol not found in CMC")
-        
-        price = data["quote"]["USD"]["price"]
-        change_24h = data["quote"]["USD"]["percent_change_24h"]
-        volume_24h = data["quote"]["USD"]["volume_24h"]
-
-        # محاكاة أغلاق الشموع (closes) باستخدام السعر الحالي ± جزء من التغير اليومي
-        closes = [price * (1 + random.uniform(-change_24h/200, change_24h/200)) for _ in range(limit)]
-        highs = [c * (1 + random.uniform(0, 0.01)) for c in closes]
-        lows = [c * (1 - random.uniform(0, 0.01)) for c in closes]
-        volumes = [volume_24h * random.uniform(0.8, 1.2) / limit for _ in closes]
-
-        return closes, highs, lows, volumes
-
-
-# ===== حساب RSI الحقيقي =====
-def calculate_rsi(closes, period=14):
-    gains = []
-    losses = []
-
-    for i in range(1, len(closes)):
-        diff = closes[i] - closes[i-1]
-        if diff >= 0:
-            gains.append(diff)
-            losses.append(0)
-        else:
-            gains.append(0)
-            losses.append(abs(diff))
-
-    avg_gain = sum(gains[-period:]) / period
-    avg_loss = sum(losses[-period:]) / period
-
-    if avg_loss == 0:
-        return 100
-
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-
-    return round(rsi, 2)
-
-
-# --- نظام الـ AI ---
 async def ask_groq(prompt, lang="ar"):
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     data = {"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}]}
@@ -573,83 +480,95 @@ async def handle_symbol(m: types.Message):
 async def run_analysis(cb: types.CallbackQuery):
     uid, pool = cb.from_user.id, dp['db_pool']
     data = user_session_data.get(uid)
-    if not data: return
-
-    lang, sym, price, tf = data['lang'], data['sym'], data['price'], cb.data.replace("tf_", "")
-    
-    # تحويل الفريم
-    interval_map = {"weekly": "1week", "daily": "1day", "4h": "4h"}
-    td_interval = interval_map.get(tf, "1day")
-
-    await cb.message.edit_text("🤖 جاري استخراج البيانات والتحليل الفني..." if lang=="ar" else "🤖 Analyzing...")
-
-    TD_API_KEY = "e118d965b8144cd2bc7c1762f97db0f4"
-
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            # طلب البيانات الخام فقط (لضمان عدم تجاوز ليميت الـ API)
-            url = f"https://api.twelvedata.com/time_series?symbol={sym}/USD&interval={td_interval}&outputsize=50&apikey={TD_API_KEY}"
-            res = await client.get(url)
-            ts_data = res.json()
-
-            if "values" not in ts_data:
-                # محاولة ثانية بـ USDT في حال فشل الأولى
-                url = f"https://api.twelvedata.com/time_series?symbol={sym}/USDT&interval={td_interval}&outputsize=50&apikey={TD_API_KEY}"
-                res = await client.get(url)
-                ts_data = res.json()
-
-            if "values" not in ts_data: raise ValueError("Limit reached or Symbol not found")
-
-            # تجهيز البيانات للحسابات الداخلية
-            values = ts_data["values"]
-            closes = [float(v["close"]) for v in values][::-1]
-            volumes = [float(v["volume"]) for v in values][::-1]
-
-            # --- الحسابات البرمجية (تستخدم الدوال المعرفة في بداية كودك) ---
-            rsi_val = calculate_rsi(closes, 14)
-            macd_val, macd_signal, _ = calculate_macd(closes)
-            boll_upper, boll_lower, boll_middle = calculate_bollinger(closes) or (price*1.05, price*0.95, price)
-
-            trend_text = "صاعد 📈" if closes[-1] > boll_middle else "هابط 📉"
-            
-            # حساب الأهداف بناءً على مستويات البولينجر الحقيقية
-            if "صاعد" in trend_text:
-                tp1, tp2, tp3 = price*1.02, price*1.05, boll_upper
-                stop_loss = boll_lower * 0.99
-            else:
-                tp1, tp2, tp3 = price*0.98, price*0.95, boll_lower
-                stop_loss = boll_upper * 1.01
-
-    except Exception as e:
-        print(f"Error: {e}")
-        await cb.message.edit_text("❌ عذراً، انتهت صلاحية الطلبات المجانية لـ API حالياً. حاول لاحقاً.")
+    if not data:
         return
 
-    # التنسيق النهائي الاحترافي
-    final_report = (
-        f"📊 <b>التحليل الفني لعملة {sym}</b>\n\n"
-        f"<b>الاتجاه:</b> {trend_text}\n\n"
-        f"<b>📉 الدعم والمقاومة:</b>\n"
-        f"الدعم الأقرب: <code>${boll_lower:.6f}</code>\n"
-        f"المقاومة الأقرب: <code>${boll_upper:.6f}</code>\n\n"
-        f"<b>🎯 الأهداف السعرية:</b>\n"
-        f"TP1: <code>${tp1:.6f}</code>\n"
-        f"TP2: <code>${tp2:.6f}</code>\n"
-        f"TP3: <code>${tp3:.6f}</code>\n\n"
-        f"<b>🛑 وقف الخسارة:</b>\n"
-        f"Stop Loss: <code>${stop_loss:.6f}</code>\n\n"
-        f"<b>📈 المؤشرات:</b>\n"
-        f"RSI: {rsi_val:.2f}\n"
-        f"MACD: {macd_val:.4f} (Signal: {macd_signal:.4f})\n"
-        f"BBands: أعلى = {boll_upper:.4f}, أدنى = {boll_lower:.4f}\n"
-        f"Volume: {volumes[-1]:,.0f}"
-    )
+    lang, sym, price, tf = data['lang'], data['sym'], data['price'], cb.data.replace("tf_", "")
 
-    await cb.message.edit_text(final_report, parse_mode=ParseMode.HTML)
-    
-    # تعليق الـ AI
-    ai_insight = await ask_groq(f"حلل هذه الأرقام باختصار شديد: {final_report}", lang=lang)
-    await cb.message.answer(f"🤖 <b>توصية الذكاء الاصطناعي:</b>\n{ai_insight}", parse_mode=ParseMode.HTML)
+    # --- تحقق من الاشتراك / التجربة ---
+    if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
+        return await cb.message.edit_text(
+            "⚠️ انتهت تجربتك المجانية." if lang=="ar" else "⚠️ Trial ended.",
+            reply_markup=get_payment_kb(lang)
+        )
+
+    try:
+        await cb.message.edit_text(
+            "🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing..."
+        )
+    except:
+        pass
+
+    # --- برومبت التحليل منسق ---
+    if lang == "ar":
+        prompt = (
+            f"""قم بتحليل عملة {sym}
+
+السعر الحالي: {price:.6f}$
+الإطار الزمني: {tf}
+
+اكتب التحليل بنفس التنسيق التالي تمامًا باستخدام HTML.
+- لا تستخدم أي لغة أخرى غير العربية.
+- لا تضف أي نصوص او رموز عشوائية ولا حرف غير العربية.
+- ركز على التحليل الفني فقط، احترافي وقصير.
+
+📊 <b>التحليل العام</b>
+الاتجاه: (صاعد / هابط)
+
+📉 <b>الدعم والمقاومة</b>
+الدعم الأقرب:
+المقاومة الأقرب:
+
+🎯 <b>الأهداف السعرية</b>
+TP1:
+TP2:
+TP3:
+
+🛑 <b>وقف الخسارة</b>
+Stop Loss:
+
+📈 <b>تحليل المؤشرات</b>
+RSI: اكتب سطر واحد النسبة وتوضيح بالعربي فقططط ولا حرف غير لعربي
+MACD: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
+Bollinger Bands: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
+Volume: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
+"""
+        )
+    else:
+        prompt = (
+            f"""Analyze {sym}
+
+Current price: ${price:.6f}
+Timeframe: {tf}
+
+Write the analysis EXACTLY in this HTML format.
+- Use English only.
+- Do not include any random text or other languages.
+- Focus only on technical analysis, short and professional.
+
+📊 <b>Market Overview</b>
+Trend: (Bullish / Bearish)
+
+📉 <b>Support & Resistance</b>
+Nearest Support:
+Nearest Resistance:
+
+🎯 <b>Price Targets</b>
+TP1:
+TP2:
+TP3:
+
+🛑 <b>Stop Loss</b>
+Stop Loss:
+
+📈 <b>Indicator Analysis</b>
+RSI: (Bullish / Bearish) — write one short line explaining momentum
+MACD: (Bullish / Bearish) — write one short line explaining current trend
+Bollinger Bands: (Bullish / Bearish / Neutral) — write one short line explaining price vs moving average
+Volume: (Weak / Medium) — write one short line explaining trading activity
+"""
+        )
+
     # --- استدعاء API داخل الدالة فقط ---
     res = await ask_groq(prompt, lang=lang)
     await cb.message.answer(res, parse_mode=ParseMode.HTML)
@@ -793,8 +712,8 @@ async def on_startup(app):
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
     
-    #asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
-    #asyncio.create_task(daily_channel_post())
+    asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
+    asyncio.create_task(daily_channel_post())
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
 app = web.Application()
