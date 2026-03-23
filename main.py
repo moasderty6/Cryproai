@@ -578,138 +578,97 @@ async def run_analysis(cb: types.CallbackQuery):
 
     lang, sym, price, tf = data['lang'], data['sym'], data['price'], cb.data.replace("tf_", "")
 
-    # --- تحويل الفريم إلى تنسيق TwelveData ---
-    interval_map = {
-        "weekly": "1week",
-        "daily": "1day",
-        "4h": "4h"
-    }
+    # خريطة الفريمات لـ TwelveData
+    interval_map = {"weekly": "1week", "daily": "1day", "4h": "4h"}
     td_interval = interval_map.get(tf, "1day")
 
-    # --- تحقق من الاشتراك / التجربة ---
+    # التحقق من الاشتراك
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
         return await cb.message.edit_text(
             "⚠️ انتهت تجربتك المجانية." if lang=="ar" else "⚠️ Trial ended.",
             reply_markup=get_payment_kb(lang)
         )
 
-    await cb.message.edit_text("🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing...")
+    await cb.message.edit_text("🤖 جاري استخراج البيانات والتحليل الفني..." if lang=="ar" else "🤖 Extracting data & Technical Analysis...")
 
-    # --- جلب المؤشرات من TwelveData ---
-    TD_API_KEY = "e118d965b8144cd2bc7c1762f97db0f4"
-    base_url = "https://api.twelvedata.com"
-
+    # استخدم مفتاح API من البيئة أو المتغير
+    TD_API_KEY = os.getenv("TD_API_KEY", "e118d965b8144cd2bc7c1762f97db0f4")
+    
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            # RSI
-            rsi_res = await client.get(f"{base_url}/rsi", params={
+        async with httpx.AsyncClient(timeout=25) as client:
+            # طلب واحد فقط يحتوي على آخر 100 شمعة (يوفر 75% من الطلبات)
+            ts_res = await client.get("https://api.twelvedata.com/time_series", params={
                 "symbol": f"{sym}/USDT",
                 "interval": td_interval,
-                "apikey": TD_API_KEY,
-                "time_period": 14
+                "outputsize": "100",
+                "apikey": TD_API_KEY
             })
-            rsi_val = float(rsi_res.json().get("values", [{}])[0].get("rsi", 0))
+            ts_data = ts_res.json()
+            
+            if "values" not in ts_data:
+                raise ValueError("Data not found")
 
-            # MACD
-            macd_res = await client.get(f"{base_url}/macd", params={
-                "symbol": f"{sym}/USDT",
-                "interval": td_interval,
-                "apikey": TD_API_KEY,
-                "slow_period": 26,
-                "fast_period": 12,
-                "signal_period": 9
-            })
-            macd_data = macd_res.json().get("values", [{}])[0]
-            macd_val = float(macd_data.get("MACD", 0))
-            macd_signal = float(macd_data.get("Signal", 0))
+            # تحويل البيانات لأرقام (ترتيب من الأقدم للأحدث للحسابات)
+            values = ts_data["values"]
+            closes = [float(v["close"]) for v in values][::-1]
+            highs = [float(v["high"]) for v in values][::-1]
+            lows = [float(v["low"]) for v in values][::-1]
+            volumes = [float(v["volume"]) for v in values][::-1]
 
-            # Bollinger Bands
-            boll_res = await client.get(f"{base_url}/bbands", params={
-                "symbol": f"{sym}/USDT",
-                "interval": td_interval,
-                "apikey": TD_API_KEY,
-                "time_period": 20,
-                "series_type": "close"
-            })
-            boll_data = boll_res.json().get("values", [{}])[0]
-            boll_upper = float(boll_data.get("upper_band", 0))
-            boll_middle = float(boll_data.get("middle_band", 0))
-            boll_lower = float(boll_data.get("lower_band", 0))
+            # --- حساب المؤشرات برمجياً من الدوال الموجودة بكودك ---
+            rsi_val = calculate_rsi(closes, 14)
+            macd_val, macd_signal, _ = calculate_macd(closes)
+            boll_upper, boll_lower, boll_middle = calculate_bollinger(closes)
+            
+            # تحديد الاتجاه بناءً على السعر الحالي و SMA 20
+            trend_text = "صاعد 📈" if closes[-1] > boll_middle else "هابط 📉"
+            if lang != "ar": trend_text = "Bullish 📈" if closes[-1] > boll_middle else "Bearish 📉"
 
-            # Time series للـ volume و trend
-            ts_res = await client.get(f"{base_url}/time_series", params={
-                "symbol": f"{sym}/USDT",
-                "interval": td_interval,
-                "apikey": TD_API_KEY,
-                "outputsize": 1
-            })
-            ts_data = ts_res.json().get("values", [{}])[0]
-            volume = float(ts_data.get("volume", 0))
-            close_now = float(ts_data.get("close", price))
-            open_now = float(ts_data.get("open", price))
-            trend = "صاعد 📈" if close_now > open_now else "هابط 📉"
+            # --- تحديد الدعم والمقاومة (بشكل واقعي بناءً على Bollinger Bands) ---
+            # المقاومة هي القمة السابقة أو الـ Upper Band
+            nearest_resistance = boll_upper
+            # الدعم هو القاع السابق أو الـ Lower Band
+            nearest_support = boll_lower
 
-            # مستويات دعم ومقاومة وأهداف السعر ووقف الخسارة (مثال ديناميكي بسيط)
-            nearest_support = f"${close_now*0.9:.6f}"
-            nearest_resistance = f"${close_now*1.1:.6f}"
-            tp1 = f"${close_now*0.95:.6f}"
-            tp2 = f"${close_now*0.85:.6f}"
-            tp3 = f"${close_now*0.65:.6f}"
-            stop_loss = f"${close_now*1.15:.6f}"
+            # --- حساب الأهداف (واقعية: تعتمد على الفولاتيليتي الحالي) ---
+            diff = (nearest_resistance - nearest_support) / 4
+            if "صاعد" in trend_text or "Bullish" in trend_text:
+                tp1 = price + (diff * 0.5)
+                tp2 = price + diff
+                tp3 = nearest_resistance
+                stop_loss = nearest_support * 0.98
+            else:
+                tp1 = price - (diff * 0.5)
+                tp2 = price - diff
+                tp3 = nearest_support
+                stop_loss = nearest_resistance * 1.02
+
+            current_volume = volumes[-1]
 
     except Exception as e:
-        await cb.message.answer(f"❌ حدث خطأ أثناء جلب البيانات: {e}")
+        print(f"Analysis Error: {e}")
+        await cb.message.answer("⚠️ عذراً، لا يمكن تحليل هذه العملة حالياً (تأكد أنها مدعومة في Binance).")
         return
 
-    # --- تنسيق الرسالة ---
-    if lang == "ar":
-        prompt = f"""
-📊 التحليل الفني لعملة {sym}
-
-الاتجاه: {trend}
-
-📉 الدعم والمقاومة:
-الدعم الأقرب: {nearest_support}
-المقاومة الأقرب: {nearest_resistance}
-
-🎯 الأهداف السعرية:
-TP1: {tp1}
-TP2: {tp2}
-TP3: {tp3}
-
-🛑 وقف الخسارة:
-Stop Loss: {stop_loss}
-
-📈 المؤشرات:
-RSI: {rsi_val:.2f} — قوة الزخم الحالية
-MACD: {macd_val:.4f} (Signal: {macd_signal:.4f}) — يوضح الاتجاه الحالي
-Bollinger Bands: أعلى = {boll_upper:.4f}, أدنى = {boll_lower:.4f}, SMA = {boll_middle:.4f} — حالة السعر نسبة للـ Bands
-Volume: {volume:.2f} — نشاط التداول
-"""
-    else:
-        prompt = f"""
-📊 Market Overview for {sym}
-
-Trend: {'Bullish 📈' if close_now > open_now else 'Bearish 📉'}
-
-📉 Support & Resistance:
-Nearest Support: {nearest_support}
-Nearest Resistance: {nearest_resistance}
-
-🎯 Price Targets:
-TP1: {tp1}
-TP2: {tp2}
-TP3: {tp3}
-
-🛑 Stop Loss:
-Stop Loss: {stop_loss}
-
-📈 Indicator Analysis:
-RSI: {rsi_val:.2f} — Momentum is indicated
-MACD: {macd_val:.4f} (Signal: {macd_signal:.4f}) — Shows current trend
-Bollinger Bands: Upper = {boll_upper:.4f}, Lower = {boll_lower:.4f}, SMA = {boll_middle:.4f} — Price vs bands
-Volume: {volume:.2f} — Trading activity
-"""
+    # --- تنسيق الرسالة بالشكل المطلوب بالضبط ---
+    final_report = (
+        f"📊 <b>التحليل الفني لعملة {sym}</b>\n\n"
+        f"<b>الاتجاه:</b> {trend_text}\n\n"
+        f"<b>📉 الدعم والمقاومة:</b>\n"
+        f"الدعم الأقرب: <code>${nearest_support:.6f}</code>\n"
+        f"المقاومة الأقرب: <code>${nearest_resistance:.6f}</code>\n\n"
+        f"<b>🎯 الأهداف السعرية:</b>\n"
+        f"TP1: <code>${tp1:.6f}</code>\n"
+        f"TP2: <code>${tp2:.6f}</code>\n"
+        f"TP3: <code>${tp3:.6f}</code>\n\n"
+        f"<b>🛑 وقف الخسارة:</b>\n"
+        f"Stop Loss: <code>${stop_loss:.6f}</code>\n\n"
+        f"<b>📈 المؤشرات:</b>\n"
+        f"RSI: {rsi_val:.2f} — قوة الزخم الحالية\n"
+        f"MACD: {macd_val:.4f} (Signal: {macd_signal:.4f})\n"
+        f"Bollinger Bands: أعلى = {boll_upper:.4f}, أدنى = {boll_lower:.4f}, SMA = {boll_middle:.4f}\n"
+        f"Volume: {current_volume:,.0f} — نشاط التداول"
+    )
 
     await cb.message.edit_text(prompt)
     # --- استدعاء API داخل الدالة فقط ---
