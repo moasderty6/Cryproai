@@ -306,6 +306,56 @@ async def daily_channel_post():
 
 
 # --- نظام الـ AI ---
+# ===== جلب بيانات الشموع من Binance =====
+async def get_klines(symbol: str, interval: str, limit: int = 200):
+    url = "https://api.binance.com/api/v3/klines"
+
+    params = {
+        "symbol": f"{symbol}USDT",
+        "interval": interval,
+        "limit": limit
+    }
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        res = await client.get(url, params=params)
+
+    data = res.json()
+
+    closes = [float(c[4]) for c in data]
+    highs = [float(c[2]) for c in data]
+    lows = [float(c[3]) for c in data]
+    volumes = [float(c[5]) for c in data]
+
+    return closes, highs, lows, volumes
+
+
+# ===== حساب RSI الحقيقي =====
+def calculate_rsi(closes, period=14):
+    gains = []
+    losses = []
+
+    for i in range(1, len(closes)):
+        diff = closes[i] - closes[i-1]
+        if diff >= 0:
+            gains.append(diff)
+            losses.append(0)
+        else:
+            gains.append(0)
+            losses.append(abs(diff))
+
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
+
+    if avg_loss == 0:
+        return 100
+
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+
+    return round(rsi, 2)
+
+
+# --- نظام الـ AI ---
 async def ask_groq(prompt, lang="ar"):
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     data = {"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}]}
@@ -485,6 +535,18 @@ async def run_analysis(cb: types.CallbackQuery):
 
     lang, sym, price, tf = data['lang'], data['sym'], data['price'], cb.data.replace("tf_", "")
 
+# ===== تحويل الفريم إلى Binance =====
+interval_map = {
+    "weekly": "1w",
+    "daily": "1d",
+    "4h": "4h"
+}
+
+closes, highs, lows, volumes = await get_klines(sym, interval_map[tf])
+
+# ===== حساب RSI =====
+rsi = calculate_rsi(closes)
+
     # --- تحقق من الاشتراك / التجربة ---
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
         return await cb.message.edit_text(
@@ -528,7 +590,8 @@ TP3:
 Stop Loss:
 
 📈 <b>تحليل المؤشرات</b>
-RSI: اكتب سطر واحد النسبة وتوضيح بالعربي فقططط ولا حرف غير لعربي
+RSI الحالي: {rsi}
+اشرح ماذا يعني هذا الرقم في سطر واحد بالعربية فقط
 MACD: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
 Bollinger Bands: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
 Volume: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
@@ -562,7 +625,8 @@ TP3:
 Stop Loss:
 
 📈 <b>Indicator Analysis</b>
-RSI: (Bullish / Bearish) — write one short line explaining momentum
+Current RSI: {rsi}
+Explain what this value means in one short line
 MACD: (Bullish / Bearish) — write one short line explaining current trend
 Bollinger Bands: (Bullish / Bearish / Neutral) — write one short line explaining price vs moving average
 Volume: (Weak / Medium) — write one short line explaining trading activity
@@ -712,8 +776,8 @@ async def on_startup(app):
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
     
-    asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
-    asyncio.create_task(daily_channel_post())
+    #asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
+    #asyncio.create_task(daily_channel_post())
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
 app = web.Application()
