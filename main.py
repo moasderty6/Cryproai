@@ -706,8 +706,6 @@ MACD: {macd_val:.4f} (Signal: {macd_signal:.4f}, Hist: {macd_hist:.4f}) — shor
 Bollinger Bands: Upper = {boll_upper:.4f}, Lower = {boll_lower:.4f}, SMA = {boll_sma:.4f} — short line on price vs bands
 Volume: {volume:.2f} — short line on trading activity
 """
-        )
-
     # --- استدعاء API داخل الدالة فقط ---
     res = await ask_groq(prompt, lang=lang)
     await cb.message.answer(res, parse_mode=ParseMode.HTML)
