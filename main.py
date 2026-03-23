@@ -588,13 +588,10 @@ async def run_analysis(cb: types.CallbackQuery):
 
     closes, highs, lows, volumes = await get_cmc_klines(sym, interval_map[tf])
     # ===== حساب المؤشرات الحقيقية =====
-rsi = calculate_rsi(closes)
-macd_val, macd_signal, macd_hist = calculate_macd(closes)
-boll_upper, boll_lower, boll_sma = calculate_bollinger(closes)
-trend = detect_trend(closes)
-
-    # ===== حساب RSI =====
     rsi = calculate_rsi(closes)
+    macd_val, macd_signal, macd_hist = calculate_macd(closes)
+    boll_upper, boll_lower, boll_sma = calculate_bollinger(closes)
+    trend = detect_trend(closes)
 
     # --- تحقق من الاشتراك / التجربة ---
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
