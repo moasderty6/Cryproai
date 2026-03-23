@@ -599,62 +599,65 @@ async def run_analysis(cb: types.CallbackQuery):
     TD_API_KEY = "e118d965b8144cd2bc7c1762f97db0f4"
     base_url = "https://api.twelvedata.com"
     
-    async with httpx.AsyncClient(timeout=20) as client:
-        try:
-            # RSI
-            rsi_res = await client.get(f"{base_url}/rsi", params={
-                "symbol": f"{sym}/USDT",
-                "interval": td_interval,
-                "apikey": TD_API_KEY,
-                "time_period": 14
-            })
-            rsi_val = float(rsi_res.json().get("values", [{}])[0].get("rsi", 0))
+    # --- جلب مؤشرات TwelveData ---
+async with httpx.AsyncClient(timeout=20) as client:
+    try:
+        # RSI
+        rsi_res = await client.get(f"{base_url}/rsi", params={
+            "symbol": f"{sym}/USDT",
+            "interval": td_interval,
+            "apikey": TD_API_KEY,
+            "time_period": 14
+        })
+        rsi_json = rsi_res.json()
+        rsi_val = float(rsi_json.get("values", [{}])[0].get("rsi", 0))
 
-            # MACD
-            macd_res = await client.get(f"{base_url}/macd", params={
-                "symbol": f"{sym}/USDT",
-                "interval": td_interval,
-                "apikey": TD_API_KEY,
-                "slow_period": 26,
-                "fast_period": 12,
-                "signal_period": 9
-            })
-            macd_data = macd_res.json().get("values", [{}])[0]
-            macd_val = float(macd_data.get("MACD", 0))
-            macd_signal = float(macd_data.get("Signal", 0))
-            macd_hist = float(macd_data.get("Hist", 0))
+        # MACD
+        macd_res = await client.get(f"{base_url}/macd", params={
+            "symbol": f"{sym}/USDT",
+            "interval": td_interval,
+            "apikey": TD_API_KEY,
+            "slow_period": 26,
+            "fast_period": 12,
+            "signal_period": 9
+        })
+        macd_json = macd_res.json()
+        macd_data = macd_json.get("values", [{}])[0]
+        macd_val = float(macd_data.get("MACD", 0))
+        macd_signal = float(macd_data.get("Signal", 0))
+        macd_hist = float(macd_data.get("Hist", 0))
 
-            # Bollinger Bands
-            boll_res = await client.get(f"{base_url}/bollinger_bands", params={
-                "symbol": f"{sym}/USDT",
-                "interval": td_interval,
-                "apikey": TD_API_KEY,
-                "time_period": 20,
-                "series_type": "close"
-            })
-            boll_data = boll_res.json().get("values", [{}])[0]
-            boll_upper = float(boll_data.get("upper", 0))
-            boll_lower = float(boll_data.get("lower", 0))
-            boll_sma = float(boll_data.get("middle", 0))
+        # Bollinger Bands
+        boll_res = await client.get(f"{base_url}/bbands", params={
+            "symbol": f"{sym}/USDT",
+            "interval": td_interval,
+            "apikey": TD_API_KEY,
+            "time_period": 20,
+            "series_type": "close"
+        })
+        boll_json = boll_res.json()
+        boll_data = boll_json.get("values", [{}])[0]
+        boll_upper = float(boll_data.get("upper_band", 0))
+        boll_middle = float(boll_data.get("middle_band", 0))
+        boll_lower = float(boll_data.get("lower_band", 0))
 
-            # حجم التداول آخر شمعة
-            ts_res = await client.get(f"{base_url}/time_series", params={
-                "symbol": f"{sym}/USDT",
-                "interval": td_interval,
-                "apikey": TD_API_KEY,
-                "outputsize": 1
-            })
-            ts_data = ts_res.json().get("values", [{}])[0]
-            volume = float(ts_data.get("volume", 0))
+        # Time series للـ volume و trend
+        ts_res = await client.get(f"{base_url}/time_series", params={
+            "symbol": f"{sym}/USDT",
+            "interval": td_interval,
+            "apikey": TD_API_KEY,
+            "outputsize": 1
+        })
+        ts_json = ts_res.json()
+        ts_data = ts_json.get("values", [{}])[0]
+        volume = float(ts_data.get("volume", 0))
+        close_now = float(ts_data.get("close", price))
+        open_now = float(ts_data.get("open", price))
+        trend = "صاعد 📈" if close_now > open_now else "هابط 📉"
 
-            # اتجاه السعر (صاعد / هابط)
-            close_now = float(ts_data.get("close", price))
-            open_now = float(ts_data.get("open", price))
-            trend = "صاعد 📈" if close_now > open_now else "هابط 📉"
-
-        except Exception as e:
-            await cb.message.answer(f"❌ حدث خطأ أثناء جلب البيانات: {e}")
-            return
+    except Exception as e:
+        await cb.message.answer(f"❌ حدث خطأ أثناء جلب البيانات: {e}\nرد الخادم: {await rsi_res.text()}")
+        return
 
     # --- برومبت منسق بالعربي ---
     if lang == "ar":
