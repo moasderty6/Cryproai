@@ -530,22 +530,23 @@ async def handle_symbol(m: types.Message):
 async def run_analysis(cb: types.CallbackQuery):
     uid, pool = cb.from_user.id, dp['db_pool']
     data = user_session_data.get(uid)
+
     if not data:
         return
 
     lang, sym, price, tf = data['lang'], data['sym'], data['price'], cb.data.replace("tf_", "")
 
-# ===== تحويل الفريم إلى Binance =====
-interval_map = {
-    "weekly": "1w",
-    "daily": "1d",
-    "4h": "4h"
-}
+    # ===== تحويل الفريم إلى Binance =====
+    interval_map = {
+        "weekly": "1w",
+        "daily": "1d",
+        "4h": "4h"
+    }
 
-closes, highs, lows, volumes = await get_klines(sym, interval_map[tf])
+    closes, highs, lows, volumes = await get_klines(sym, interval_map[tf])
 
-# ===== حساب RSI =====
-rsi = calculate_rsi(closes)
+    # ===== حساب RSI =====
+    rsi = calculate_rsi(closes)
 
     # --- تحقق من الاشتراك / التجربة ---
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
