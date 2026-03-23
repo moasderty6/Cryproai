@@ -307,26 +307,32 @@ async def daily_channel_post():
 
 # --- نظام الـ AI ---
 # ===== جلب بيانات الشموع من Binance =====
+from binance.client import Client
+from asyncio import to_thread
+
+# --- إنشاء العميل باستخدام مفاتيحك ---
+binance_client = Client(
+    api_key="vMu33p3FwORiNVQSZuHR6RZop9DYXybQpzDh8x1L5jcHEkMpNiyunAKwxmWGfLqR",
+    api_secret="vGoazbexmLhA52hYVGSS4mCJBjBwQl7YbEnbeiMN9ZaJgaeR8DoBsgNLSulxAB2R"
+)
+
 async def get_klines(symbol: str, interval: str, limit: int = 200):
-    url = "https://api.binance.com/api/v3/klines"
-
-    params = {
-        "symbol": f"{symbol}USDT",
-        "interval": interval,
-        "limit": limit
-    }
-
-    async with httpx.AsyncClient(timeout=20) as client:
-        res = await client.get(url, params=params)
-
-    data = res.json()
-
-    closes = [float(c[4]) for c in data]
-    highs = [float(c[2]) for c in data]
-    lows = [float(c[3]) for c in data]
-    volumes = [float(c[5]) for c in data]
-
-    return closes, highs, lows, volumes
+    """
+    جلب بيانات الشموع الحقيقية من Binance لكل فريم.
+    interval: "1w", "1d", "4h"
+    """
+    try:
+        klines = await to_thread(
+            lambda: binance_client.get_klines(symbol=f"{symbol}USDT", interval=interval, limit=limit)
+        )
+        closes = [float(k[4]) for k in klines]
+        highs = [float(k[2]) for k in klines]
+        lows = [float(k[3]) for k in klines]
+        volumes = [float(k[5]) for k in klines]
+        return closes, highs, lows, volumes
+    except Exception as e:
+        print(f"Error fetching klines from Binance: {e}")
+        return [], [], [], []
 
 
 # ===== حساب RSI الحقيقي =====
