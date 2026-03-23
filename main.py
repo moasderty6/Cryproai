@@ -573,25 +573,18 @@ async def handle_symbol(m: types.Message):
 async def run_analysis(cb: types.CallbackQuery):
     uid, pool = cb.from_user.id, dp['db_pool']
     data = user_session_data.get(uid)
-
     if not data:
         return
 
     lang, sym, price, tf = data['lang'], data['sym'], data['price'], cb.data.replace("tf_", "")
 
-    # ===== تحويل الفريم إلى Binance =====
+    # --- تحويل الفريم إلى تنسيق TwelveData ---
     interval_map = {
-        "weekly": "1w",
-        "daily": "1d",
+        "weekly": "1week",
+        "daily": "1day",
         "4h": "4h"
     }
-
-    closes, highs, lows, volumes = await get_cmc_klines(sym, interval_map[tf])
-    # ===== حساب المؤشرات الحقيقية =====
-    rsi = calculate_rsi(closes)
-    macd_val, macd_signal, macd_hist = calculate_macd(closes)
-    boll_upper, boll_lower, boll_sma = calculate_bollinger(closes)
-    trend = detect_trend(closes)
+    td_interval = interval_map.get(tf, "1day")
 
     # --- تحقق من الاشتراك / التجربة ---
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
@@ -600,71 +593,118 @@ async def run_analysis(cb: types.CallbackQuery):
             reply_markup=get_payment_kb(lang)
         )
 
-    try:
-        await cb.message.edit_text(
-            "🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing..."
-        )
-    except:
-        pass
+    await cb.message.edit_text("🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing...")
 
-    # --- برومبت التحليل منسق ---
+    # --- جلب المؤشرات من TwelveData ---
+    TD_API_KEY = "e118d965b8144cd2bc7c1762f97db0f4"
+    base_url = "https://api.twelvedata.com"
+    
+    async with httpx.AsyncClient(timeout=20) as client:
+        try:
+            # RSI
+            rsi_res = await client.get(f"{base_url}/rsi", params={
+                "symbol": f"{sym}/USDT",
+                "interval": td_interval,
+                "apikey": TD_API_KEY,
+                "time_period": 14
+            })
+            rsi_val = float(rsi_res.json().get("values", [{}])[0].get("rsi", 0))
+
+            # MACD
+            macd_res = await client.get(f"{base_url}/macd", params={
+                "symbol": f"{sym}/USDT",
+                "interval": td_interval,
+                "apikey": TD_API_KEY,
+                "slow_period": 26,
+                "fast_period": 12,
+                "signal_period": 9
+            })
+            macd_data = macd_res.json().get("values", [{}])[0]
+            macd_val = float(macd_data.get("MACD", 0))
+            macd_signal = float(macd_data.get("Signal", 0))
+            macd_hist = float(macd_data.get("Hist", 0))
+
+            # Bollinger Bands
+            boll_res = await client.get(f"{base_url}/bollinger_bands", params={
+                "symbol": f"{sym}/USDT",
+                "interval": td_interval,
+                "apikey": TD_API_KEY,
+                "time_period": 20,
+                "series_type": "close"
+            })
+            boll_data = boll_res.json().get("values", [{}])[0]
+            boll_upper = float(boll_data.get("upper", 0))
+            boll_lower = float(boll_data.get("lower", 0))
+            boll_sma = float(boll_data.get("middle", 0))
+
+            # حجم التداول آخر شمعة
+            ts_res = await client.get(f"{base_url}/time_series", params={
+                "symbol": f"{sym}/USDT",
+                "interval": td_interval,
+                "apikey": TD_API_KEY,
+                "outputsize": 1
+            })
+            ts_data = ts_res.json().get("values", [{}])[0]
+            volume = float(ts_data.get("volume", 0))
+
+            # اتجاه السعر (صاعد / هابط)
+            close_now = float(ts_data.get("close", price))
+            open_now = float(ts_data.get("open", price))
+            trend = "صاعد 📈" if close_now > open_now else "هابط 📉"
+
+        except Exception as e:
+            await cb.message.answer(f"❌ حدث خطأ أثناء جلب البيانات: {e}")
+            return
+
+    # --- برومبت منسق بالعربي ---
     if lang == "ar":
-        prompt = (
-            f"""قم بتحليل عملة {sym}
+        prompt = f"""
+📊 تحليل عملة {sym}
 
-السعر الحالي: {price:.6f}$
-الإطار الزمني: {tf}
-
-📊 <b>التحليل العام</b>
+الفريم الزمني: {tf}
 الاتجاه: {trend}
 
-📉 <b>الدعم والمقاومة</b>
+📉 الدعم والمقاومة:
 الدعم الأقرب:
 المقاومة الأقرب:
 
-🎯 <b>الأهداف السعرية</b>
+🎯 الأهداف السعرية:
 TP1:
 TP2:
 TP3:
 
-🛑 <b>وقف الخسارة</b>
+🛑 وقف الخسارة:
 Stop Loss:
 
-📈 <b>تحليل المؤشرات</b>
-RSI الحالي: {rsi}
-اشرح ماذا يعني هذا الرقم في سطر واحد بالعربية فقط
-MACD: {macd_val:.4f} (Signal: {macd_signal:.4f}) — اشرح الاتجاه الحالي في سطر واحد بالعربية فقط
-Bollinger Bands: أعلى = {boll_upper:.4f}, أدنى = {boll_lower:.4f}, SMA = {boll_sma:.4f} — اشرح في سطر واحد
-Volume: {volumes[-1]:.2f} — اشرح نشاط التداول في سطر واحد
+📈 المؤشرات:
+RSI: {rsi_val:.2f} — سطر قصير يشرح قوة الزخم
+MACD: {macd_val:.4f} (Signal: {macd_signal:.4f}, Hist: {macd_hist:.4f}) — سطر قصير يوضح الاتجاه الحالي
+Bollinger Bands: أعلى = {boll_upper:.4f}, أدنى = {boll_lower:.4f}, SMA = {boll_sma:.4f} — سطر قصير يشرح حالة السعر
+Volume: {volume:.2f} — سطر قصير يوضح نشاط التداول
 """
-        )
     else:
-        prompt = (
-            f"""Analyze {sym}
+        prompt = f"""
+📊 Analysis of {sym}
 
-Current price: ${price:.6f}
 Timeframe: {tf}
-
-📊 <b>Market Overview</b>
 Trend: {trend}
 
-📉 <b>Support & Resistance</b>
+📉 Support & Resistance:
 Nearest Support:
 Nearest Resistance:
 
-🎯 <b>Price Targets</b>
+🎯 Price Targets:
 TP1:
 TP2:
 TP3:
 
-🛑 <b>Stop Loss</b>
-Stop Loss:
+🛑 Stop Loss:
 
-📈 <b>Indicator Analysis</b>
-Current RSI: {rsi} — Explain in one short line
-MACD: {macd_val:.4f} (Signal: {macd_signal:.4f}) — Explain current trend in one short line
-Bollinger Bands: Upper = {boll_upper:.4f}, Lower = {boll_lower:.4f}, SMA = {boll_sma:.4f} — One short line explanation
-Volume: {volumes[-1]:.2f} — One short line on trading activity
+📈 Indicators:
+RSI: {rsi_val:.2f} — short line explaining momentum
+MACD: {macd_val:.4f} (Signal: {macd_signal:.4f}, Hist: {macd_hist:.4f}) — short line on current trend
+Bollinger Bands: Upper = {boll_upper:.4f}, Lower = {boll_lower:.4f}, SMA = {boll_sma:.4f} — short line on price vs bands
+Volume: {volume:.2f} — short line on trading activity
 """
         )
 
