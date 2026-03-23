@@ -599,7 +599,6 @@ async def run_analysis(cb: types.CallbackQuery):
     TD_API_KEY = "e118d965b8144cd2bc7c1762f97db0f4"
     base_url = "https://api.twelvedata.com"
 
-    # --- كل هذا داخل الدالة ---
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             # RSI
@@ -609,8 +608,7 @@ async def run_analysis(cb: types.CallbackQuery):
                 "apikey": TD_API_KEY,
                 "time_period": 14
             })
-            rsi_json = rsi_res.json()
-            rsi_val = float(rsi_json.get("values", [{}])[0].get("rsi", 0))
+            rsi_val = float(rsi_res.json().get("values", [{}])[0].get("rsi", 0))
 
             # MACD
             macd_res = await client.get(f"{base_url}/macd", params={
@@ -621,11 +619,9 @@ async def run_analysis(cb: types.CallbackQuery):
                 "fast_period": 12,
                 "signal_period": 9
             })
-            macd_json = macd_res.json()
-            macd_data = macd_json.get("values", [{}])[0]
+            macd_data = macd_res.json().get("values", [{}])[0]
             macd_val = float(macd_data.get("MACD", 0))
             macd_signal = float(macd_data.get("Signal", 0))
-            macd_hist = float(macd_data.get("Hist", 0))
 
             # Bollinger Bands
             boll_res = await client.get(f"{base_url}/bbands", params={
@@ -635,8 +631,7 @@ async def run_analysis(cb: types.CallbackQuery):
                 "time_period": 20,
                 "series_type": "close"
             })
-            boll_json = boll_res.json()
-            boll_data = boll_json.get("values", [{}])[0]
+            boll_data = boll_res.json().get("values", [{}])[0]
             boll_upper = float(boll_data.get("upper_band", 0))
             boll_middle = float(boll_data.get("middle_band", 0))
             boll_lower = float(boll_data.get("lower_band", 0))
@@ -648,69 +643,75 @@ async def run_analysis(cb: types.CallbackQuery):
                 "apikey": TD_API_KEY,
                 "outputsize": 1
             })
-            ts_json = ts_res.json()
-            ts_data = ts_json.get("values", [{}])[0]
+            ts_data = ts_res.json().get("values", [{}])[0]
             volume = float(ts_data.get("volume", 0))
             close_now = float(ts_data.get("close", price))
             open_now = float(ts_data.get("open", price))
             trend = "صاعد 📈" if close_now > open_now else "هابط 📉"
 
+            # مستويات دعم ومقاومة وأهداف السعر ووقف الخسارة (مثال ديناميكي بسيط)
+            nearest_support = f"${close_now*0.9:.6f}"
+            nearest_resistance = f"${close_now*1.1:.6f}"
+            tp1 = f"${close_now*0.95:.6f}"
+            tp2 = f"${close_now*0.85:.6f}"
+            tp3 = f"${close_now*0.65:.6f}"
+            stop_loss = f"${close_now*1.15:.6f}"
+
     except Exception as e:
-        await cb.message.answer(
-            f"❌ حدث خطأ أثناء جلب البيانات: {e}\nرد الخادم: {await rsi_res.text()}"
-        )
+        await cb.message.answer(f"❌ حدث خطأ أثناء جلب البيانات: {e}")
         return
 
-    # --- برومبت منسق بالعربي ---
+    # --- تنسيق الرسالة ---
     if lang == "ar":
         prompt = f"""
-📊 تحليل عملة {sym}
+📊 التحليل الفني لعملة {sym}
 
-الفريم الزمني: {tf}
 الاتجاه: {trend}
 
 📉 الدعم والمقاومة:
-الدعم الأقرب:
-المقاومة الأقرب:
+الدعم الأقرب: {nearest_support}
+المقاومة الأقرب: {nearest_resistance}
 
 🎯 الأهداف السعرية:
-TP1:
-TP2:
-TP3:
+TP1: {tp1}
+TP2: {tp2}
+TP3: {tp3}
 
 🛑 وقف الخسارة:
-Stop Loss:
+Stop Loss: {stop_loss}
 
 📈 المؤشرات:
-RSI: {rsi_val:.2f} — سطر قصير يشرح قوة الزخم
-MACD: {macd_val:.4f} (Signal: {macd_signal:.4f}, Hist: {macd_hist:.4f}) — سطر قصير يوضح الاتجاه الحالي
-Bollinger Bands: أعلى = {boll_upper:.4f}, أدنى = {boll_lower:.4f}, SMA = {boll_middle:.4f} — سطر قصير يشرح حالة السعر
-Volume: {volume:.2f} — سطر قصير يوضح نشاط التداول
+RSI: {rsi_val:.2f} — قوة الزخم الحالية
+MACD: {macd_val:.4f} (Signal: {macd_signal:.4f}) — يوضح الاتجاه الحالي
+Bollinger Bands: أعلى = {boll_upper:.4f}, أدنى = {boll_lower:.4f}, SMA = {boll_middle:.4f} — حالة السعر نسبة للـ Bands
+Volume: {volume:.2f} — نشاط التداول
 """
     else:
         prompt = f"""
-📊 Analysis of {sym}
+📊 Market Overview for {sym}
 
-Timeframe: {tf}
-Trend: {trend}
+Trend: {'Bullish 📈' if close_now > open_now else 'Bearish 📉'}
 
 📉 Support & Resistance:
-Nearest Support:
-Nearest Resistance:
+Nearest Support: {nearest_support}
+Nearest Resistance: {nearest_resistance}
 
 🎯 Price Targets:
-TP1:
-TP2:
-TP3:
+TP1: {tp1}
+TP2: {tp2}
+TP3: {tp3}
 
 🛑 Stop Loss:
+Stop Loss: {stop_loss}
 
-📈 Indicators:
-RSI: {rsi_val:.2f} — short line explaining momentum
-MACD: {macd_val:.4f} (Signal: {macd_signal:.4f}, Hist: {macd_hist:.4f}) — short line on current trend
-Bollinger Bands: Upper = {boll_upper:.4f}, Lower = {boll_lower:.4f}, SMA = {boll_middle:.4f} — short line on price vs bands
-Volume: {volume:.2f} — short line on trading activity
+📈 Indicator Analysis:
+RSI: {rsi_val:.2f} — Momentum is indicated
+MACD: {macd_val:.4f} (Signal: {macd_signal:.4f}) — Shows current trend
+Bollinger Bands: Upper = {boll_upper:.4f}, Lower = {boll_lower:.4f}, SMA = {boll_middle:.4f} — Price vs bands
+Volume: {volume:.2f} — Trading activity
 """
+
+    await cb.message.edit_text(prompt)
     # --- استدعاء API داخل الدالة فقط ---
     res = await ask_groq(prompt, lang=lang)
     await cb.message.answer(res, parse_mode=ParseMode.HTML)
