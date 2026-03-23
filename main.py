@@ -312,6 +312,41 @@ from asyncio import to_thread
 
 # --- إنشاء العميل باستخدام مفاتيحك ---
 # ===== محاكاة بيانات الشموع باستخدام CMC =====
+import statistics
+
+# ====== دوال التحليل الفني ======
+
+def calculate_ema(prices, period):
+    ema = []
+    k = 2 / (period + 1)
+    for i, price in enumerate(prices):
+        if i == 0:
+            ema.append(price)
+        else:
+            ema.append(price * k + ema[i-1] * (1 - k))
+    return ema
+
+def calculate_macd(prices, short=12, long=26, signal=9):
+    ema_short = calculate_ema(prices, short)
+    ema_long = calculate_ema(prices, long)
+    macd_line = [s - l for s, l in zip(ema_short, ema_long)]
+    signal_line = calculate_ema(macd_line, signal)
+    hist = [m - s for m, s in zip(macd_line, signal_line)]
+    return macd_line[-1], signal_line[-1], hist[-1]
+
+def calculate_bollinger(prices, period=20, std_dev_mult=2):
+    if len(prices) < period:
+        return None, None, None
+    slice_prices = prices[-period:]
+    sma = sum(slice_prices) / period
+    std_dev = statistics.stdev(slice_prices)
+    upper = sma + std_dev_mult * std_dev
+    lower = sma - std_dev_mult * std_dev
+    return upper, lower, sma
+
+def detect_trend(prices, period=50):
+    ema_long = calculate_ema(prices, period)
+    return "Bullish" if prices[-1] > ema_long[-1] else "Bearish"
 async def get_cmc_klines(symbol: str, interval: str, limit: int = 200):
     headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
     async with httpx.AsyncClient() as client:
@@ -552,6 +587,11 @@ async def run_analysis(cb: types.CallbackQuery):
     }
 
     closes, highs, lows, volumes = await get_cmc_klines(sym, interval_map[tf])
+    # ===== حساب المؤشرات الحقيقية =====
+rsi = calculate_rsi(closes)
+macd_val, macd_signal, macd_hist = calculate_macd(closes)
+boll_upper, boll_lower, boll_sma = calculate_bollinger(closes)
+trend = detect_trend(closes)
 
     # ===== حساب RSI =====
     rsi = calculate_rsi(closes)
@@ -572,19 +612,14 @@ async def run_analysis(cb: types.CallbackQuery):
 
     # --- برومبت التحليل منسق ---
     if lang == "ar":
-        prompt = (
-            f"""قم بتحليل عملة {sym}
+    prompt = (
+        f"""قم بتحليل عملة {sym}
 
 السعر الحالي: {price:.6f}$
 الإطار الزمني: {tf}
 
-اكتب التحليل بنفس التنسيق التالي تمامًا باستخدام HTML.
-- لا تستخدم أي لغة أخرى غير العربية.
-- لا تضف أي نصوص او رموز عشوائية ولا حرف غير العربية.
-- ركز على التحليل الفني فقط، احترافي وقصير.
-
 📊 <b>التحليل العام</b>
-الاتجاه: (صاعد / هابط)
+الاتجاه: {trend}
 
 📉 <b>الدعم والمقاومة</b>
 الدعم الأقرب:
@@ -601,25 +636,20 @@ Stop Loss:
 📈 <b>تحليل المؤشرات</b>
 RSI الحالي: {rsi}
 اشرح ماذا يعني هذا الرقم في سطر واحد بالعربية فقط
-MACD: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
-Bollinger Bands: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
-Volume: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
+MACD: {macd_val:.4f} (Signal: {macd_signal:.4f}) — اشرح الاتجاه الحالي في سطر واحد بالعربية فقط
+Bollinger Bands: أعلى = {boll_upper:.4f}, أدنى = {boll_lower:.4f}, SMA = {boll_sma:.4f} — اشرح في سطر واحد
+Volume: {volumes[-1]:.2f} — اشرح نشاط التداول في سطر واحد
 """
-        )
-    else:
-        prompt = (
-            f"""Analyze {sym}
+    )
+else:
+    prompt = (
+        f"""Analyze {sym}
 
 Current price: ${price:.6f}
 Timeframe: {tf}
 
-Write the analysis EXACTLY in this HTML format.
-- Use English only.
-- Do not include any random text or other languages.
-- Focus only on technical analysis, short and professional.
-
 📊 <b>Market Overview</b>
-Trend: (Bullish / Bearish)
+Trend: {trend}
 
 📉 <b>Support & Resistance</b>
 Nearest Support:
@@ -634,13 +664,12 @@ TP3:
 Stop Loss:
 
 📈 <b>Indicator Analysis</b>
-Current RSI: {rsi}
-Explain what this value means in one short line
-MACD: (Bullish / Bearish) — write one short line explaining current trend
-Bollinger Bands: (Bullish / Bearish / Neutral) — write one short line explaining price vs moving average
-Volume: (Weak / Medium) — write one short line explaining trading activity
+Current RSI: {rsi} — Explain in one short line
+MACD: {macd_val:.4f} (Signal: {macd_signal:.4f}) — Explain current trend in one short line
+Bollinger Bands: Upper = {boll_upper:.4f}, Lower = {boll_lower:.4f}, SMA = {boll_sma:.4f} — One short line explanation
+Volume: {volumes[-1]:.2f} — One short line on trading activity
 """
-        )
+    )
 
     # --- استدعاء API داخل الدالة فقط ---
     res = await ask_groq(prompt, lang=lang)
