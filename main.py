@@ -577,74 +577,61 @@ async def run_analysis(cb: types.CallbackQuery):
 
     lang, sym, price, tf = data['lang'], data['sym'], data['price'], cb.data.replace("tf_", "")
     
-    # تحويل الفريم لتنسيق Twelve Data
+    # تحويل الفريم
     interval_map = {"weekly": "1week", "daily": "1day", "4h": "4h"}
     td_interval = interval_map.get(tf, "1day")
 
-    # التحقق من الاشتراك
-    if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
-        return await cb.message.edit_text("⚠️ انتهت تجربتك المجانية." if lang=="ar" else "⚠️ Trial ended.", reply_markup=get_payment_kb(lang))
+    await cb.message.edit_text("🤖 جاري استخراج البيانات والتحليل الفني..." if lang=="ar" else "🤖 Analyzing...")
 
-    await cb.message.edit_text("🤖 جاري استخراج البيانات والتحليل الفني..." if lang=="ar" else "🤖 Analyzing market data...")
-
-    # مفتاح الـ API الخاص بك (تأكد من صحته)
     TD_API_KEY = "e118d965b8144cd2bc7c1762f97db0f4"
 
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            # طلب البيانات الخام فقط (هذا الطلب خفيف ولا يتم حظره بسهولة)
+            # طلب البيانات الخام فقط (لضمان عدم تجاوز ليميت الـ API)
             url = f"https://api.twelvedata.com/time_series?symbol={sym}/USD&interval={td_interval}&outputsize=50&apikey={TD_API_KEY}"
             res = await client.get(url)
             ts_data = res.json()
 
             if "values" not in ts_data:
-                # إذا لم يجد USD جرب USDT
+                # محاولة ثانية بـ USDT في حال فشل الأولى
                 url = f"https://api.twelvedata.com/time_series?symbol={sym}/USDT&interval={td_interval}&outputsize=50&apikey={TD_API_KEY}"
                 res = await client.get(url)
                 ts_data = res.json()
 
-            if "values" not in ts_data:
-                raise ValueError("Data not found")
+            if "values" not in ts_data: raise ValueError("Limit reached or Symbol not found")
 
-            # استخراج الأسعار (ترتيب من الأقدم للأحدث للحسابات)
+            # تجهيز البيانات للحسابات الداخلية
             values = ts_data["values"]
             closes = [float(v["close"]) for v in values][::-1]
-            highs = [float(v["high"]) for v in values][::-1]
-            lows = [float(v["low"]) for v in values][::-1]
             volumes = [float(v["volume"]) for v in values][::-1]
 
-            # --- الحسابات البرمجية الداخلية (بدون API إضافي) ---
+            # --- الحسابات البرمجية (تستخدم الدوال المعرفة في بداية كودك) ---
             rsi_val = calculate_rsi(closes, 14)
             macd_val, macd_signal, _ = calculate_macd(closes)
             boll_upper, boll_lower, boll_middle = calculate_bollinger(closes) or (price*1.05, price*0.95, price)
 
-            # تحديد الاتجاه بناءً على Bollinger Middle (SMA 20)
             trend_text = "صاعد 📈" if closes[-1] > boll_middle else "هابط 📉"
             
-            # الدعم والمقاومة بناءً على الـ Bands (أكثر واقعية)
-            nearest_resistance = boll_upper
-            nearest_support = boll_lower
-
-            # حساب الأهداف بناءً على الاتجاه (Logic واقعي)
+            # حساب الأهداف بناءً على مستويات البولينجر الحقيقية
             if "صاعد" in trend_text:
-                tp1, tp2, tp3 = price*1.05, price*1.12, nearest_resistance
-                stop_loss = nearest_support * 0.98
+                tp1, tp2, tp3 = price*1.02, price*1.05, boll_upper
+                stop_loss = boll_lower * 0.99
             else:
-                tp1, tp2, tp3 = price*0.95, price*0.88, nearest_support
-                stop_loss = nearest_resistance * 1.02
+                tp1, tp2, tp3 = price*0.98, price*0.95, boll_lower
+                stop_loss = boll_upper * 1.01
 
     except Exception as e:
-        print(f"TwelveData Error: {e}")
-        await cb.message.edit_text("❌ عذراً، هذا الرمز غير مدعوم حالياً أو انتهت حدود الـ API المجاني.")
+        print(f"Error: {e}")
+        await cb.message.edit_text("❌ عذراً، انتهت صلاحية الطلبات المجانية لـ API حالياً. حاول لاحقاً.")
         return
 
-    # التنسيق النهائي كما طلبته بالضبط
+    # التنسيق النهائي الاحترافي
     final_report = (
         f"📊 <b>التحليل الفني لعملة {sym}</b>\n\n"
         f"<b>الاتجاه:</b> {trend_text}\n\n"
         f"<b>📉 الدعم والمقاومة:</b>\n"
-        f"الدعم الأقرب: <code>${nearest_support:.6f}</code>\n"
-        f"المقاومة الأقرب: <code>${nearest_resistance:.6f}</code>\n\n"
+        f"الدعم الأقرب: <code>${boll_lower:.6f}</code>\n"
+        f"المقاومة الأقرب: <code>${boll_upper:.6f}</code>\n\n"
         f"<b>🎯 الأهداف السعرية:</b>\n"
         f"TP1: <code>${tp1:.6f}</code>\n"
         f"TP2: <code>${tp2:.6f}</code>\n"
@@ -652,12 +639,17 @@ async def run_analysis(cb: types.CallbackQuery):
         f"<b>🛑 وقف الخسارة:</b>\n"
         f"Stop Loss: <code>${stop_loss:.6f}</code>\n\n"
         f"<b>📈 المؤشرات:</b>\n"
-        f"RSI: {rsi_val:.2f} — قوة الزخم الحالية\n"
-        f"MACD: {macd_val:.4f} (Signal: {macd_signal:.4f}) — يوضح الاتجاه الحالي\n"
-        f"Bollinger Bands: أعلى = {boll_upper:.4f}, أدنى = {boll_lower:.4f}, SMA = {boll_middle:.4f}\n"
-        f"Volume: {volumes[-1]:,.0f} — نشاط التداول"
+        f"RSI: {rsi_val:.2f}\n"
+        f"MACD: {macd_val:.4f} (Signal: {macd_signal:.4f})\n"
+        f"BBands: أعلى = {boll_upper:.4f}, أدنى = {boll_lower:.4f}\n"
+        f"Volume: {volumes[-1]:,.0f}"
     )
-    await cb.message.edit_text(prompt)
+
+    await cb.message.edit_text(final_report, parse_mode=ParseMode.HTML)
+    
+    # تعليق الـ AI
+    ai_insight = await ask_groq(f"حلل هذه الأرقام باختصار شديد: {final_report}", lang=lang)
+    await cb.message.answer(f"🤖 <b>توصية الذكاء الاصطناعي:</b>\n{ai_insight}", parse_mode=ParseMode.HTML)
     # --- استدعاء API داخل الدالة فقط ---
     res = await ask_groq(prompt, lang=lang)
     await cb.message.answer(res, parse_mode=ParseMode.HTML)
