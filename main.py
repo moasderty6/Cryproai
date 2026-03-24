@@ -480,107 +480,100 @@ async def handle_symbol(m: types.Message):
 async def run_analysis(cb: types.CallbackQuery):
     uid, pool = cb.from_user.id, dp['db_pool']
     session = user_session_data.get(uid)
-    if not session:
-        return
+    if not session: return
 
     lang, sym, price, tf = session["lang"], session["sym"], session["price"], cb.data.replace("tf_", "")
-
-    # تحقق من الاشتراك / التجربة
-    if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
-        return await cb.message.edit_text(
-            "⚠️ انتهت تجربتك المجانية." if lang=="ar" else "⚠️ Trial ended.",
-            reply_markup=get_payment_kb(lang)
-        )
-
-    try:
-        await cb.message.edit_text(
-            "⏳ جاري جلب التحليل الفني..." if lang=="ar" else "⏳ Fetching technical analysis..."
-        )
-    except:
-        pass
-
-    # --- تنظيف رمز العملة لضمان عمل الـ API ---
+    
+    # تنظيف الرمز (مثلاً BTC بدلاً من BTCUSDT)
     clean_sym = sym.replace("USDT", "").strip()
 
-    # --- جلب بيانات FreeCryptoAPI ---
-    async with httpx.AsyncClient(timeout=15) as client:
-        try:
-            res = await client.get(
-                "https://api.freecryptoapi.com/v1/getTechnicalAnalysis",
-                params={"symbol": f"{clean_sym}/USDT", "apikey": "c63cgetvyzt4nv505j6w"}
-            )
+    try:
+        await cb.message.edit_text("⏳ جاري تحليل البيانات التقنية..." if lang=="ar" else "⏳ Analyzing technical data...")
+        
+        async with httpx.AsyncClient(timeout=20) as client:
+            # التوثيق يطلب الرمز بتنسيق SYMBOL/CURRENCY
+            url = "https://api.freecryptoapi.com/v1/getTechnicalAnalysis"
+            params = {
+                "symbol": f"{clean_sym}/USDT",
+                "apikey": "c63cgetvyzt4nv505j6w" # تأكد أن هذا المفتاح فعال
+            }
+            
+            res = await client.get(url, params=params)
             data = res.json()
-            
-            # استخراج البيانات بعمق
-            symbol_list = data.get("symbols", [])
-            if not symbol_list:
-                raise ValueError("No data found")
-            
-            target_data = symbol_list[0]
-            tech = target_data.get("technical", {})
-            ind = tech.get("indicators", {})
-            
-            rsi = ind.get("rsi")
-            macd_data = ind.get("macd", {})
-            macd = macd_data.get("value") if isinstance(macd_data, dict) else macd_data
-            
-            pivots = tech.get("pivot", {})
-            support = pivots.get("support", "N/A")
-            resistance = pivots.get("resistance", "N/A")
-            
-        except Exception as e:
-            print(f"API Error: {e}")
-            rsi = macd = None
-            support = resistance = "N/A"
 
-    # --- تحديد الاتجاه والأهداف (حساب داخلي) ---
-    trend = "Neutral"
-    if rsi and macd:
-        if rsi > 60 and macd > 0: trend = "Bullish"
-        elif rsi < 40 and macd < 0: trend = "Bearish"
+            # --- استخراج البيانات بناءً على التوثيق ---
+            # الموقع يعيد قائمة رموز في 'symbols'
+            symbols = data.get("symbols", [])
+            if not symbols:
+                raise ValueError("Symbol not found in API")
 
-    # حساب الأهداف بناءً على السعر الحالي
-    if trend == "Bullish":
-        tp1, tp2, sl = price * 1.02, price * 1.05, price * 0.98
-    elif trend == "Bearish":
-        tp1, tp2, sl = price * 0.98, price * 0.95, price * 1.02
-    else:
-        tp1, tp2, sl = price * 1.01, price * 1.03, price * 0.99
+            # الدخول لعمق البيانات: symbols -> [0] -> technical -> analysis -> [الإطار الزمني]
+            tech_root = symbols[0].get("technical", {})
+            analysis = tech_root.get("analysis", {})
+            
+            # تحويل اسم التايم فريم لما يتوقعه الـ API (مثلاً: daily, weekly, 4h)
+            tf_key = tf.lower() 
+            tf_data = analysis.get(tf_key, {})
+            
+            indicators = tf_data.get("indicators", {})
+            
+            # جلب القيم
+            rsi = indicators.get("rsi", "N/A")
+            macd_val = indicators.get("macd", {}).get("value", "N/A")
+            
+            # جلب الدعم والمقاومة من الـ Pivots
+            pivots = tf_data.get("pivots", {}).get("classic", {})
+            support = pivots.get("s1", "N/A")      # الدعم الأول
+            resistance = pivots.get("r1", "N/A")   # المقاومة الأولى
 
-    # --- صياغة نص الرسالة ---
-    if lang == "ar":
-        analysis_text = (
-            f"📊 <b>التحليل الفني لـ {clean_sym}</b>\n"
-            f"📆 الإطار: {tf}\n"
-            f"💵 السعر: ${price:,.4f}\n\n"
-            f"📉 <b>المؤشرات:</b>\n"
-            f"RSI: {rsi if rsi else 'N/A'}\n"
-            f"MACD: {macd if macd else 'N/A'}\n\n"
-            f"📈 <b>الاتجاه:</b> {'صاعد 🟢' if trend=='Bullish' else 'هابط 🔴' if trend=='Bearish' else 'محايد 🟡'}\n"
-            f"🛡️ <b>الدعم:</b> {support}\n"
-            f"🚧 <b>المقاومة:</b> {resistance}\n\n"
-            f"🎯 <b>الأهداف:</b>\n"
-            f"TP1: {tp1:,.4f}\nTP2: {tp2:,.4f}\n"
-            f"🛑 <b>وقف الخسارة:</b> {sl:,.4f}"
-        )
-    else:
-        analysis_text = (
-            f"📊 <b>Technical Analysis: {clean_sym}</b>\n"
-            f"📆 Timeframe: {tf}\n"
-            f"💵 Price: ${price:,.4f}\n\n"
-            f"📉 <b>Indicators:</b>\n"
-            f"RSI: {rsi if rsi else 'N/A'}\n"
-            f"MACD: {macd if macd else 'N/A'}\n\n"
-            f"📈 <b>Trend:</b> {trend}\n"
-            f"🛡️ <b>Support:</b> {support}\n"
-            f"🚧 <b>Resistance:</b> {resistance}\n\n"
-            f"🎯 <b>Targets:</b>\n"
-            f"TP1: {tp1:,.4f}\nTP2: {tp2:,.4f}\n"
-            f"🛑 <b>Stop Loss:</b> {sl:,.4f}"
-        )
-    # --- استدعاء API داخل الدالة فقط ---
-    
-    await cb.message.answer(analysis_text, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        print(f"Detailed API Error: {e}")
+        await cb.message.edit_text("❌ عذراً، لم نتمكن من جلب البيانات حالياً. حاول لاحقاً." if lang=="ar" else "❌ Sorry, couldn't fetch data right now.")
+        return
+
+    # --- تحديد الاتجاه ---
+    trend_text = "Neutral 🟡"
+    if isinstance(rsi, (int, float)):
+        if rsi > 65: trend_text = "Bullish 🟢"
+        elif rsi < 35: trend_text = "Bearish 🔴"
+
+    # حساب أهداف افتراضية بناءً على السعر
+    tp1 = price * 1.03 if "Bullish" in trend_text else price * 0.97
+    sl = price * 0.97 if "Bullish" in trend_text else price * 1.03
+
+    # --- إرسال النتيجة النهائية ---
+    final_text = (
+        f"📊 <b>التحليل الفني: {clean_sym}</b>\n"
+        f"⏱️ الإطار: {tf}\n"
+        f"💵 السعر: ${price:,.2f}\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"📉 <b>المؤشرات:</b>\n"
+        f"• RSI: <code>{rsi}</code>\n"
+        f"• MACD: <code>{macd_val}</code>\n\n"
+        f"📈 <b>الاتجاه المتوقع:</b> {trend_text}\n"
+        f"🛡️ <b>الدعم (S1):</b> {support}\n"
+        f"🚧 <b>المقاومة (R1):</b> {resistance}\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"🎯 <b>هدف أول:</b> {tp1:,.2f}\n"
+        f"🛑 <b>وقف خسارة:</b> {sl:,.2f}"
+    ) if lang == "ar" else (
+        f"📊 <b>Technical Analysis: {clean_sym}</b>\n"
+        f"⏱️ Timeframe: {tf}\n"
+        f"💵 Price: ${price:,.2f}\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"📉 <b>Indicators:</b>\n"
+        f"• RSI: <code>{rsi}</code>\n"
+        f"• MACD: <code>{macd_val}</code>\n\n"
+        f"📈 <b>Trend:</b> {trend_text}\n"
+        f"🛡️ <b>Support (S1):</b> {support}\n"
+        f"🚧 <b>Resistance (R1):</b> {resistance}\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"🎯 <b>Target 1:</b> {tp1:,.2f}\n"
+        f"🛑 <b>Stop Loss:</b> {sl:,.2f}"
+    )
+
+    await cb.message.answer(final_text, parse_mode="HTML")
+
     
     if not (await is_user_paid(pool, uid)):
         async with pool.acquire() as conn:
