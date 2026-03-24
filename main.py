@@ -478,69 +478,75 @@ async def handle_symbol(m: types.Message):
         await status_msg.edit_text(error_text, parse_mode=ParseMode.MARKDOWN)
 @dp.callback_query(F.data.startswith("tf_"))
 async def run_analysis(cb: types.CallbackQuery):
-    uid, pool = cb.from_user.id, dp['db_pool']
+    uid = cb.from_user.id
     session = user_session_data.get(uid)
-    if not session: 
+    if not session:
         return
 
     lang, sym, price, tf = session["lang"], session["sym"], session["price"], cb.data.replace("tf_", "")
-    
-    # تنظيف الرمز (مثلاً BTC بدلاً من BTCUSDT) لضمان القبول
-    clean_sym = sym.replace("USDT", "").strip().upper()
 
     try:
-        await cb.message.edit_text("⏳ جاري تحليل البيانات التقنية..." if lang=="ar" else "⏳ Analyzing technical data...")
-        
+        await cb.message.edit_text(
+            "⏳ جاري تحليل البيانات التقنية..." if lang == "ar" else "⏳ Analyzing technical data..."
+        )
+
         async with httpx.AsyncClient(timeout=25) as client:
-            # استخدام getData حسب المثال الناجح الذي أرسلته
-            url = f"https://api.freecryptoapi.com/v1/getData?symbol={clean_sym}&apikey=c63cgetvyzt4nv505j6w"
-            
+            url = f"https://api.freecryptoapi.com/v1/getData?symbol={sym}&apikey=c63cgetvyzt4nv505j6w"
             res = await client.get(url)
-            
-            # طباعة الرد في Render Logs للتأكد 
-            print(f"API Debug: {res.text}")
+            print(f"API Debug: {res.text}")  # طباعة الرد الكامل
 
             if res.status_code != 200:
                 raise ValueError(f"API Status {res.status_code}")
 
-            data = res.json()
+            full_data = res.json()
 
-            # --- استخراج البيانات بناءً على هيكلة getData البسيطة ---
-            current_price = data.get("price", price) # نأخذ السعر الجديد أو نستخدم القديم كاحتياط
-            change_24h = data.get("change_24h", 0)
+            # التأكد من وجود "data"
+            if "data" not in full_data:
+                raise ValueError("No 'data' key in API response")
+
+            data = full_data["data"]
+
+            # استخراج القيم مع افتراضات احتياطية
+            current_price = float(data.get("price", price))
+            change_24h = float(data.get("change_24h", 0))
             
-            # الدخول لقسم technical مباشرة كما في المثال
             tech = data.get("technical", {})
             rsi = tech.get("rsi", "N/A")
             signal = tech.get("signal", "NEUTRAL")
 
-            # --- حساب مستويات الدعم والمقاومة يدوياً (لأن getData لا توفرها عادةً) ---
-            # سنعتمد على السعر الحالي لإعطاء أرقام منطقية للمستخدم
+            # حساب مستويات الدعم والمقاومة
             support = current_price * 0.985
             resistance = current_price * 1.015
 
     except Exception as e:
         print(f"Detailed Error: {e}")
-        await cb.message.edit_text("❌ عذراً، لم نتمكن من تحليل هذه العملة حالياً." if lang=="ar" else "❌ Sorry, analysis failed for this coin.")
+        await cb.message.edit_text(
+            "❌ عذراً، لم نتمكن من تحليل هذه العملة حالياً." if lang == "ar" else "❌ Sorry, analysis failed for this coin."
+        )
         return
 
-    # --- تحديد الاتجاه ---
-    trend_emoji = "🟡"
-    if "BUY" in str(signal).upper(): trend_emoji = "🟢 صاعد" if lang=="ar" else "🟢 Bullish"
-    elif "SELL" in str(signal).upper(): trend_emoji = "🔴 هابط" if lang=="ar" else "🔴 Bearish"
-    else: trend_emoji = "🟡 محايد" if lang=="ar" else "🟡 Neutral"
+    # تحديد الاتجاه مع الرموز
+    signal_upper = str(signal).upper()
+    if "BUY" in signal_upper:
+        trend_emoji = "🟢 صاعد" if lang == "ar" else "🟢 Bullish"
+        tp1 = current_price * 1.025
+        sl = current_price * 0.975
+    elif "SELL" in signal_upper:
+        trend_emoji = "🔴 هابط" if lang == "ar" else "🔴 Bearish"
+        tp1 = current_price * 0.975
+        sl = current_price * 1.025
+    else:
+        trend_emoji = "🟡 محايد" if lang == "ar" else "🟡 Neutral"
+        tp1 = current_price
+        sl = current_price
 
-    # حساب الأهداف (TP/SL)
-    tp1 = current_price * 1.025 if "BUY" in str(signal).upper() else current_price * 0.975
-    sl = current_price * 0.975 if "BUY" in str(signal).upper() else current_price * 1.025
+    # إرسال النتيجة
+    header = "📊 <b>التحليل الفني الذكي</b>" if lang == "ar" else "📊 <b>Smart Technical Analysis</b>"
 
-    # --- إرسال النتيجة النهائية بتنسيق NaiF CHarT ---
-    header = "📊 <b>التحليل الفني الذكي</b>" if lang=="ar" else "📊 <b>Smart Technical Analysis</b>"
-    
     final_text = (
         f"{header}\n"
         f"━━━━━━━━━━━━━━\n"
-        f"💎 العملة: <b>#{clean_sym}</b>\n"
+        f"💎 العملة: <b>#{sym}</b>\n"
         f"💵 السعر: <code>${current_price:,.2f}</code>\n"
         f"📈 تغير 24h: <code>{change_24h}%</code>\n"
         f"━━━━━━━━━━━━━━\n"
@@ -557,7 +563,7 @@ async def run_analysis(cb: types.CallbackQuery):
     ) if lang == "ar" else (
         f"{header}\n"
         f"━━━━━━━━━━━━━━\n"
-        f"💎 Coin: <b>#{clean_sym}</b>\n"
+        f"💎 Coin: <b>#{sym}</b>\n"
         f"💵 Price: <code>${current_price:,.2f}</code>\n"
         f"📈 24h Change: <code>{change_24h}%</code>\n"
         f"━━━━━━━━━━━━━━\n"
