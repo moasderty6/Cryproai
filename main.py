@@ -618,10 +618,10 @@ TP3: (ضع رقم منطقي)
 Stop Loss: (ضع رقم منطقي)
 
 📈 <b>تحليل المؤشرات</b>
-- RSI: {safe_rsi} (اشرح باختصار شديد جداً سطر واحد)
-- MACD: (اشرح باختصار شديد جداً سطر واحد)
+- RSI: {safe_rsi} (اكتب القيمةواشرح باختصار شديد سطر واحد)
+- MACD: {last_macd:.4f} (اكتب القيمة واشرح باختصار شديد سطر واحد)
 - Bollinger Bands: (اشرح باختصار شديد جداً سطر واحد)
-- Volume: {last_vol:.2f} (اشرح باختصار شديد جداً سطر واحد)
+- Volume: {last_vol:.2f} (اكتب القيمة واشرح باختصار شديد سطر واحد)
 
 **ملاحظة: لا تكتب مقدمات ولا جرايد، خليك محدد ومختصر ومرتب.**
 """
@@ -649,10 +649,10 @@ TP3: <code>(Price)</code>
 Stop Loss: <code>(Price)</code>
 
 <b>📈 Indicator Analysis</b>
-• RSI: {safe_rsi} (One short sentence)
-• MACD: (One short sentence)
+• RSI: {safe_rsi} (value and One short sentence)
+• MACD: {last_macd:.4f} (value and One short sentence)
 • Bollinger Bands: (One short sentence)
-• Volume: {last_vol:.2f} (One short sentence)
+• Volume: {last_vol:.2f} (value and One short sentence)
 
 <b>Note: No intro/outro, strictly follow the headers above.</b>
 """
