@@ -7,6 +7,9 @@ import hashlib
 import asyncpg
 import httpx
 import random
+import time
+import base64
+import pandas as pd
 from aiohttp import web
 from dotenv import load_dotenv
 
@@ -22,6 +25,9 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CMC_KEY = os.getenv("CMC_API_KEY")
+GATE_API_KEY = "a3f6a57b42f6106011e6890049e57b2e"
+GATE_API_SECRET = "1ac18e0a690ce782f6854137908a6b16eb910cf02f5b95fa3c43b670758f79bc"
+GATE_BASE = "https://api.gateio.ws/api/v4/spot/candlesticks"
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL") 
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()[:20]
@@ -476,6 +482,64 @@ async def handle_symbol(m: types.Message):
             else f"❌ Symbol `{sym}` is invalid. Please check the ticker (e.g., BTC, ETH)."
         )
         await status_msg.edit_text(error_text, parse_mode=ParseMode.MARKDOWN)
+
+# --- توقيع الهيدر للـ API ---
+def gate_sign(params: dict):
+    return {}
+
+# --- جلب الشموع ---
+async def get_candles_gate(symbol: str, interval: str, limit: int = 50):
+    async with httpx.AsyncClient() as client:
+        res = await client.get(GATE_BASE, params={
+            "currency_pair": symbol,
+            "interval": interval,
+            "limit": limit
+        })
+        if res.status_code == 200:
+            return res.json()
+        return None
+
+# --- حساب المؤشرات ---
+def compute_indicators(candles):
+    # الترتيب الصحيح لـ Gate.io هو: [توقيع، حجم، إغلاق، أعلى، أدنى، افتتاح]
+    df = pd.DataFrame(candles, columns=["timestamp", "volume", "close", "high", "low", "open"])
+    
+    # تحويل البيانات لأرقام عشرية لضمان صحة الحسابات
+    for col in ["close", "high", "low", "open", "volume"]:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    # RSI
+    delta = df["close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -1 * delta.clip(upper=0)
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+    rs = avg_gain / avg_loss
+    rsi_val = 100 - (100 / (1 + rs))
+    last_rsi = rsi_val.iloc[-1]
+
+    # MACD
+    ema12 = df["close"].ewm(span=12, adjust=False).mean()
+    ema26 = df["close"].ewm(span=26, adjust=False).mean()
+    macd_val = ema12 - ema26
+    signal = macd_val.ewm(span=9, adjust=False).mean()
+    last_macd_diff = macd_val.iloc[-1] - signal.iloc[-1]
+
+    # Bollinger Bands
+    sma20 = df["close"].rolling(20).mean()
+    std20 = df["close"].rolling(20).std()
+    upper_band = sma20 + 2*std20
+    lower_band = sma20 - 2*std20
+    last_bb = (df["close"].iloc[-1], lower_band.iloc[-1], upper_band.iloc[-1])
+
+    # بيانات إضافية
+    last_vol = df["volume"].iloc[-1]
+    high_price = df["high"].max()
+    low_price = df["low"].min()
+
+    return last_rsi, last_macd_diff, last_bb, last_vol, high_price, low_price
+
+# --- دالة التحليل المعدلة ---
 @dp.callback_query(F.data.startswith("tf_"))
 async def run_analysis(cb: types.CallbackQuery):
     uid, pool = cb.from_user.id, dp['db_pool']
@@ -492,32 +556,35 @@ async def run_analysis(cb: types.CallbackQuery):
             reply_markup=get_payment_kb(lang)
         )
 
-    try:
-        await cb.message.edit_text(
-            "🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing..."
-        )
-    except:
-        pass
+    await cb.message.edit_text("🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing...")
 
-    # --- برومبت التحليل منسق ---
+    # --- تنظيف الرمز وجلب البيانات ---
+    clean_sym = sym.replace("USDT", "").strip().upper()
+    gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
+    candles = await get_candles_gate(f"{clean_sym}_USDT", gate_interval, limit=50)
+
+    if candles:
+        last_rsi, last_macd, last_bb, last_vol, high, low = compute_indicators(candles)
+    else:
+        last_rsi, last_macd, last_bb, last_vol, high, low = 50.0, 0.0, (price, price*0.95, price*1.05), 0.0, price*1.05, price*0.95
+
+    # --- صياغة البرومبت (نفس أسلوبك بالضبط) ---
+    # ملاحظة: أضفت صمام أمان للـ RSI والماكد لضمان عدم ظهور خطأ f-string
+    safe_rsi = f"{last_rsi:.2f}" if last_rsi is not None else "N/A"
+    
     if lang == "ar":
-        prompt = (
-            f"""قم بتحليل عملة {sym}
+        prompt = f"""
+قم بتحليل عملة {clean_sym}
 
 السعر الحالي: {price:.6f}$
 الإطار الزمني: {tf}
-
-اكتب التحليل بنفس التنسيق التالي تمامًا باستخدام HTML.
-- لا تستخدم أي لغة أخرى غير العربية.
-- لا تضف أي نصوص او رموز عشوائية ولا حرف غير العربية.
-- ركز على التحليل الفني فقط، احترافي وقصير.
 
 📊 <b>التحليل العام</b>
 الاتجاه: (صاعد / هابط)
 
 📉 <b>الدعم والمقاومة</b>
-الدعم الأقرب:
-المقاومة الأقرب:
+الدعم الأقرب: {low:.2f}
+المقاومة الأقرب: {high:.2f}
 
 🎯 <b>الأهداف السعرية</b>
 TP1:
@@ -528,30 +595,24 @@ TP3:
 Stop Loss:
 
 📈 <b>تحليل المؤشرات</b>
-RSI: اكتب سطر واحد النسبة وتوضيح بالعربي فقططط ولا حرف غير لعربي
-MACD: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
-Bollinger Bands: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
-Volume: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
+RSI: {safe_rsi} — اشرح بالعربي فقط
+MACD: {"صاعد" if (last_macd or 0)>0 else "هابط"} — اشرح بالعربي فقط
+Bollinger Bands: السعر {last_bb[0]:.2f}, نطاق {last_bb[1]:.2f}-{last_bb[2]:.2f} — اشرح بالعربي فقط
+Volume: {last_vol:.2f} — اشرح بالعربي فقط
 """
-        )
     else:
-        prompt = (
-            f"""Analyze {sym}
+        prompt = f"""
+Analyze {clean_sym}
 
 Current price: ${price:.6f}
 Timeframe: {tf}
-
-Write the analysis EXACTLY in this HTML format.
-- Use English only.
-- Do not include any random text or other languages.
-- Focus only on technical analysis, short and professional.
 
 📊 <b>Market Overview</b>
 Trend: (Bullish / Bearish)
 
 📉 <b>Support & Resistance</b>
-Nearest Support:
-Nearest Resistance:
+Nearest Support: {low:.2f}
+Nearest Resistance: {high:.2f}
 
 🎯 <b>Price Targets</b>
 TP1:
@@ -562,12 +623,11 @@ TP3:
 Stop Loss:
 
 📈 <b>Indicator Analysis</b>
-RSI: (Bullish / Bearish) — write one short line explaining momentum
-MACD: (Bullish / Bearish) — write one short line explaining current trend
-Bollinger Bands: (Bullish / Bearish / Neutral) — write one short line explaining price vs moving average
-Volume: (Weak / Medium) — write one short line explaining trading activity
+RSI: {safe_rsi} — explain in English only
+MACD: {"Bullish" if (last_macd or 0)>0 else "Bearish"} — explain in English only
+Bollinger Bands: Price {last_bb[0]:.2f}, Range {last_bb[1]:.2f}-{last_bb[2]:.2f} — explain in English only
+Volume: {last_vol:.2f} — explain in English only
 """
-        )
 
     # --- استدعاء API داخل الدالة فقط ---
     res = await ask_groq(prompt, lang=lang)
