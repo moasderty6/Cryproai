@@ -590,22 +590,22 @@ async def run_analysis(cb: types.CallbackQuery):
 
 ⚠️ **مطلوب منك الالتزام بهذا التنسيق حرفياً مع استخدام الرموز التعبيرية:**
 
-📊 **التحليل العام**
+📊 <b>التحليل العام</b>
 الاتجاه: (اكتب صاعد أو هابط أو جانبي فقط)
 
-📉 **الدعم والمقاومة**
+📉 <b>الدعم والمقاومة</b>
 الدعم الأقرب: {low:.2f} دولار
 المقاومة الأقرب: {high:.2f} دولار
 
-🎯 **الأهداف السعرية**
+🎯 <b>الأهداف السعرية</b>
 TP1: (ضع رقم منطقي)
 TP2: (ضع رقم منطقي)
 TP3: (ضع رقم منطقي)
 
-🛑 **وقف الخسارة**
+🛑 <b>وقف الخسارة</b>
 Stop Loss: (ضع رقم منطقي)
 
-📈 **تحليل المؤشرات**
+📈 <b>تحليل المؤشرات</b>
 - RSI: {safe_rsi} (اشرح باختصار شديد جداً سطر واحد)
 - MACD: (اشرح باختصار شديد جداً سطر واحد)
 - Bollinger Bands: (اشرح باختصار شديد جداً سطر واحد)
@@ -615,31 +615,34 @@ Stop Loss: (ضع رقم منطقي)
 """
     else:
         prompt = f"""
-Analyze {clean_sym}
+You are an expert Technical Analyst at "NaiF CHarT". Analyze {clean_sym} based on:
+Price: {price:.2f}$ | Timeframe: {tf} | RSI: {safe_rsi} | MACD: {"Bullish" if (last_macd or 0)>0 else "Bearish"}
+Bollinger: {last_bb[0]:.2f} (Range {last_bb[1]:.2f}-{last_bb[2]:.2f}) | Volume: {last_vol:.2f}
 
-Current price: ${price:.6f}
-Timeframe: {tf}
+⚠️ Strictly follow this HTML format:
 
-📊 <b>Market Overview</b>
-Trend: (Bullish / Bearish)
+<b>📊 Market Overview</b>
+Trend: (Bullish/Bearish/Neutral only)
 
-📉 <b>Support & Resistance</b>
-Nearest Support: {low:.2f}
-Nearest Resistance: {high:.2f}
+<b>📉 Support & Resistance</b>
+Nearest Support: <code>{low:.2f}</code> $
+Nearest Resistance: <code>{high:.2f}</code> $
 
-🎯 <b>Price Targets</b>
-TP1:
-TP2:
-TP3:
+<b>🎯 Price Targets</b>
+TP1: <code>(Price)</code>
+TP2: <code>(Price)</code>
+TP3: <code>(Price)</code>
 
-🛑 <b>Stop Loss</b>
-Stop Loss:
+<b>🛑 Stop Loss</b>
+Stop Loss: <code>(Price)</code>
 
-📈 <b>Indicator Analysis</b>
-RSI: {safe_rsi} — explain in English only
-MACD: {"Bullish" if (last_macd or 0)>0 else "Bearish"} — explain in English only
-Bollinger Bands: Price {last_bb[0]:.2f}, Range {last_bb[1]:.2f}-{last_bb[2]:.2f} — explain in English only
-Volume: {last_vol:.2f} — explain in English only
+<b>📈 Indicator Analysis</b>
+• RSI: {safe_rsi} (One short sentence)
+• MACD: (One short sentence)
+• Bollinger Bands: (One short sentence)
+• Volume: {last_vol:.2f} (One short sentence)
+
+<b>Note: No intro/outro, strictly follow the headers above.</b>
 """
 
     # --- استدعاء API داخل الدالة فقط ---
