@@ -527,7 +527,9 @@ async def get_market_indicators(symbol: str, interval: str):
         "bb_upper": bb_upper,
         "bb_lower": bb_lower
     }
-    def detect_trend(rsi, macd):
+
+
+def detect_trend(rsi, macd):
 
     score = 0
 
