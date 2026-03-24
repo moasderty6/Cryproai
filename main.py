@@ -478,110 +478,100 @@ async def handle_symbol(m: types.Message):
         await status_msg.edit_text(error_text, parse_mode=ParseMode.MARKDOWN)
 @dp.callback_query(F.data.startswith("tf_"))
 async def run_analysis(cb: types.CallbackQuery):
-    uid = cb.from_user.id
-    session = user_session_data.get(uid)
-    if not session:
+    uid, pool = cb.from_user.id, dp['db_pool']
+    data = user_session_data.get(uid)
+    if not data:
         return
 
-    lang, sym, price, tf = session["lang"], session["sym"], session["price"], cb.data.replace("tf_", "")
+    lang, sym, price, tf = data['lang'], data['sym'], data['price'], cb.data.replace("tf_", "")
+
+    # --- تحقق من الاشتراك / التجربة ---
+    if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
+        return await cb.message.edit_text(
+            "⚠️ انتهت تجربتك المجانية." if lang=="ar" else "⚠️ Trial ended.",
+            reply_markup=get_payment_kb(lang)
+        )
 
     try:
         await cb.message.edit_text(
-            "⏳ جاري تحليل البيانات التقنية..." if lang == "ar" else "⏳ Analyzing technical data..."
+            "🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing..."
         )
+    except:
+        pass
 
-        async with httpx.AsyncClient(timeout=25) as client:
-            url = f"https://api.freecryptoapi.com/v1/getData?symbol={sym}&apikey=c63cgetvyzt4nv505j6w"
-            res = await client.get(url)
-            print(f"API Debug: {res.text}")  # طباعة الرد الكامل
+    # --- برومبت التحليل منسق ---
+    if lang == "ar":
+        prompt = (
+            f"""قم بتحليل عملة {sym}
 
-            if res.status_code != 200:
-                raise ValueError(f"API Status {res.status_code}")
+السعر الحالي: {price:.6f}$
+الإطار الزمني: {tf}
 
-            full_data = res.json()
+اكتب التحليل بنفس التنسيق التالي تمامًا باستخدام HTML.
+- لا تستخدم أي لغة أخرى غير العربية.
+- لا تضف أي نصوص او رموز عشوائية ولا حرف غير العربية.
+- ركز على التحليل الفني فقط، احترافي وقصير.
 
-            # التأكد من وجود "data"
-            if "data" not in full_data:
-                raise ValueError("No 'data' key in API response")
+📊 <b>التحليل العام</b>
+الاتجاه: (صاعد / هابط)
 
-            data = full_data["data"]
+📉 <b>الدعم والمقاومة</b>
+الدعم الأقرب:
+المقاومة الأقرب:
 
-            # استخراج القيم مع افتراضات احتياطية
-            current_price = float(data.get("price", price))
-            change_24h = float(data.get("change_24h", 0))
-            
-            tech = data.get("technical", {})
-            rsi = tech.get("rsi", "N/A")
-            signal = tech.get("signal", "NEUTRAL")
+🎯 <b>الأهداف السعرية</b>
+TP1:
+TP2:
+TP3:
 
-            # حساب مستويات الدعم والمقاومة
-            support = current_price * 0.985
-            resistance = current_price * 1.015
+🛑 <b>وقف الخسارة</b>
+Stop Loss:
 
-    except Exception as e:
-        print(f"Detailed Error: {e}")
-        await cb.message.edit_text(
-            "❌ عذراً، لم نتمكن من تحليل هذه العملة حالياً." if lang == "ar" else "❌ Sorry, analysis failed for this coin."
+📈 <b>تحليل المؤشرات</b>
+RSI: اكتب سطر واحد النسبة وتوضيح بالعربي فقططط ولا حرف غير لعربي
+MACD: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
+Bollinger Bands: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
+Volume: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
+"""
         )
-        return
-
-    # تحديد الاتجاه مع الرموز
-    signal_upper = str(signal).upper()
-    if "BUY" in signal_upper:
-        trend_emoji = "🟢 صاعد" if lang == "ar" else "🟢 Bullish"
-        tp1 = current_price * 1.025
-        sl = current_price * 0.975
-    elif "SELL" in signal_upper:
-        trend_emoji = "🔴 هابط" if lang == "ar" else "🔴 Bearish"
-        tp1 = current_price * 0.975
-        sl = current_price * 1.025
     else:
-        trend_emoji = "🟡 محايد" if lang == "ar" else "🟡 Neutral"
-        tp1 = current_price
-        sl = current_price
+        prompt = (
+            f"""Analyze {sym}
 
-    # إرسال النتيجة
-    header = "📊 <b>التحليل الفني الذكي</b>" if lang == "ar" else "📊 <b>Smart Technical Analysis</b>"
+Current price: ${price:.6f}
+Timeframe: {tf}
 
-    final_text = (
-        f"{header}\n"
-        f"━━━━━━━━━━━━━━\n"
-        f"💎 العملة: <b>#{sym}</b>\n"
-        f"💵 السعر: <code>${current_price:,.2f}</code>\n"
-        f"📈 تغير 24h: <code>{change_24h}%</code>\n"
-        f"━━━━━━━━━━━━━━\n"
-        f"📉 <b>المؤشرات:</b>\n"
-        f"• RSI: <code>{rsi}</code>\n"
-        f"• الإشارة: <b>{trend_emoji}</b>\n\n"
-        f"🛡️ <b>الدعم المتوقع:</b> <code>{support:,.2f}</code>\n"
-        f"🚧 <b>المقاومة المتوقعة:</b> <code>{resistance:,.2f}</code>\n"
-        f"━━━━━━━━━━━━━━\n"
-        f"🎯 <b>الهدف الأول:</b> <code>{tp1:,.2f}</code>\n"
-        f"🛑 <b>وقف الخسارة:</b> <code>{sl:,.2f}</code>\n"
-        f"━━━━━━━━━━━━━━\n"
-        f"💡 <i>نصيحة: دائماً اتبع إدارة المخاطر.</i>"
-    ) if lang == "ar" else (
-        f"{header}\n"
-        f"━━━━━━━━━━━━━━\n"
-        f"💎 Coin: <b>#{sym}</b>\n"
-        f"💵 Price: <code>${current_price:,.2f}</code>\n"
-        f"📈 24h Change: <code>{change_24h}%</code>\n"
-        f"━━━━━━━━━━━━━━\n"
-        f"📉 <b>Indicators:</b>\n"
-        f"• RSI: <code>{rsi}</code>\n"
-        f"• Signal: <b>{trend_emoji}</b>\n\n"
-        f"🛡️ <b>Support:</b> <code>{support:,.2f}</code>\n"
-        f"🚧 <b>Resistance:</b> <code>{resistance:,.2f}</code>\n"
-        f"━━━━━━━━━━━━━━\n"
-        f"🎯 <b>Target:</b> <code>{tp1:,.2f}</code>\n"
-        f"🛑 <b>Stop Loss:</b> <code>{sl:,.2f}</code>\n"
-        f"━━━━━━━━━━━━━━\n"
-        f"💡 <i>Tip: Always use proper risk management.</i>"
-    )
+Write the analysis EXACTLY in this HTML format.
+- Use English only.
+- Do not include any random text or other languages.
+- Focus only on technical analysis, short and professional.
 
-    await cb.message.answer(final_text, parse_mode="HTML")
+📊 <b>Market Overview</b>
+Trend: (Bullish / Bearish)
 
+📉 <b>Support & Resistance</b>
+Nearest Support:
+Nearest Resistance:
 
+🎯 <b>Price Targets</b>
+TP1:
+TP2:
+TP3:
+
+🛑 <b>Stop Loss</b>
+Stop Loss:
+
+📈 <b>Indicator Analysis</b>
+RSI: (Bullish / Bearish) — write one short line explaining momentum
+MACD: (Bullish / Bearish) — write one short line explaining current trend
+Bollinger Bands: (Bullish / Bearish / Neutral) — write one short line explaining price vs moving average
+Volume: (Weak / Medium) — write one short line explaining trading activity
+"""
+        )
+
+    # --- استدعاء API داخل الدالة فقط ---
+    res = await ask_groq(prompt, lang=lang)
+    await cb.message.answer(res, parse_mode=ParseMode.HTML)
     
     if not (await is_user_paid(pool, uid)):
         async with pool.acquire() as conn:
