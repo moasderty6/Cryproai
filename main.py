@@ -503,35 +503,52 @@ async def run_analysis(cb: types.CallbackQuery):
     # --- جلب بيانات FreeCryptoAPI ---
     # --- استبدل الجزء الخاص بجلب البيانات داخل دالة run_analysis بهذا ---
 
-async with httpx.AsyncClient(timeout=15) as client:
-    try:
-        res = await client.get(
-            "https://api.freecryptoapi.com/v1/getTechnicalAnalysis",
-            params={"symbol": f"{sym}/USDT", "apikey": "c63cgetvyzt4nv505j6w"}
-        )
-        data = res.json()
-        
-        # الوصول الصحيح للبيانات:
-        # نفترض أن الـ API يعيد مصفوفة في "symbols"
-        if "symbols" in data and len(data["symbols"]) > 0:
-            symbol_data = data["symbols"][0] # أول عملة في القائمة
-            tech = symbol_data.get("technical", {})
-            indicators = tech.get("indicators", {}) # المؤشرات عادة تكون هنا
+    # --- جلب بيانات FreeCryptoAPI ---
+    async with httpx.AsyncClient(timeout=15) as client:
+        try:
+            res = await client.get(
+                "https://api.freecryptoapi.com/v1/getTechnicalAnalysis",
+                params={"symbol": f"{sym}/USDT", "apikey": "c63cgetvyzt4nv505j6w"}
+            )
+            data = res.json()
+
+            # الوصول العميق للبيانات حسب هيكلة FreeCryptoAPI
+            # الرد يكون عبارة عن قائمة رموز (symbols)
+            symbol_list = data.get("symbols", [])
+            if not symbol_list:
+                raise ValueError("No symbol data found")
+
+            # استخراج أول عنصر في القائمة (العملة المطلوبة)
+            target_data = symbol_list[0]
+            tech = target_data.get("technical", {})
             
-            rsi = indicators.get("rsi")
-            macd_obj = indicators.get("macd", {})
-            macd = macd_obj.get("value") if isinstance(macd_obj, dict) else macd_obj
-            signal = macd_obj.get("signal") if isinstance(macd_obj, dict) else None
+            # استخراج المؤشرات من داخل قسم indicators
+            ind = tech.get("indicators", {})
             
-            bollinger = indicators.get("bollinger", {})
+            rsi = ind.get("rsi")
+            # معالجة MACD لأنه غالباً يكون Object
+            macd_data = ind.get("macd", {})
+            macd = macd_data.get("value") if isinstance(macd_data, dict) else macd_data
+            signal = macd_data.get("signal") if isinstance(macd_data, dict) else None
+            
+            # معالجة البولنجر باند
+            bb = ind.get("bollinger", {})
+            bollinger = {
+                "upper": bb.get("upper", "N/A"),
+                "middle": bb.get("middle", "N/A"),
+                "lower": bb.get("lower", "N/A")
+            }
+
+            # معالجة الدعم والمقاومة من قسم pivot
             pivots = tech.get("pivot", {})
             support = pivots.get("support", "N/A")
             resistance = pivots.get("resistance", "N/A")
-        else:
-            raise ValueError("No data found for this symbol")
 
-    except Exception as e:
-        print(f"Extraction Error: {e}")
+        except Exception as e:
+            print(f"Extraction Error: {e}")
+            await cb.message.edit_text("❌ خطأ في تحليل البيانات من المصدر.")
+            return
+
         # تعيين قيم افتراضية لتجنب توقف البو
 
 
