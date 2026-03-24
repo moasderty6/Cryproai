@@ -548,7 +548,7 @@ async def run_analysis(cb: types.CallbackQuery):
     if not data:
         return
 
-    lang, sym, price, tf = data['lang'], data['sym'], data['price'], cb.data.replace("tf_", "")
+    lang, sym, price, tf = data['lang'], data['sym'], float(data['price']), cb.data.replace("tf_", "")
 
     # --- تحقق من الاشتراك / التجربة ---
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
@@ -565,6 +565,9 @@ async def run_analysis(cb: types.CallbackQuery):
 
     if candles:
         last_rsi, last_macd, last_bb, last_vol, high, low = compute_indicators(candles)
+        high = float(high)
+low = float(low)
+last_vol = float(last_vol)
     else:
         last_rsi, last_macd, last_bb, last_vol, high, low = None, None, (0,0,0), 0, price*0.95, price*1.05
 
