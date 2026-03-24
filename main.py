@@ -570,10 +570,11 @@ async def run_analysis(cb: types.CallbackQuery):
 
     # --- برومبت التحليل مع القيم الحقيقية ---
     if lang == "ar":
+        price_float = float(price)
         prompt = f"""
 قم بتحليل عملة {sym}
 
-السعر الحالي: {price:.6f}$
+السعر الحالي: {price_float:.6f}$
 الإطار الزمني: {tf}
 
 📊 <b>التحليل العام</b>
