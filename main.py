@@ -554,8 +554,9 @@ def compute_indicators(candles):
 
     # بيانات إضافية
     last_vol = df["volume"].iloc[-1]
-    high_price = df["high"].max()
-    low_price = df["low"].min()
+    recent = df.tail(20)
+    high_price = recent["high"].max()
+    low_price = recent["low"].min()
 
     return last_rsi, last_macd_diff, last_bb, last_vol, high_price, low_price
 
@@ -601,6 +602,13 @@ async def run_analysis(cb: types.CallbackQuery):
 البولينجر: السعر {last_bb[0]:.2f} (نطاق {last_bb[1]:.2f} - {last_bb[2]:.2f}) | الفوليوم: {last_vol:.2f}
 
 ⚠️ الالتزام التام بهذا التنسيق (استخدم وسوم HTML فقط):
+⚠️ قواعد صارمة:
+
+إذا كان الاتجاه "صاعد":
+- يجب أن تكون TP1 و TP2 و TP3 أعلى من السعر الحالي
+
+إذا كان الاتجاه "هابط":
+- يجب أن تكون TP1 و TP2 و TP3 أقل من السعر الحالي
 
 📊 <b>التحليل العام</b>
 الاتجاه: (اكتب صاعد أو هابط)
@@ -632,6 +640,13 @@ Price: {price:.2f}$ | Timeframe: {tf} | RSI: {safe_rsi} | MACD: {"Bullish" if (l
 Bollinger: {last_bb[0]:.2f} (Range {last_bb[1]:.2f}-{last_bb[2]:.2f}) | Volume: {last_vol:.2f}
 
 ⚠️ Strictly follow this HTML format:
+Strict rule:
+
+If Trend = Bullish
+TP targets MUST be above current price.
+
+If Trend = Bearish
+TP targets MUST be below current price.
 
 <b>📊 Market Overview</b>
 Trend: (Bullish/Bearish)
