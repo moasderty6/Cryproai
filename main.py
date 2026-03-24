@@ -600,10 +600,10 @@ async def run_analysis(cb: types.CallbackQuery):
 السعر الحالي: {price:.2f}$ | الإطار: {tf} | RSI: {safe_rsi} | MACD: {"صاعد" if (last_macd or 0)>0 else "هابط"}
 البولينجر: السعر {last_bb[0]:.2f} (نطاق {last_bb[1]:.2f} - {last_bb[2]:.2f}) | الفوليوم: {last_vol:.2f}
 
-⚠️ **مطلوب منك الالتزام بهذا التنسيق حرفياً مع استخدام الرموز التعبيرية:**
+⚠️ <b>مطلوب منك الالتزام بهذا التنسيق حرفياً مع استخدام الرموز التعبيرية:</b>
 
 📊 <b>التحليل العام</b>
-الاتجاه: (اكتب صاعد أو هابط أو جانبي فقط)
+الاتجاه: (اكتب صاعد أو هابط)
 
 📉 <b>الدعم والمقاومة</b>
 الدعم الأقرب: {low:.2f} دولار
@@ -634,7 +634,7 @@ Bollinger: {last_bb[0]:.2f} (Range {last_bb[1]:.2f}-{last_bb[2]:.2f}) | Volume: 
 ⚠️ Strictly follow this HTML format:
 
 <b>📊 Market Overview</b>
-Trend: (Bullish/Bearish/Neutral only)
+Trend: (Bullish/Bearish)
 
 <b>📉 Support & Resistance</b>
 Nearest Support: <code>{low:.2f}</code> $
