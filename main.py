@@ -484,7 +484,7 @@ async def get_market_indicators(symbol: str, interval: str):
         rsi_req = await client.get(
             "https://api.twelvedata.com/rsi",
             params={
-                "symbol": f"{symbol}/USDT",
+                "symbol": f"{symbol}/USD",
                 "interval": interval,
                 "apikey": TWELVEDATA_API_KEY
             }
@@ -493,7 +493,7 @@ async def get_market_indicators(symbol: str, interval: str):
         macd_req = await client.get(
             "https://api.twelvedata.com/macd",
             params={
-                "symbol": f"{symbol}/USDT",
+                "symbol": f"{symbol}/USD",
                 "interval": interval,
                 "apikey": TWELVEDATA_API_KEY
             }
@@ -502,7 +502,7 @@ async def get_market_indicators(symbol: str, interval: str):
         bb_req = await client.get(
             "https://api.twelvedata.com/bbands",
             params={
-                "symbol": f"{symbol}/USDT",
+                "symbol": f"{symbol}/USD",
                 "interval": interval,
                 "apikey": TWELVEDATA_API_KEY
             }
