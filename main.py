@@ -501,7 +501,8 @@ async def get_candles_gate(symbol: str, interval: str, limit: int = 50):
 
 # --- حساب المؤشرات ---
 def compute_indicators(candles):
-    df = pd.DataFrame(candles, columns=["timestamp","open","high","low","close","volume"])
+    df = pd.DataFrame(candles, columns=[
+    "timestamp","open","high","low","close","volume","turnover","other"
     df["close"] = df["close"].astype(float)
     df["volume"] = df["volume"].astype(float)
 
