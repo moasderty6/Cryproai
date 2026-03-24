@@ -479,94 +479,116 @@ async def handle_symbol(m: types.Message):
 @dp.callback_query(F.data.startswith("tf_"))
 async def run_analysis(cb: types.CallbackQuery):
     uid, pool = cb.from_user.id, dp['db_pool']
-    data = user_session_data.get(uid)
-    if not data:
+    session = user_session_data.get(uid)
+    if not session:
         return
 
-    lang, sym, price, tf = data['lang'], data['sym'], data['price'], cb.data.replace("tf_", "")
+    lang, sym, price, tf = session["lang"], session["sym"], session["price"], cb.data.replace("tf_", "")
 
-    # --- تحقق من الاشتراك / التجربة ---
+    # تحقق من الاشتراك / التجربة
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
         return await cb.message.edit_text(
             "⚠️ انتهت تجربتك المجانية." if lang=="ar" else "⚠️ Trial ended.",
             reply_markup=get_payment_kb(lang)
         )
 
+    # إعلام المستخدم أن التحليل يُحضَّر
     try:
         await cb.message.edit_text(
-            "🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing..."
+            "⏳ جاري جلب التحليل الفني..." if lang=="ar" else "⏳ Fetching technical analysis..."
         )
     except:
         pass
 
-    # --- برومبت التحليل منسق ---
+    # --- جلب بيانات FreeCryptoAPI ---
+    async with httpx.AsyncClient(timeout=15) as client:
+        try:
+            res = await client.get(
+                "https://api.freecryptoapi.com/v1/getTechnicalAnalysis",
+                params={"symbol": f"{sym}/USDT", "apikey": "c63cgetvyzt4nv505j6w"}
+            )
+            data = res.json()
+
+            tech = data.get("technical", {})
+        except Exception as e:
+            await cb.message.edit_text(
+                "❌ حدث خطأ في جلب البيانات التقنية." if lang=="ar"
+                else "❌ Error fetching technical data."
+            )
+            print(f"FreeCryptoAPI error: {e}")
+            return
+
+    # قراءة المؤشرات
+    rsi = tech.get("rsi", None)
+    macd = tech.get("macd", None)
+    signal = tech.get("signal", None)
+    bollinger = tech.get("bollinger", {})
+    support = tech.get("pivot", {}).get("support", "N/A")
+    resistance = tech.get("pivot", {}).get("resistance", "N/A")
+
+    # تحليل الاتجاه من المؤشرات
+    trend = "Neutral"
+    if rsi is not None and macd is not None:
+        if rsi > 60 and macd > 0:
+            trend = "Bullish"
+        elif rsi < 40 and macd < 0:
+            trend = "Bearish"
+
+    # تحديد الأهداف بناءً على الاتجاه
+    if trend == "Bullish":
+        tp1 = price * 1.02
+        tp2 = price * 1.04
+        tp3 = price * 1.06
+        sl = price * 0.98
+    elif trend == "Bearish":
+        tp1 = price * 0.98
+        tp2 = price * 0.96
+        tp3 = price * 0.94
+        sl = price * 1.02
+    else:
+        tp1 = price * 1.01
+        tp2 = price * 1.02
+        tp3 = price * 1.03
+        sl = price * 0.99
+
+    # صياغة نص التحليل
     if lang == "ar":
-        prompt = (
-            f"""قم بتحليل عملة {sym}
-
-السعر الحالي: {price:.6f}$
-الإطار الزمني: {tf}
-
-اكتب التحليل بنفس التنسيق التالي تمامًا باستخدام HTML.
-- لا تستخدم أي لغة أخرى غير العربية.
-- لا تضف أي نصوص او رموز عشوائية ولا حرف غير العربية.
-- ركز على التحليل الفني فقط، احترافي وقصير.
-
-📊 <b>التحليل العام</b>
-الاتجاه: (صاعد / هابط)
-
-📉 <b>الدعم والمقاومة</b>
-الدعم الأقرب:
-المقاومة الأقرب:
-
-🎯 <b>الأهداف السعرية</b>
-TP1:
-TP2:
-TP3:
-
-🛑 <b>وقف الخسارة</b>
-Stop Loss:
-
-📈 <b>تحليل المؤشرات</b>
-RSI: اكتب سطر واحد النسبة وتوضيح بالعربي فقططط ولا حرف غير لعربي
-MACD: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
-Bollinger Bands: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
-Volume: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
-"""
+        analysis_text = (
+            f"📊 <b>التحليل الفني</b>\n"
+            f"💎 العملة: {sym}\n"
+            f"📆 الإطار: {tf}\n"
+            f"💵 السعر الحالي: ${price:.6f}\n\n"
+            f"📉 <b>المؤشرات</b>\n"
+            f"RSI: {rsi}\n"
+            f"MACD: {macd}\n"
+            f"Bollinger Bands: U:{bollinger.get('upper','N/A')} M:{bollinger.get('middle','N/A')} L:{bollinger.get('lower','N/A')}\n"
+            f"Signal: {signal}\n\n"
+            f"📈 <b>الاتجاه</b>: {'صاعد' if trend=='Bullish' else 'هابط' if trend=='Bearish' else 'محايد'}\n\n"
+            f"📉 <b>الدعم والمقاومة</b>\n"
+            f"الدعم: {support}\n"
+            f"المقاومة: {resistance}\n\n"
+            f"🎯 <b>الأهداف السعرية</b>\n"
+            f"TP1: {tp1:.6f}\nTP2: {tp2:.6f}\nTP3: {tp3:.6f}\n\n"
+            f"🛑 <b>وقف الخسارة</b>: {sl:.6f}"
         )
     else:
-        prompt = (
-            f"""Analyze {sym}
-
-Current price: ${price:.6f}
-Timeframe: {tf}
-
-Write the analysis EXACTLY in this HTML format.
-- Use English only.
-- Do not include any random text or other languages.
-- Focus only on technical analysis, short and professional.
-
-📊 <b>Market Overview</b>
-Trend: (Bullish / Bearish)
-
-📉 <b>Support & Resistance</b>
-Nearest Support:
-Nearest Resistance:
-
-🎯 <b>Price Targets</b>
-TP1:
-TP2:
-TP3:
-
-🛑 <b>Stop Loss</b>
-Stop Loss:
-
-📈 <b>Indicator Analysis</b>
-RSI: (Bullish / Bearish) — write one short line explaining momentum
-MACD: (Bullish / Bearish) — write one short line explaining current trend
-Bollinger Bands: (Bullish / Bearish / Neutral) — write one short line explaining price vs moving average
-Volume: (Weak / Medium) — write one short line explaining trading activity
-"""
+        analysis_text = (
+            f"📊 <b>Technical Analysis</b>\n"
+            f"💎 Coin: {sym}\n"
+            f"📆 Timeframe: {tf}\n"
+            f"💵 Current Price: ${price:.6f}\n\n"
+            f"📉 <b>Indicators</b>\n"
+            f"RSI: {rsi}\n"
+            f"MACD: {macd}\n"
+            f"Bollinger Bands: U:{bollinger.get('upper','N/A')} M:{bollinger.get('middle','N/A')} L:{bollinger.get('lower','N/A')}\n"
+            f"Signal: {signal}\n\n"
+            f"📈 <b>Trend</b>: {trend}\n\n"
+            f"📉 <b>Support & Resistance</b>\n"
+            f"Support: {support}\n"
+            f"Resistance: {resistance}\n\n"
+            f"🎯 <b>Price Targets</b>\n"
+            f"TP1: {tp1:.6f}\nTP2: {tp2:.6f}\nTP3: {tp3:.6f}\n\n"
+            f"🛑 <b>Stop Loss</b>: {sl:.6f}"
         )
 
     # --- استدعاء API داخل الدالة فقط ---
@@ -712,8 +734,8 @@ async def on_startup(app):
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
     
-    asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
-    asyncio.create_task(daily_channel_post())
+    #asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
+    #asyncio.create_task(daily_channel_post())
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
 app = web.Application()
