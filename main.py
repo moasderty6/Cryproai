@@ -492,7 +492,6 @@ async def run_analysis(cb: types.CallbackQuery):
             reply_markup=get_payment_kb(lang)
         )
 
-    # إعلام المستخدم أن التحليل يُحضَّر
     try:
         await cb.message.edit_text(
             "⏳ جاري جلب التحليل الفني..." if lang=="ar" else "⏳ Fetching technical analysis..."
@@ -500,123 +499,85 @@ async def run_analysis(cb: types.CallbackQuery):
     except:
         pass
 
-    # --- جلب بيانات FreeCryptoAPI ---
-    # --- استبدل الجزء الخاص بجلب البيانات داخل دالة run_analysis بهذا ---
+    # --- تنظيف رمز العملة لضمان عمل الـ API ---
+    clean_sym = sym.replace("USDT", "").strip()
 
     # --- جلب بيانات FreeCryptoAPI ---
     async with httpx.AsyncClient(timeout=15) as client:
         try:
             res = await client.get(
                 "https://api.freecryptoapi.com/v1/getTechnicalAnalysis",
-                params={"symbol": f"{sym}/USDT", "apikey": "c63cgetvyzt4nv505j6w"}
+                params={"symbol": f"{clean_sym}/USDT", "apikey": "c63cgetvyzt4nv505j6w"}
             )
             data = res.json()
-
-            # الوصول العميق للبيانات حسب هيكلة FreeCryptoAPI
-            # الرد يكون عبارة عن قائمة رموز (symbols)
+            
+            # استخراج البيانات بعمق
             symbol_list = data.get("symbols", [])
             if not symbol_list:
-                raise ValueError("No symbol data found")
-
-            # استخراج أول عنصر في القائمة (العملة المطلوبة)
+                raise ValueError("No data found")
+            
             target_data = symbol_list[0]
             tech = target_data.get("technical", {})
-            
-            # استخراج المؤشرات من داخل قسم indicators
             ind = tech.get("indicators", {})
             
             rsi = ind.get("rsi")
-            # معالجة MACD لأنه غالباً يكون Object
             macd_data = ind.get("macd", {})
             macd = macd_data.get("value") if isinstance(macd_data, dict) else macd_data
-            signal = macd_data.get("signal") if isinstance(macd_data, dict) else None
             
-            # معالجة البولنجر باند
-            bb = ind.get("bollinger", {})
-            bollinger = {
-                "upper": bb.get("upper", "N/A"),
-                "middle": bb.get("middle", "N/A"),
-                "lower": bb.get("lower", "N/A")
-            }
-
-            # معالجة الدعم والمقاومة من قسم pivot
             pivots = tech.get("pivot", {})
             support = pivots.get("support", "N/A")
             resistance = pivots.get("resistance", "N/A")
-
+            
         except Exception as e:
-            print(f"Extraction Error: {e}")
-            await cb.message.edit_text("❌ خطأ في تحليل البيانات من المصدر.")
-            return
+            print(f"API Error: {e}")
+            rsi = macd = None
+            support = resistance = "N/A"
 
-        # تعيين قيم افتراضية لتجنب توقف البو
-
-
-    # تحليل الاتجاه من المؤشرات
+    # --- تحديد الاتجاه والأهداف (حساب داخلي) ---
     trend = "Neutral"
-    if rsi is not None and macd is not None:
-        if rsi > 60 and macd > 0:
-            trend = "Bullish"
-        elif rsi < 40 and macd < 0:
-            trend = "Bearish"
+    if rsi and macd:
+        if rsi > 60 and macd > 0: trend = "Bullish"
+        elif rsi < 40 and macd < 0: trend = "Bearish"
 
-    # تحديد الأهداف بناءً على الاتجاه
+    # حساب الأهداف بناءً على السعر الحالي
     if trend == "Bullish":
-        tp1 = price * 1.02
-        tp2 = price * 1.04
-        tp3 = price * 1.06
-        sl = price * 0.98
+        tp1, tp2, sl = price * 1.02, price * 1.05, price * 0.98
     elif trend == "Bearish":
-        tp1 = price * 0.98
-        tp2 = price * 0.96
-        tp3 = price * 0.94
-        sl = price * 1.02
+        tp1, tp2, sl = price * 0.98, price * 0.95, price * 1.02
     else:
-        tp1 = price * 1.01
-        tp2 = price * 1.02
-        tp3 = price * 1.03
-        sl = price * 0.99
+        tp1, tp2, sl = price * 1.01, price * 1.03, price * 0.99
 
-    # صياغة نص التحليل
+    # --- صياغة نص الرسالة ---
     if lang == "ar":
         analysis_text = (
-            f"📊 <b>التحليل الفني</b>\n"
-            f"💎 العملة: {sym}\n"
+            f"📊 <b>التحليل الفني لـ {clean_sym}</b>\n"
             f"📆 الإطار: {tf}\n"
-            f"💵 السعر الحالي: ${price:.6f}\n\n"
-            f"📉 <b>المؤشرات</b>\n"
-            f"RSI: {rsi}\n"
-            f"MACD: {macd}\n"
-            f"Bollinger Bands: U:{bollinger.get('upper','N/A')} M:{bollinger.get('middle','N/A')} L:{bollinger.get('lower','N/A')}\n"
-            f"Signal: {signal}\n\n"
-            f"📈 <b>الاتجاه</b>: {'صاعد' if trend=='Bullish' else 'هابط' if trend=='Bearish' else 'محايد'}\n\n"
-            f"📉 <b>الدعم والمقاومة</b>\n"
-            f"الدعم: {support}\n"
-            f"المقاومة: {resistance}\n\n"
-            f"🎯 <b>الأهداف السعرية</b>\n"
-            f"TP1: {tp1:.6f}\nTP2: {tp2:.6f}\nTP3: {tp3:.6f}\n\n"
-            f"🛑 <b>وقف الخسارة</b>: {sl:.6f}"
+            f"💵 السعر: ${price:,.4f}\n\n"
+            f"📉 <b>المؤشرات:</b>\n"
+            f"RSI: {rsi if rsi else 'N/A'}\n"
+            f"MACD: {macd if macd else 'N/A'}\n\n"
+            f"📈 <b>الاتجاه:</b> {'صاعد 🟢' if trend=='Bullish' else 'هابط 🔴' if trend=='Bearish' else 'محايد 🟡'}\n"
+            f"🛡️ <b>الدعم:</b> {support}\n"
+            f"🚧 <b>المقاومة:</b> {resistance}\n\n"
+            f"🎯 <b>الأهداف:</b>\n"
+            f"TP1: {tp1:,.4f}\nTP2: {tp2:,.4f}\n"
+            f"🛑 <b>وقف الخسارة:</b> {sl:,.4f}"
         )
     else:
         analysis_text = (
-            f"📊 <b>Technical Analysis</b>\n"
-            f"💎 Coin: {sym}\n"
+            f"📊 <b>Technical Analysis: {clean_sym}</b>\n"
             f"📆 Timeframe: {tf}\n"
-            f"💵 Current Price: ${price:.6f}\n\n"
-            f"📉 <b>Indicators</b>\n"
-            f"RSI: {rsi}\n"
-            f"MACD: {macd}\n"
-            f"Bollinger Bands: U:{bollinger.get('upper','N/A')} M:{bollinger.get('middle','N/A')} L:{bollinger.get('lower','N/A')}\n"
-            f"Signal: {signal}\n\n"
-            f"📈 <b>Trend</b>: {trend}\n\n"
-            f"📉 <b>Support & Resistance</b>\n"
-            f"Support: {support}\n"
-            f"Resistance: {resistance}\n\n"
-            f"🎯 <b>Price Targets</b>\n"
-            f"TP1: {tp1:.6f}\nTP2: {tp2:.6f}\nTP3: {tp3:.6f}\n\n"
-            f"🛑 <b>Stop Loss</b>: {sl:.6f}"
+            f"💵 Price: ${price:,.4f}\n\n"
+            f"📉 <b>Indicators:</b>\n"
+            f"RSI: {rsi if rsi else 'N/A'}\n"
+            f"MACD: {macd if macd else 'N/A'}\n\n"
+            f"📈 <b>Trend:</b> {trend}\n"
+            f"🛡️ <b>Support:</b> {support}\n"
+            f"🚧 <b>Resistance:</b> {resistance}\n\n"
+            f"🎯 <b>Targets:</b>\n"
+            f"TP1: {tp1:,.4f}\nTP2: {tp2:,.4f}\n"
+            f"🛑 <b>Stop Loss:</b> {sl:,.4f}"
         )
-
     # --- استدعاء API داخل الدالة فقط ---
     
     await cb.message.answer(analysis_text, parse_mode=ParseMode.HTML)
