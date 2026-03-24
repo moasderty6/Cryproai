@@ -24,6 +24,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CMC_KEY = os.getenv("CMC_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL") 
+TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY")
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()[:20]
 PORT = int(os.getenv("PORT", 10000))
 
@@ -476,16 +477,54 @@ async def handle_symbol(m: types.Message):
             else f"❌ Symbol `{sym}` is invalid. Please check the ticker (e.g., BTC, ETH)."
         )
         await status_msg.edit_text(error_text, parse_mode=ParseMode.MARKDOWN)
+async def get_twelve_indicators(symbol: str, interval: str):
+
+    url = "https://api.twelvedata.com/indicators"
+
+    params = {
+        "symbol": f"{symbol}/USDT",
+        "interval": interval,
+        "apikey": TWELVEDATA_API_KEY,
+        "rsi": True,
+        "macd": True,
+        "bbands": True,
+        "ema": True
+    }
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(url, params=params)
+        data = r.json()
+
+    rsi = float(data["rsi"]["value"])
+    macd = float(data["macd"]["macd"])
+    ema = float(data["ema"]["value"])
+
+    bb_upper = float(data["bbands"]["upper_band"])
+    bb_lower = float(data["bbands"]["lower_band"])
+
+    return {
+        "rsi": rsi,
+        "macd": macd,
+        "ema": ema,
+        "bb_upper": bb_upper,
+        "bb_lower": bb_lower
+    }
 @dp.callback_query(F.data.startswith("tf_"))
 async def run_analysis(cb: types.CallbackQuery):
-    uid, pool = cb.from_user.id, dp['db_pool']
+
+    uid = cb.from_user.id
+    pool = dp['db_pool']
     data = user_session_data.get(uid)
+
     if not data:
         return
 
-    lang, sym, price, tf = data['lang'], data['sym'], data['price'], cb.data.replace("tf_", "")
+    lang = data['lang']
+    sym = data['sym']
+    price = data['price']
+    tf = cb.data.replace("tf_", "")
 
-    # --- تحقق من الاشتراك / التجربة ---
+    # --- تحقق الاشتراك ---
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
         return await cb.message.edit_text(
             "⚠️ انتهت تجربتك المجانية." if lang=="ar" else "⚠️ Trial ended.",
@@ -499,21 +538,85 @@ async def run_analysis(cb: types.CallbackQuery):
     except:
         pass
 
-    # --- برومبت التحليل منسق ---
-    if lang == "ar":
-        prompt = (
-            f"""قم بتحليل عملة {sym}
+    # تحويل الفريم
+    tf_map = {
+        "4h": "4h",
+        "daily": "1day",
+        "weekly": "1week"
+    }
 
-السعر الحالي: {price:.6f}$
+    interval = tf_map.get(tf, "4h")
+
+    try:
+
+        indicators = await get_twelve_indicators(sym, interval)
+
+        rsi = indicators["rsi"]
+        macd = indicators["macd"]
+        bb_upper = indicators["bb_upper"]
+        bb_lower = indicators["bb_lower"]
+
+        # --- حساب الاتجاه ---
+        if rsi > 55 and macd > 0:
+            trend = "Bullish"
+        elif rsi < 45 and macd < 0:
+            trend = "Bearish"
+        else:
+            trend = "Neutral"
+
+        # --- دعم ومقاومة ---
+        support = bb_lower
+        resistance = bb_upper
+
+        # --- حساب التارجت ---
+        if trend == "Bullish":
+
+            tp1 = price * 1.02
+            tp2 = price * 1.04
+            tp3 = price * 1.06
+            sl = price * 0.97
+
+        elif trend == "Bearish":
+
+            tp1 = price * 0.98
+            tp2 = price * 0.96
+            tp3 = price * 0.94
+            sl = price * 1.03
+
+        else:
+
+            tp1 = price * 1.01
+            tp2 = price * 1.02
+            tp3 = price * 1.03
+            sl = price * 0.98
+
+        # --- إنشاء البرومبت ---
+        if lang == "ar":
+
+            prompt = f"""
+قم بتحليل عملة {sym}
+
+السعر الحالي: {price:.6f}
 الإطار الزمني: {tf}
 
+البيانات الفنية:
+
+RSI: {rsi}
+MACD: {macd}
+
+الدعم: {support}
+المقاومة: {resistance}
+
+TP1: {tp1}
+TP2: {tp2}
+TP3: {tp3}
+
+Stop Loss: {sl}
+
 اكتب التحليل بنفس التنسيق التالي تمامًا باستخدام HTML.
-- لا تستخدم أي لغة أخرى غير العربية.
-- لا تضف أي نصوص او رموز عشوائية ولا حرف غير العربية.
-- ركز على التحليل الفني فقط، احترافي وقصير.
 
 📊 <b>التحليل العام</b>
-الاتجاه: (صاعد / هابط)
+الاتجاه: صاعد او هابط
 
 📉 <b>الدعم والمقاومة</b>
 الدعم الأقرب:
@@ -528,26 +631,41 @@ TP3:
 Stop Loss:
 
 📈 <b>تحليل المؤشرات</b>
-RSI: اكتب سطر واحد النسبة وتوضيح بالعربي فقططط ولا حرف غير لعربي
-MACD: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
-Bollinger Bands: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
-Volume: اكتب سطر واحد توضيح بالعربي فقططط ولا حرف غير لعربي
+RSI:
+MACD:
+Bollinger Bands:
+Volume:
 """
-        )
-    else:
-        prompt = (
-            f"""Analyze {sym}
 
-Current price: ${price:.6f}
+        else:
+
+            prompt = f"""
+Analyze {sym}
+
+Current price: {price}
+
 Timeframe: {tf}
 
+Indicators:
+
+RSI: {rsi}
+MACD: {macd}
+
+Support: {support}
+Resistance: {resistance}
+
+Targets:
+
+TP1 {tp1}
+TP2 {tp2}
+TP3 {tp3}
+
+Stop Loss {sl}
+
 Write the analysis EXACTLY in this HTML format.
-- Use English only.
-- Do not include any random text or other languages.
-- Focus only on technical analysis, short and professional.
 
 📊 <b>Market Overview</b>
-Trend: (Bullish / Bearish)
+Trend:
 
 📉 <b>Support & Resistance</b>
 Nearest Support:
@@ -562,11 +680,23 @@ TP3:
 Stop Loss:
 
 📈 <b>Indicator Analysis</b>
-RSI: (Bullish / Bearish) — write one short line explaining momentum
-MACD: (Bullish / Bearish) — write one short line explaining current trend
-Bollinger Bands: (Bullish / Bearish / Neutral) — write one short line explaining price vs moving average
-Volume: (Weak / Medium) — write one short line explaining trading activity
+RSI:
+MACD:
+Bollinger Bands:
+Volume:
 """
+
+        result = await ask_groq(prompt, lang)
+
+        await cb.message.answer(result, parse_mode=ParseMode.HTML)
+
+    except Exception as e:
+
+        print(f"Analysis error: {e}")
+
+        await cb.message.answer(
+            "❌ حدث خطأ أثناء التحليل" if lang=="ar"
+            else "❌ Error generating analysis"
         )
 
     # --- استدعاء API داخل الدالة فقط ---
@@ -712,8 +842,8 @@ async def on_startup(app):
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
     
-    asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
-    asyncio.create_task(daily_channel_post())
+    #asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
+    #asyncio.create_task(daily_channel_post())
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
 app = web.Application()
