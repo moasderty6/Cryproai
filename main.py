@@ -477,38 +477,102 @@ async def handle_symbol(m: types.Message):
             else f"❌ Symbol `{sym}` is invalid. Please check the ticker (e.g., BTC, ETH)."
         )
         await status_msg.edit_text(error_text, parse_mode=ParseMode.MARKDOWN)
-async def get_twelve_indicators(symbol: str, interval: str):
-
-    url = "https://api.twelvedata.com/indicators"
-
-    params = {
-        "symbol": f"{symbol}/USDT",
-        "interval": interval,
-        "apikey": TWELVEDATA_API_KEY,
-        "rsi": True,
-        "macd": True,
-        "bbands": True,
-        "ema": True
-    }
+async def get_market_indicators(symbol: str, interval: str):
 
     async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get(url, params=params)
-        data = r.json()
 
-    rsi = float(data["rsi"]["value"])
-    macd = float(data["macd"]["macd"])
-    ema = float(data["ema"]["value"])
+        rsi_req = await client.get(
+            "https://api.twelvedata.com/rsi",
+            params={
+                "symbol": f"{symbol}/USDT",
+                "interval": interval,
+                "apikey": TWELVEDATA_API_KEY
+            }
+        )
 
-    bb_upper = float(data["bbands"]["upper_band"])
-    bb_lower = float(data["bbands"]["lower_band"])
+        macd_req = await client.get(
+            "https://api.twelvedata.com/macd",
+            params={
+                "symbol": f"{symbol}/USDT",
+                "interval": interval,
+                "apikey": TWELVEDATA_API_KEY
+            }
+        )
+
+        bb_req = await client.get(
+            "https://api.twelvedata.com/bbands",
+            params={
+                "symbol": f"{symbol}/USDT",
+                "interval": interval,
+                "apikey": TWELVEDATA_API_KEY
+            }
+        )
+
+    rsi_data = rsi_req.json()
+    macd_data = macd_req.json()
+    bb_data = bb_req.json()
+
+    if "values" not in rsi_data:
+        raise Exception(rsi_data)
+
+    rsi = float(rsi_data["values"][0]["rsi"])
+    macd = float(macd_data["values"][0]["macd"])
+
+    bb_upper = float(bb_data["values"][0]["upper_band"])
+    bb_lower = float(bb_data["values"][0]["lower_band"])
 
     return {
         "rsi": rsi,
         "macd": macd,
-        "ema": ema,
         "bb_upper": bb_upper,
         "bb_lower": bb_lower
     }
+    def detect_trend(rsi, macd):
+
+    score = 0
+
+    if rsi > 60:
+        score += 1
+    elif rsi < 40:
+        score -= 1
+
+    if macd > 0:
+        score += 1
+    else:
+        score -= 1
+
+    if score >= 2:
+        return "Bullish"
+    elif score <= -2:
+        return "Bearish"
+    else:
+        return "Neutral"
+
+
+def calculate_targets(price, trend):
+
+    if trend == "Bullish":
+
+        tp1 = price * 1.025
+        tp2 = price * 1.05
+        tp3 = price * 1.08
+        sl = price * 0.97
+
+    elif trend == "Bearish":
+
+        tp1 = price * 0.975
+        tp2 = price * 0.95
+        tp3 = price * 0.92
+        sl = price * 1.03
+
+    else:
+
+        tp1 = price * 1.01
+        tp2 = price * 1.02
+        tp3 = price * 1.03
+        sl = price * 0.98
+
+    return tp1, tp2, tp3, sl
 @dp.callback_query(F.data.startswith("tf_"))
 async def run_analysis(cb: types.CallbackQuery):
 
@@ -519,12 +583,11 @@ async def run_analysis(cb: types.CallbackQuery):
     if not data:
         return
 
-    lang = data['lang']
-    sym = data['sym']
-    price = data['price']
+    lang = data.get("lang") or "ar"
+    sym = data["sym"]
+    price = data["price"]
     tf = cb.data.replace("tf_", "")
 
-    # --- تحقق الاشتراك ---
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
         return await cb.message.edit_text(
             "⚠️ انتهت تجربتك المجانية." if lang=="ar" else "⚠️ Trial ended.",
@@ -538,103 +601,59 @@ async def run_analysis(cb: types.CallbackQuery):
     except:
         pass
 
-    # تحويل الفريم
     tf_map = {
-        "4h": "4h",
-        "daily": "1day",
-        "weekly": "1week"
+        "4h":"4h",
+        "daily":"1day",
+        "weekly":"1week"
     }
 
-    interval = tf_map.get(tf, "4h")
+    interval = tf_map.get(tf,"4h")
 
     try:
 
-        indicators = await get_twelve_indicators(sym, interval)
+        indicators = await get_market_indicators(sym, interval)
 
         rsi = indicators["rsi"]
         macd = indicators["macd"]
-        bb_upper = indicators["bb_upper"]
-        bb_lower = indicators["bb_lower"]
+        support = indicators["bb_lower"]
+        resistance = indicators["bb_upper"]
 
-        # --- حساب الاتجاه ---
-        if rsi > 55 and macd > 0:
-            trend = "Bullish"
-        elif rsi < 45 and macd < 0:
-            trend = "Bearish"
-        else:
-            trend = "Neutral"
+        trend = detect_trend(rsi, macd)
 
-        # --- دعم ومقاومة ---
-        support = bb_lower
-        resistance = bb_upper
+        tp1,tp2,tp3,sl = calculate_targets(price, trend)
 
-        # --- حساب التارجت ---
-        if trend == "Bullish":
-
-            tp1 = price * 1.02
-            tp2 = price * 1.04
-            tp3 = price * 1.06
-            sl = price * 0.97
-
-        elif trend == "Bearish":
-
-            tp1 = price * 0.98
-            tp2 = price * 0.96
-            tp3 = price * 0.94
-            sl = price * 1.03
-
-        else:
-
-            tp1 = price * 1.01
-            tp2 = price * 1.02
-            tp3 = price * 1.03
-            sl = price * 0.98
-
-        # --- إنشاء البرومبت ---
         if lang == "ar":
 
             prompt = f"""
 قم بتحليل عملة {sym}
 
-السعر الحالي: {price:.6f}
-الإطار الزمني: {tf}
+السعر الحالي {price}
 
-البيانات الفنية:
+الاتجاه {trend}
 
-RSI: {rsi}
-MACD: {macd}
+RSI {rsi}
+MACD {macd}
 
-الدعم: {support}
-المقاومة: {resistance}
+الدعم {support}
+المقاومة {resistance}
 
-TP1: {tp1}
-TP2: {tp2}
-TP3: {tp3}
+TP1 {tp1}
+TP2 {tp2}
+TP3 {tp3}
 
-Stop Loss: {sl}
+StopLoss {sl}
 
-اكتب التحليل بنفس التنسيق التالي تمامًا باستخدام HTML.
+اكتب التحليل بنفس التنسيق التالي:
 
 📊 <b>التحليل العام</b>
-الاتجاه: صاعد او هابط
 
 📉 <b>الدعم والمقاومة</b>
-الدعم الأقرب:
-المقاومة الأقرب:
 
 🎯 <b>الأهداف السعرية</b>
-TP1:
-TP2:
-TP3:
 
 🛑 <b>وقف الخسارة</b>
-Stop Loss:
 
 📈 <b>تحليل المؤشرات</b>
-RSI:
-MACD:
-Bollinger Bands:
-Volume:
 """
 
         else:
@@ -642,57 +661,33 @@ Volume:
             prompt = f"""
 Analyze {sym}
 
-Current price: {price}
+Current price {price}
 
-Timeframe: {tf}
+Trend {trend}
 
-Indicators:
+RSI {rsi}
+MACD {macd}
 
-RSI: {rsi}
-MACD: {macd}
-
-Support: {support}
-Resistance: {resistance}
-
-Targets:
+Support {support}
+Resistance {resistance}
 
 TP1 {tp1}
 TP2 {tp2}
 TP3 {tp3}
 
-Stop Loss {sl}
+StopLoss {sl}
 
-Write the analysis EXACTLY in this HTML format.
-
-📊 <b>Market Overview</b>
-Trend:
-
-📉 <b>Support & Resistance</b>
-Nearest Support:
-Nearest Resistance:
-
-🎯 <b>Price Targets</b>
-TP1:
-TP2:
-TP3:
-
-🛑 <b>Stop Loss</b>
-Stop Loss:
-
-📈 <b>Indicator Analysis</b>
-RSI:
-MACD:
-Bollinger Bands:
-Volume:
+Write professional technical analysis in HTML format.
 """
 
-        result = await ask_groq(prompt, lang)
+        res = await ask_groq(prompt, lang=lang)
 
-        await cb.message.answer(result, parse_mode=ParseMode.HTML)
+        await cb.message.answer(res, parse_mode=ParseMode.HTML)
 
     except Exception as e:
 
-        print(f"Analysis error: {e}")
+        import traceback
+        traceback.print_exc()
 
         await cb.message.answer(
             "❌ حدث خطأ أثناء التحليل" if lang=="ar"
