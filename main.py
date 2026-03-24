@@ -518,6 +518,7 @@ def compute_indicators(candles):
     
     # تحويل البيانات لـ DataFrame
     df = pd.DataFrame(candles)
+    df = df.iloc[::-1].reset_index(drop=True)
     
     # تسمية الأعمدة الـ 6 الأولى فقط وتجاهل الباقي
     df = df.iloc[:, :6] # هاد السطر بيضمن إننا ناخد أول 6 أعمدة مهما كان العدد الكلي
@@ -530,26 +531,40 @@ def compute_indicators(candles):
     # --- باقي الكود كما هو بدون أي تغيير ---
     # RSI
     delta = df["close"].diff()
+
     gain = delta.clip(lower=0)
-    loss = -1 * delta.clip(upper=0)
-    avg_gain = gain.rolling(14).mean()
-    avg_loss = loss.rolling(14).mean()
+    loss = -delta.clip(upper=0)
+
+    period = 14
+
+    avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
+
     rs = avg_gain / avg_loss
     rsi_val = 100 - (100 / (1 + rs))
-    last_rsi = rsi_val.iloc[-1]
+    last_rsi = rsi_val.dropna().iloc[-1]
 
     # MACD
-    ema12 = df["close"].ewm(span=12, adjust=False).mean()
-    ema26 = df["close"].ewm(span=26, adjust=False).mean()
-    macd_val = ema12 - ema26
-    signal = macd_val.ewm(span=9, adjust=False).mean()
-    last_macd_diff = macd_val.iloc[-1] - signal.iloc[-1]
+    close = df["close"]
+
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+
+    macd_line = ema12 - ema26
+    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+
+    histogram = macd_line - signal_line
+
+    last_macd = macd_line.iloc[-1]
+    last_signal = signal_line.iloc[-1]
+    last_hist = histogram.iloc[-1]
 
     # Bollinger Bands
-    sma20 = df["close"].rolling(20).mean()
-    std20 = df["close"].rolling(20).std()
-    upper_band = sma20 + 2*std20
-    lower_band = sma20 - 2*std20
+    sma20 = df["close"].rolling(window=20).mean()
+    std20 = df["close"].rolling(window=20).std(ddof=0)
+
+    upper_band = sma20 + (std20 * 2)
+    lower_band = sma20 - (std20 * 2)
     last_bb = (df["close"].iloc[-1], lower_band.iloc[-1], upper_band.iloc[-1])
 
     # بيانات إضافية
@@ -558,7 +573,7 @@ def compute_indicators(candles):
     high_price = recent["high"].max()
     low_price = recent["low"].min()
 
-    return last_rsi, last_macd_diff, last_bb, last_vol, high_price, low_price
+    return last_rsi, last_macd, last_signal, last_hist, last_bb, last_vol, high_price, low_price
 
 
 # --- دالة التحليل المعدلة ---
@@ -583,10 +598,10 @@ async def run_analysis(cb: types.CallbackQuery):
     # --- تنظيف الرمز وجلب البيانات ---
     clean_sym = sym.replace("USDT", "").strip().upper()
     gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
-    candles = await get_candles_gate(f"{clean_sym}_USDT", gate_interval, limit=50)
+    candles = await get_candles_gate(f"{clean_sym}_USDT", gate_interval, limit=200)
 
     if candles:
-        last_rsi, last_macd, last_bb, last_vol, high, low = compute_indicators(candles)
+        last_rsi, last_macd, last_signal, last_hist, last_bb, last_vol, high, low = compute_indicators(candles)
     else:
         last_rsi, last_macd, last_bb, last_vol, high, low = 50.0, 0.0, (price, price*0.95, price*1.05), 0.0, price*1.05, price*0.95
 
@@ -598,7 +613,7 @@ async def run_analysis(cb: types.CallbackQuery):
     if lang == "ar":
         prompt = f"""
 أنت محلل فني خبير في شركة "NaiF CHarT". حلل عملة {clean_sym} بناءً على البيانات التالية:
-السعر الحالي: {price:.2f}$ | الإطار: {tf} | RSI: {safe_rsi} | MACD: {"صاعد" if (last_macd or 0)>0 else "هابط"}
+السعر الحالي: {price:.2f}$ | الإطار: {tf} | RSI: {safe_rsi} | MACD {"صاعد" if last_hist > 0 else "هابط"}
 البولينجر: السعر {last_bb[0]:.2f} (نطاق {last_bb[1]:.2f} - {last_bb[2]:.2f}) | الفوليوم: {last_vol:.2f}
 
 ⚠️ الالتزام التام بهذا التنسيق (استخدم وسوم HTML فقط):
