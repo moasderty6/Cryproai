@@ -312,9 +312,16 @@ async def daily_channel_post():
 
 
 # --- نظام الـ AI ---
+# --- النسخة الجديدة والمستقرة ---
 async def ask_groq(prompt, lang="ar"):
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-    data = {"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}]}
+    
+    data = {
+        "model": GROQ_MODEL, 
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.1,  # 👈 هاد اللي بيمنع الـ AI من تغيير رأيه (برودة وهدوء)
+        "max_tokens": 800    # 👈 زيادة المساحة عشان التحليل ما ينقطع
+    }
 
     try:
         async with httpx.AsyncClient(timeout=45) as client:
@@ -323,10 +330,15 @@ async def ask_groq(prompt, lang="ar"):
                 headers=headers,
                 json=data
             )
+            # إضافة سطر التأكد من الاستجابة لضمان عدم وجود أخطاء صامتة
+            res.raise_for_status() 
+            
             ans = res.json()["choices"][0]["message"]["content"]
             return ans
-    except:
+    except Exception as e:
+        print(f"Error in ask_groq: {e}")
         return "⚠️ Error generating analysis"
+
 
 # --- الأوامر ---
 @dp.message(Command("status"))
