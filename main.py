@@ -723,3 +723,4 @@ app.router.add_get("/health", lambda r: web.Response(text="ok"))
 app.on_startup.append(on_startup)
 
 if __name__ == "__main__":
+    web.run_app(app, host="0.0.0.0", port=PORT)
