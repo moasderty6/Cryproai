@@ -501,13 +501,21 @@ async def get_candles_gate(symbol: str, interval: str, limit: int = 50):
 
 # --- حساب المؤشرات ---
 def compute_indicators(candles):
-    # الترتيب الصحيح لـ Gate.io هو: [توقيع، حجم، إغلاق، أعلى، أدنى، افتتاح]
-    df = pd.DataFrame(candles, columns=["timestamp", "volume", "close", "high", "low", "open"])
+    # التعديل هون: بناخد أول 8 أعمدة بس بنسمي أول 6 بيهمونا للحسابات
+    # Gate.io V4 بيبعت: [Timestamp, Volume, Close, High, Low, Open, Amount, Quote_Volume]
+    
+    # تحويل البيانات لـ DataFrame
+    df = pd.DataFrame(candles)
+    
+    # تسمية الأعمدة الـ 6 الأولى فقط وتجاهل الباقي
+    df = df.iloc[:, :6] # هاد السطر بيضمن إننا ناخد أول 6 أعمدة مهما كان العدد الكلي
+    df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
     
     # تحويل البيانات لأرقام عشرية لضمان صحة الحسابات
     for col in ["close", "high", "low", "open", "volume"]:
         df[col] = pd.to_numeric(df[col], errors='coerce')
 
+    # --- باقي الكود كما هو بدون أي تغيير ---
     # RSI
     delta = df["close"].diff()
     gain = delta.clip(lower=0)
@@ -538,6 +546,7 @@ def compute_indicators(candles):
     low_price = df["low"].min()
 
     return last_rsi, last_macd_diff, last_bb, last_vol, high_price, low_price
+
 
 # --- دالة التحليل المعدلة ---
 @dp.callback_query(F.data.startswith("tf_"))
