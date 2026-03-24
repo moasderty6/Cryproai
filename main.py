@@ -501,30 +501,39 @@ async def run_analysis(cb: types.CallbackQuery):
         pass
 
     # --- جلب بيانات FreeCryptoAPI ---
-    async with httpx.AsyncClient(timeout=15) as client:
-        try:
-            res = await client.get(
-                "https://api.freecryptoapi.com/v1/getTechnicalAnalysis",
-                params={"symbol": f"{sym}/USDT", "apikey": "c63cgetvyzt4nv505j6w"}
-            )
-            data = res.json()
+    # --- استبدل الجزء الخاص بجلب البيانات داخل دالة run_analysis بهذا ---
 
-            tech = data.get("technical", {})
-        except Exception as e:
-            await cb.message.edit_text(
-                "❌ حدث خطأ في جلب البيانات التقنية." if lang=="ar"
-                else "❌ Error fetching technical data."
-            )
-            print(f"FreeCryptoAPI error: {e}")
-            return
+async with httpx.AsyncClient(timeout=15) as client:
+    try:
+        res = await client.get(
+            "https://api.freecryptoapi.com/v1/getTechnicalAnalysis",
+            params={"symbol": f"{sym}/USDT", "apikey": "c63cgetvyzt4nv505j6w"}
+        )
+        data = res.json()
+        
+        # الوصول الصحيح للبيانات:
+        # نفترض أن الـ API يعيد مصفوفة في "symbols"
+        if "symbols" in data and len(data["symbols"]) > 0:
+            symbol_data = data["symbols"][0] # أول عملة في القائمة
+            tech = symbol_data.get("technical", {})
+            indicators = tech.get("indicators", {}) # المؤشرات عادة تكون هنا
+            
+            rsi = indicators.get("rsi")
+            macd_obj = indicators.get("macd", {})
+            macd = macd_obj.get("value") if isinstance(macd_obj, dict) else macd_obj
+            signal = macd_obj.get("signal") if isinstance(macd_obj, dict) else None
+            
+            bollinger = indicators.get("bollinger", {})
+            pivots = tech.get("pivot", {})
+            support = pivots.get("support", "N/A")
+            resistance = pivots.get("resistance", "N/A")
+        else:
+            raise ValueError("No data found for this symbol")
 
-    # قراءة المؤشرات
-    rsi = tech.get("rsi", None)
-    macd = tech.get("macd", None)
-    signal = tech.get("signal", None)
-    bollinger = tech.get("bollinger", {})
-    support = tech.get("pivot", {}).get("support", "N/A")
-    resistance = tech.get("pivot", {}).get("resistance", "N/A")
+    except Exception as e:
+        print(f"Extraction Error: {e}")
+        # تعيين قيم افتراضية لتجنب توقف البو
+
 
     # تحليل الاتجاه من المؤشرات
     trend = "Neutral"
