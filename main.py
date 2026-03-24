@@ -522,7 +522,7 @@ def compute_indicators(candles):
     # تسمية الأعمدة الـ 6 الأولى فقط وتجاهل الباقي
     df = df.iloc[:, :6] # هاد السطر بيضمن إننا ناخد أول 6 أعمدة مهما كان العدد الكلي
     df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
-    
+    df = df.iloc[::-1].reset_index(drop=True)
     # تحويل البيانات لأرقام عشرية لضمان صحة الحسابات
     for col in ["close", "high", "low", "open", "volume"]:
         df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -532,8 +532,8 @@ def compute_indicators(candles):
     delta = df["close"].diff()
     gain = delta.clip(lower=0)
     loss = -1 * delta.clip(upper=0)
-    avg_gain = gain.rolling(14).mean()
-    avg_loss = loss.rolling(14).mean()
+    avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
     rs = avg_gain / avg_loss
     rsi_val = 100 - (100 / (1 + rs))
     last_rsi = rsi_val.iloc[-1]
@@ -550,12 +550,16 @@ def compute_indicators(candles):
     std20 = df["close"].rolling(20).std()
     upper_band = sma20 + 2*std20
     lower_band = sma20 - 2*std20
-    last_bb = (df["close"].iloc[-1], lower_band.iloc[-1], upper_band.iloc[-1])
+    upper = upper_band.iloc[-1] if not pd.isna(upper_band.iloc[-1]) else df["close"].iloc[-1]*1.05
+    lower = lower_band.iloc[-1] if not pd.isna(lower_band.iloc[-1]) else df["close"].iloc[-1]*0.95
+    last_bb = (df["close"].iloc[-1], lower, upper)
 
     # بيانات إضافية
     last_vol = df["volume"].iloc[-1]
-    high_price = df["high"].max()
-    low_price = df["low"].min()
+    recent = df.tail(20)
+    
+    high_price = recent["high"].max()
+    low_price = recent["low"].min()
 
     return last_rsi, last_macd_diff, last_bb, last_vol, high_price, low_price
 
