@@ -592,8 +592,8 @@ async def run_analysis(cb: types.CallbackQuery):
         )
 
     # --- استدعاء API داخل الدالة فقط ---
-    res = await ask_groq(prompt, lang=lang)
-    await cb.message.answer(res, parse_mode=ParseMode.HTML)
+    
+    await cb.message.answer(analysis_text, parse_mode=ParseMode.HTML)
     
     if not (await is_user_paid(pool, uid)):
         async with pool.acquire() as conn:
