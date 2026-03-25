@@ -185,9 +185,9 @@ async def ai_opportunity_radar(pool):
                     lang="ar"
                 )
                                 # تحليل AI للفرصة الذهبية (إنجليزي)
-                 insight_en = await ask_groq(
-                     f"Write two short lines describing price momentum and trading volume for {symbol} at {price_display}. Focus on the bullish MACD cross and the bounce from the Bollinger Band support. English only.",
-                     lang="en"
+                insight_en = await ask_groq(
+                    f"Write two short lines describing price momentum and trading volume for {symbol} at {price_display}. Focus on the bullish MACD cross and the bounce from the Bollinger Band support. English only.",
+                    lang="en"
                 )
 
                 # تلميح للمجانيين
@@ -206,7 +206,7 @@ async def ai_opportunity_radar(pool):
                     if paid:
                         if lang == "ar":
                             text = (
-                                f"🚨 <b>رادار NaiF CHarT الذكي VIP</b>\n"
+                                f"🚨 <b>رادار السوق الذكي VIP</b>\n"
                                 f"━━━━━━━━━━━━━━\n"
                                 f"💎 العملة: #{symbol}\n"
                                 f"💵 السعر الحالي: ${price_display}\n"
@@ -217,7 +217,7 @@ async def ai_opportunity_radar(pool):
                             )
                         else:
                             text = (
-                                f"🚨 <b>NaiF CHarT VIP Smart Radar</b>\n"
+                                f"🚨 <b>VIP Smart Market Radar</b>\n"
                                 f"━━━━━━━━━━━━━━\n"
                                 f"💎 Coin: #{symbol}\n"
                                 f"💵 Current Price: ${price_display}\n"
