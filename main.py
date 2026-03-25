@@ -181,12 +181,12 @@ async def ai_opportunity_radar(pool):
             print(f"💎 {op['symbol']} - Score: {op['score']} - Price: {op['price']}$") 
                     
                     # انتظار بسيط لتجنب الحظر من API المنصة (Rate Limit)
-                await asyncio.sleep(0.5)
+            await asyncio.sleep(0.5)
 
                 # إذا لم يجد الرادار فرصة مثالية، ينتظر الدورة القادمة بصمت (لا نرسل فرص ضعيفة)
-                if not golden_opportunity:
-                    print("Radar: No high-probability setup found in this cycle.")
-                    return
+            if not golden_opportunity:
+                print("Radar: No high-probability setup found in this cycle.")
+                return
 
                 # 4. تجهيز البيانات للإرسال
                 symbol = golden_opportunity["symbol"]
