@@ -591,7 +591,7 @@ async def run_analysis(cb: types.CallbackQuery):
         return
 
         lang, sym, price, tf = data['lang'], data['sym'], data['price'], cb.data.replace("tf_", "")
-    volume_24h = data.get('volume_24h', 0) # 👈 سحب الفوليوم العالمي
+        volume_24h = data.get('volume_24h', 0) # 👈 سحب الفوليوم العالمي
 
     # --- تحقق من الاشتراك / التجربة ---
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
