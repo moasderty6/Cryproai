@@ -481,10 +481,13 @@ async def handle_symbol(m: types.Message):
             if res.status_code != 200 or "data" not in data or sym not in data["data"]:
                 raise ValueError("Symbol not found")
 
-            price = data["data"][sym]["quote"]["USD"]["price"]
+                        price = data["data"][sym]["quote"]["USD"]["price"]
+            # 👇 جلب الفوليوم العالمي خلال 24 ساعة 👇
+            volume_24h = data["data"][sym]["quote"]["USD"]["volume_24h"] 
             
-            # تخزين البيانات في الجلسة
-            user_session_data[uid] = {"sym": sym, "price": price, "lang": lang}
+            # 👇 إضافة الفوليوم للجلسة 👇
+            user_session_data[uid] = {"sym": sym, "price": price, "volume_24h": volume_24h, "lang": lang}
+
             
             # 3. تحديث رسالة الانتظار بالخيارات الجديدة في حال النجاح
             kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -587,7 +590,8 @@ async def run_analysis(cb: types.CallbackQuery):
     if not data:
         return
 
-    lang, sym, price, tf = data['lang'], data['sym'], data['price'], cb.data.replace("tf_", "")
+        lang, sym, price, tf = data['lang'], data['sym'], data['price'], cb.data.replace("tf_", "")
+    volume_24h = data.get('volume_24h', 0) # 👈 سحب الفوليوم العالمي
 
     # --- تحقق من الاشتراك / التجربة ---
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
@@ -616,6 +620,7 @@ async def run_analysis(cb: types.CallbackQuery):
     bb2_fmt = format_price(last_bb[2])
     macd_fmt = format_price(last_macd) if last_macd is not None else "0.0"
     safe_rsi = f"{last_rsi:.2f}" if last_rsi is not None else "N/A"
+    vol24_fmt = format_price(volume_24h)
 
     # --- صياغة البرومبت (نفس أسلوبك بالضبط) ---
     # ملاحظة: أضفت صمام أمان للـ RSI والماكد لضمان عدم ظهور خطأ f-string
@@ -626,7 +631,7 @@ async def run_analysis(cb: types.CallbackQuery):
         prompt = f"""
 أنت محلل فني خبير في شركة "NaiF CHarT". حلل عملة {clean_sym} بناءً على البيانات التالية:
 السعر الحالي: {price_fmt}$ | الإطار: {tf} | RSI: {safe_rsi} | MACD: {"صاعد" if (last_macd or 0)>0 else "هابط"}
-البولينجر: السعر {bb0_fmt} (نطاق {bb1_fmt} - {bb2_fmt}) | الفوليوم: {last_vol:.2f}
+البولينجر: السعر {bb0_fmt} (نطاق {bb1_fmt} - {bb2_fmt}) | الفوليوم: {vol24_fmt}
 
 ⚠️ الالتزام التام بهذا التنسيق (استخدم وسوم HTML فقط):
 ⚠️ قواعد صارمة:
@@ -656,7 +661,7 @@ Stop Loss: (ضع رقم منطقي)
 - RSI: {safe_rsi} (اكتب القيمةواشرح باختصار شديد سطر واحد)
 - MACD: {macd_fmt} (اكتب القيمة واشرح باختصار شديد سطر واحد)
 - Bollinger Bands: (اشرح باختصار شديد سطر واحد)
-- Volume: {last_vol:.2f} (اكتب القيمة واشرح باختصار شديد سطر واحد)
+- Volume: {vol24_fmt} (اكتب القيمة واشرح باختصار شديد سطر واحد)
 
 **ملاحظة: لا تكتب مقدمات ولا جرايد، خليك محدد ومختصر ومرتب.**
 """
@@ -694,7 +699,7 @@ Stop Loss: <code>(Price)</code>
 • RSI: {safe_rsi} (value and One short sentence)
 • MACD: {macd_fmt} (value and One short sentence)
 • Bollinger Bands: (One short sentence)
-• Volume: {last_vol:.2f} (value and One short sentence)
+• Volume: {vol24_fmt} (value and One short sentence)
 
 <b>Note: No intro/outro, strictly follow the headers above.</b>
 """
