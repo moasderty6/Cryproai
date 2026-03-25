@@ -170,8 +170,7 @@ async def ai_opportunity_radar(pool):
                 # إذا لم يجد الرادار فرصة مثالية، ينتظر الدورة القادمة بصمت (لا نرسل فرص ضعيفة)
                 if not golden_opportunity:
                     print("Radar: No high-probability setup found in this cycle.")
-                    await asyncio.sleep(21600) # انتظار 6 ساعات
-                    continue
+                    return
 
                 # 4. تجهيز البيانات للإرسال
                 symbol = golden_opportunity["symbol"]
