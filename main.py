@@ -564,7 +564,28 @@ def compute_indicators(candles):
     high_price = recent["high"].max()
     low_price = recent["low"].min()
 
-    return last_rsi, last_macd_diff, last_bb, last_vol, high_price, low_price
+    # --- حساب الاتجاه والأهداف برمجياً لمنع عشوائية الـ AI ---
+    current_price = df["close"].iloc[-1]
+    recent_range = high_price - low_price
+    
+    # تحديد الاتجاه برمجياً: صاعد إذا كان السعر فوق متوسط 20 والماكد إيجابي
+    is_bullish = (last_macd_diff > 0) and (current_price > sma20.iloc[-1])
+    trend = "Bullish" if is_bullish else "Bearish"
+    
+    # حساب الأهداف بناءً على اتساع الحركة (الرينج)
+    if is_bullish:
+        sl = low_price * 0.99  # الستوب تحت آخر قاع بـ 1%
+        tp1 = current_price + (recent_range * 0.6)
+        tp2 = current_price + (recent_range * 1.2)
+        tp3 = current_price + (recent_range * 2.0)
+    else:
+        sl = high_price * 1.01 # الستوب فوق آخر قمة بـ 1%
+        tp1 = current_price - (recent_range * 0.6)
+        tp2 = current_price - (recent_range * 1.2)
+        tp3 = current_price - (recent_range * 2.0)
+
+    # تعديل الـ return ليرجع القيم الجديدة
+    return last_rsi, last_macd_diff, last_bb, last_vol, high_price, low_price, trend, sl, tp1, tp2, tp3
 
 
 # --- دالة التحليل المعدلة ---
@@ -591,91 +612,75 @@ async def run_analysis(cb: types.CallbackQuery):
     gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
     candles = await get_candles_gate(f"{clean_sym}_USDT", gate_interval, limit=250)
 
-    if candles:
-        last_rsi, last_macd, last_bb, last_vol, high, low = compute_indicators(candles)
+        if candles:
+        last_rsi, last_macd, last_bb, last_vol, high, low, calc_trend, calc_sl, calc_tp1, calc_tp2, calc_tp3 = compute_indicators(candles)
     else:
+        # قيم افتراضية في حال فشل جلب الشموع
         last_rsi, last_macd, last_bb, last_vol, high, low = 50.0, 0.0, (price, price*0.95, price*1.05), 0.0, price*1.05, price*0.95
+        calc_trend, calc_sl, calc_tp1, calc_tp2, calc_tp3 = "Bullish", price*0.95, price*1.05, price*1.10, price*1.15
 
     # --- صياغة البرومبت (نفس أسلوبك بالضبط) ---
     # ملاحظة: أضفت صمام أمان للـ RSI والماكد لضمان عدم ظهور خطأ f-string
     safe_rsi = f"{last_rsi:.2f}" if last_rsi is not None else "N/A"
     
         # --- برومبت التحليل مع إجبار الـ AI على التنسيق الصارم ---
-    if lang == "ar":
-        prompt = f"""
-أنت محلل فني خبير في شركة "NaiF CHarT". حلل عملة {clean_sym} بناءً على البيانات التالية:
-السعر الحالي: {price:.2f}$ | الإطار: {tf} | RSI: {safe_rsi} | MACD: {"صاعد" if (last_macd or 0)>0 else "هابط"}
-البولينجر: السعر {last_bb[0]:.2f} (نطاق {last_bb[1]:.2f} - {last_bb[2]:.2f}) | الفوليوم: {last_vol:.2f}
-
-⚠️ الالتزام التام بهذا التنسيق (استخدم وسوم HTML فقط):
-⚠️ قواعد صارمة:
-
-إذا كان الاتجاه "صاعد":
-- يجب أن تكون TP1 و TP2 و TP3 أعلى من السعر الحالي
-
-إذا كان الاتجاه "هابط":
-- يجب أن تكون TP1 و TP2 و TP3 أقل من السعر الحالي
+        if lang == "ar":
+            trend_ar = "صاعد 📈" if calc_trend == "Bullish" else "هابط 📉"
+            prompt = f"""
+أنت محلل فني خبير في شركة "NaiF CHarT". اكتب تقريراً فنياً لعملة {clean_sym} بناءً على المعطيات التالية فقط:
 
 📊 <b>التحليل العام</b>
-الاتجاه: (اكتب صاعد أو هابط)
+الاتجاه: {trend_ar}
 
 📉 <b>الدعم والمقاومة</b>
-الدعم الأقرب: {low:.2f} دولار
-المقاومة الأقرب: {high:.2f} دولار
+الدعم الأقرب: {low:.6f} دولار
+المقاومة الأقرب: {high:.6f} دولار
 
 🎯 <b>الأهداف السعرية</b>
-TP1: (ضع رقم منطقي)
-TP2: (ضع رقم منطقي)
-TP3: (ضع رقم منطقي)
+TP1: {calc_tp1:.6f}
+TP2: {calc_tp2:.6f}
+TP3: {calc_tp3:.6f}
 
 🛑 <b>وقف الخسارة</b>
-Stop Loss: (ضع رقم منطقي)
+Stop Loss: {calc_sl:.6f}
 
 📈 <b>تحليل المؤشرات</b>
-- RSI: {safe_rsi} (اكتب القيمةواشرح باختصار شديد سطر واحد)
-- MACD: {last_macd:.4f} (اكتب القيمة واشرح باختصار شديد سطر واحد)
-- Bollinger Bands: (اشرح باختصار شديد سطر واحد)
-- Volume: {last_vol:.2f} (اكتب القيمة واشرح باختصار شديد سطر واحد)
+- RSI: {safe_rsi} (اشرح دلالتها باختصار شديد في سطر واحد)
+- MACD: {last_macd:.6f} (اشرح دلالتها باختصار شديد في سطر واحد)
+- Bollinger Bands: (اشرح موقع السعر من النطاق {last_bb[1]:.6f} - {last_bb[2]:.6f} باختصار)
+- Volume: {last_vol:.2f} (اشرح دلالته باختصار)
 
+⚠️ ملاحظة هامة: لا تغير الأرقام الموجودة أعلاه أبداً، فقط قم بإعادة ترتيبها وتنسيقها وإضافة الشرح النصي للمؤشرات. لا تكتب مقدمات أو خاتمات.
+"""
 **ملاحظة: لا تكتب مقدمات ولا جرايد، خليك محدد ومختصر ومرتب.**
 """
-    else:
+        else:
+        trend_en = "Bullish 📈" if calc_trend == "Bullish" else "Bearish 📉"
         prompt = f"""
-You are an expert Technical Analyst at "NaiF CHarT". Analyze {clean_sym} based on:
-Price: {price:.2f}$ | Timeframe: {tf} | RSI: {safe_rsi} | MACD: {"Bullish" if (last_macd or 0)>0 else "Bearish"}
-Bollinger: {last_bb[0]:.2f} (Range {last_bb[1]:.2f}-{last_bb[2]:.2f}) | Volume: {last_vol:.2f}
-
-⚠️ Strictly follow this HTML format:
-Strict rule:
-
-If Trend = Bullish
-TP targets MUST be above current price.
-
-If Trend = Bearish
-TP targets MUST be below current price.
+You are an expert Technical Analyst at "NaiF CHarT". Write a technical report for {clean_sym} strictly using the provided data:
 
 <b>📊 Market Overview</b>
-Trend: (Bullish/Bearish)
+Trend: {trend_en}
 
 <b>📉 Support & Resistance</b>
-Nearest Support: <code>{low:.2f}</code> $
-Nearest Resistance: <code>{high:.2f}</code> $
+Nearest Support: <code>{low:.6f}</code> $
+Nearest Resistance: <code>{high:.6f}</code> $
 
 <b>🎯 Price Targets</b>
-TP1: <code>(Price)</code>
-TP2: <code>(Price)</code>
-TP3: <code>(Price)</code>
+TP1: <code>{calc_tp1:.6f}</code>
+TP2: <code>{calc_tp2:.6f}</code>
+TP3: <code>{calc_tp3:.6f}</code>
 
 <b>🛑 Stop Loss</b>
-Stop Loss: <code>(Price)</code>
+Stop Loss: <code>{calc_sl:.6f}</code>
 
 <b>📈 Indicator Analysis</b>
-• RSI: {safe_rsi} (value and One short sentence)
-• MACD: {last_macd:.4f} (value and One short sentence)
-• Bollinger Bands: (One short sentence)
-• Volume: {last_vol:.2f} (value and One short sentence)
+• RSI: {safe_rsi} (One short explanatory sentence)
+• MACD: {last_macd:.6f} (One short explanatory sentence)
+• Bollinger Bands: (Briefly explain price position relative to range {last_bb[1]:.6f} - {last_bb[2]:.6f})
+• Volume: {last_vol:.2f} (One short explanatory sentence)
 
-<b>Note: No intro/outro, strictly follow the headers above.</b>
+⚠️ Strictly follow this HTML format. DO NOT alter the provided target or stop loss numbers. No intros/outros.
 """
 
     # --- استدعاء API داخل الدالة فقط ---
