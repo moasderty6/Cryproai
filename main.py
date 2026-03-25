@@ -587,12 +587,16 @@ def compute_indicators(candles):
 async def run_analysis(cb: types.CallbackQuery):
     uid, pool = cb.from_user.id, dp['db_pool']
     data = user_session_data.get(uid)
+    
     if not data:
-        return
+        return await cb.answer("⚠️ انتهت الجلسة، يرجى إرسال الرمز من جديد.", show_alert=True)
 
-        lang, sym, price, tf = data['lang'], data['sym'], data['price'], cb.data.replace("tf_", "")
-        volume_24h = data.get('volume_24h', 0) # 👈 سحب الفوليوم العالمي
-
+    # 👇 تم إصلاح المسافات واستخدام get للحماية من الأعطال 👇
+    lang = data.get('lang', 'ar')
+    sym = data.get('sym')
+    price = data.get('price')
+    volume_24h = data.get('volume_24h', 0)
+    tf = cb.data.replace("tf_", "")
     # --- تحقق من الاشتراك / التجربة ---
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
         return await cb.message.edit_text(
