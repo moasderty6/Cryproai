@@ -624,9 +624,9 @@ async def run_analysis(cb: types.CallbackQuery):
     safe_rsi = f"{last_rsi:.2f}" if last_rsi is not None else "N/A"
     
         # --- برومبت التحليل مع إجبار الـ AI على التنسيق الصارم ---
-        if lang == "ar":
-            trend_ar = "صاعد 📈" if calc_trend == "Bullish" else "هابط 📉"
-            prompt = f"""
+    if lang == "ar":
+        trend_ar = "صاعد 📈" if calc_trend == "Bullish" else "هابط 📉"
+        prompt = f"""
 أنت محلل فني خبير في شركة "NaiF CHarT". اكتب تقريراً فنياً لعملة {clean_sym} بناءً على المعطيات التالية فقط:
 
 📊 <b>التحليل العام</b>
@@ -654,9 +654,9 @@ Stop Loss: {calc_sl:.6f}
 """
 **ملاحظة: لا تكتب مقدمات ولا جرايد، خليك محدد ومختصر ومرتب.**
 """
-        else:
-        trend_en = "Bullish 📈" if calc_trend == "Bullish" else "Bearish 📉"
-        prompt = f"""
+    else:
+     trend_en = "Bullish 📈" if calc_trend == "Bullish" else "Bearish 📉"
+     prompt = f"""
 You are an expert Technical Analyst at "NaiF CHarT". Write a technical report for {clean_sym} strictly using the provided data:
 
 <b>📊 Market Overview</b>
