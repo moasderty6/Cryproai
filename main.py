@@ -500,7 +500,7 @@ def gate_sign(params: dict):
     return {}
 
 # --- جلب الشموع ---
-async def get_candles_gate(symbol: str, interval: str, limit: int = 50):
+async def get_candles_gate(symbol: str, interval: str, limit: int = 250):
     async with httpx.AsyncClient() as client:
         res = await client.get(GATE_BASE, params={
             "currency_pair": symbol,
@@ -529,14 +529,19 @@ def compute_indicators(candles):
 
     # --- باقي الكود كما هو بدون أي تغيير ---
     # RSI
+        # RSI (متطابق مع TradingView)
     delta = df["close"].diff()
     gain = delta.clip(lower=0)
     loss = -1 * delta.clip(upper=0)
-    avg_gain = gain.rolling(14).mean()
-    avg_loss = loss.rolling(14).mean()
+    
+    # استخدام ewm بدلاً من rolling
+    avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    
     rs = avg_gain / avg_loss
     rsi_val = 100 - (100 / (1 + rs))
     last_rsi = rsi_val.iloc[-1]
+
 
     # MACD
     ema12 = df["close"].ewm(span=12, adjust=False).mean()
@@ -546,8 +551,9 @@ def compute_indicators(candles):
     last_macd_diff = macd_val.iloc[-1] - signal.iloc[-1]
 
     # Bollinger Bands
+        # Bollinger Bands (مع إضافة ddof=0)
     sma20 = df["close"].rolling(20).mean()
-    std20 = df["close"].rolling(20).std()
+    std20 = df["close"].rolling(20).std(ddof=0) 
     upper_band = sma20 + 2*std20
     lower_band = sma20 - 2*std20
     last_bb = (df["close"].iloc[-1], lower_band.iloc[-1], upper_band.iloc[-1])
@@ -583,7 +589,7 @@ async def run_analysis(cb: types.CallbackQuery):
     # --- تنظيف الرمز وجلب البيانات ---
     clean_sym = sym.replace("USDT", "").strip().upper()
     gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
-    candles = await get_candles_gate(f"{clean_sym}_USDT", gate_interval, limit=50)
+    candles = await get_candles_gate(f"{clean_sym}_USDT", gate_interval, limit=250)
 
     if candles:
         last_rsi, last_macd, last_bb, last_vol, high, low = compute_indicators(candles)
