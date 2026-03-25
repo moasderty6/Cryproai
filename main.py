@@ -673,7 +673,7 @@ Stop Loss: (ضع رقم منطقي)
         prompt = f"""
 You are an expert Technical Analyst at "NaiF CHarT". Analyze {clean_sym} based on:
 Price: {price_fmt}$ | Timeframe: {tf} | RSI: {safe_rsi} | MACD: {"Bullish" if (last_macd or 0)>0 else "Bearish"}
-Bollinger: {bb0_fmt} (Range {bb1_fmt}-{bb2_fmt}) | Volume: {last_vol:.2f}
+Bollinger: {bb0_fmt} (Range {bb1_fmt}-{bb2_fmt}) | Volume: {vol24_fmt}
 
 ⚠️ Strictly follow this HTML format:
 Strict rule:
