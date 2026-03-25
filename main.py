@@ -194,7 +194,9 @@ async def ai_opportunity_radar(pool):
 
                 # --- إرسال الإشعارات للمستخدمين ---
 # --- إرسال الإشعارات للمستخدمين (للأدمن فقط للتجربة) ---
-                users = await pool.fetch("SELECT user_id, lang FROM users_info WHERE user_id IN ($1, $2, $3)", ADMIN_USER_ID, 8241472209, 565965404)
+                # --- إرسال الإشعارات للمستخدمين ---
+                users = await pool.fetch("SELECT user_id, lang FROM users_info")
+
 
                 for row in users:
                     uid = row["user_id"]
