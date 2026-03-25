@@ -179,6 +179,8 @@ async def ai_opportunity_radar(pool):
         # إرسال كل الفرص المميزة للمستخدمين
         for op in best_opportunities:
             print(f"💎 {op['symbol']} - Score: {op['score']} - Price: {op['price']}$") 
+            # تعريف الفرصة الذهبية قبل استخدامها
+            golden_opportunity = best_opportunities[0] if best_opportunities else None
                     
                     # انتظار بسيط لتجنب الحظر من API المنصة (Rate Limit)
             await asyncio.sleep(0.5)
