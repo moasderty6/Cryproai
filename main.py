@@ -53,6 +53,18 @@ async def is_user_paid(pool, user_id: int):
 async def has_trial(pool, user_id: int):
     res = await pool.fetchval("SELECT 1 FROM trial_users WHERE user_id = $1", user_id)
     return not bool(res)
+def format_price(price):
+    if price is None:
+        return "0.0"
+    price = float(price)
+    
+    if price >= 1:
+        return f"{price:,.2f}"      # للعملات مثل BTC (65,000.00)
+    elif price >= 0.001:
+        return f"{price:.4f}"       # للعملات مثل ADA (0.4500)
+    else:
+        # للعملات الصفرية مثل SHIB، نعرض حتى 10 أرقام ونحذف الأصفار الزائدة
+        return f"{price:.10f}".rstrip('0').rstrip('.')
 
 # --- دوال المساعدة والدفع ---
 async def create_nowpayments_invoice(user_id: int):
@@ -482,8 +494,8 @@ async def handle_symbol(m: types.Message):
             ]])
             
             await status_msg.edit_text(
-                f"✅ العملة: {sym}\n💵 السعر: ${price:.6f}\n⏳ اختر الإطار الزمني للتحليل:" if lang=="ar" 
-                else f"✅ Symbol: {sym}\n💵 Price: ${price:.6f}\n⏳ Select timeframe for analysis:", 
+                f"✅ العملة: {sym}\n💵 السعر: ${format_price(price)}\n⏳ اختر الإطار الزمني للتحليل:" if lang=="ar" 
+            else f"✅ Symbol: {sym}\n💵 Price: ${format_price(price)}\n⏳ Select timeframe for analysis:",
                 reply_markup=kb
             )
 
@@ -595,6 +607,13 @@ async def run_analysis(cb: types.CallbackQuery):
         last_rsi, last_macd, last_bb, last_vol, high, low = compute_indicators(candles)
     else:
         last_rsi, last_macd, last_bb, last_vol, high, low = 50.0, 0.0, (price, price*0.95, price*1.05), 0.0, price*1.05, price*0.95
+            # --- تنسيق الأسعار للعملات الصفرية والعادية ---
+    price_fmt = format_price(price)
+    low_fmt = format_price(low)
+    high_fmt = format_price(high)
+    bb0_fmt = format_price(last_bb[0])
+    bb1_fmt = format_price(last_bb[1])
+    bb2_fmt = format_price(last_bb[2])
 
     # --- صياغة البرومبت (نفس أسلوبك بالضبط) ---
     # ملاحظة: أضفت صمام أمان للـ RSI والماكد لضمان عدم ظهور خطأ f-string
@@ -604,8 +623,8 @@ async def run_analysis(cb: types.CallbackQuery):
     if lang == "ar":
         prompt = f"""
 أنت محلل فني خبير في شركة "NaiF CHarT". حلل عملة {clean_sym} بناءً على البيانات التالية:
-السعر الحالي: {price:.2f}$ | الإطار: {tf} | RSI: {safe_rsi} | MACD: {"صاعد" if (last_macd or 0)>0 else "هابط"}
-البولينجر: السعر {last_bb[0]:.2f} (نطاق {last_bb[1]:.2f} - {last_bb[2]:.2f}) | الفوليوم: {last_vol:.2f}
+السعر الحالي: {price_fmt}$ | الإطار: {tf} | RSI: {safe_rsi} | MACD: {"صاعد" if (last_macd or 0)>0 else "هابط"}
+البولينجر: السعر {bb0_fmt} (نطاق {bb1_fmt} - {bb2_fmt}) | الفوليوم: {last_vol:.2f}
 
 ⚠️ الالتزام التام بهذا التنسيق (استخدم وسوم HTML فقط):
 ⚠️ قواعد صارمة:
@@ -620,8 +639,8 @@ async def run_analysis(cb: types.CallbackQuery):
 الاتجاه: (اكتب صاعد أو هابط)
 
 📉 <b>الدعم والمقاومة</b>
-الدعم الأقرب: {low:.2f} دولار
-المقاومة الأقرب: {high:.2f} دولار
+الدعم الأقرب: {low_fmt} دولار
+المقاومة الأقرب: {high_fmt} دولار
 
 🎯 <b>الأهداف السعرية</b>
 TP1: (ضع رقم منطقي)
@@ -642,8 +661,8 @@ Stop Loss: (ضع رقم منطقي)
     else:
         prompt = f"""
 You are an expert Technical Analyst at "NaiF CHarT". Analyze {clean_sym} based on:
-Price: {price:.2f}$ | Timeframe: {tf} | RSI: {safe_rsi} | MACD: {"Bullish" if (last_macd or 0)>0 else "Bearish"}
-Bollinger: {last_bb[0]:.2f} (Range {last_bb[1]:.2f}-{last_bb[2]:.2f}) | Volume: {last_vol:.2f}
+Price: {price_fmt}$ | Timeframe: {tf} | RSI: {safe_rsi} | MACD: {"Bullish" if (last_macd or 0)>0 else "Bearish"}
+Bollinger: {bb0_fmt} (Range {bb1_fmt}-{bb2_fmt}) | Volume: {last_vol:.2f}
 
 ⚠️ Strictly follow this HTML format:
 Strict rule:
@@ -658,8 +677,8 @@ TP targets MUST be below current price.
 Trend: (Bullish/Bearish)
 
 <b>📉 Support & Resistance</b>
-Nearest Support: <code>{low:.2f}</code> $
-Nearest Resistance: <code>{high:.2f}</code> $
+Nearest Support: <code>{low_fmt}</code> $
+Nearest Resistance: <code>{high_fmt}</code> $
 
 <b>🎯 Price Targets</b>
 TP1: <code>(Price)</code>
