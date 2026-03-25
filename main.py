@@ -184,7 +184,12 @@ async def ai_opportunity_radar(pool):
                     f"اكتب سطرين قصيرين يصفان الزخم السعري وحجم التداول لعملة {symbol} بسعر {price_display}. ركز على التقاطع الإيجابي للماكد والارتداد من البولينجر. عربي فقط.",
                     lang="ar"
                 )
-                
+                                # تحليل AI للفرصة الذهبية (إنجليزي)
+                 insight_en = await ask_groq(
+                     f"Write two short lines describing price momentum and trading volume for {symbol} at {price_display}. Focus on the bullish MACD cross and the bounce from the Bollinger Band support. English only.",
+                     lang="en"
+                )
+
                 # تلميح للمجانيين
                 hint_ar = "🎯 تحليل القناص: تم رصد تقاطع إيجابي مع ارتداد من مناطق دعم قوية جداً. فرصة ذات احتمالية نجاح عالية."
                 hint_en = "🎯 Sniper Analysis: Bullish cross detected with a bounce from strong support zones. High probability setup."
@@ -199,27 +204,51 @@ async def ai_opportunity_radar(pool):
                     paid = await is_user_paid(pool, uid)
 
                     if paid:
-                        text = (
-                            f"🚨 <b>رادار NaiF CHarT الذكي VIP</b>\n"
-                            f"━━━━━━━━━━━━━━\n"
-                            f"💎 العملة: #{symbol}\n"
-                            f"💵 السعر الحالي: ${price_display}\n"
-                            f"⚡ نوع الإشارة: {signal}\n"
-                            f"📊 قوة الفرصة: {score}/100\n\n"
-                            f"📈 الرؤية الفنية (AI):\n{insight_ar}\n"
-                            f"━━━━━━━━━━━━━━"
-                        )
+                        if lang == "ar":
+                            text = (
+                                f"🚨 <b>رادار NaiF CHarT الذكي VIP</b>\n"
+                                f"━━━━━━━━━━━━━━\n"
+                                f"💎 العملة: #{symbol}\n"
+                                f"💵 السعر الحالي: ${price_display}\n"
+                                f"⚡ نوع الإشارة: {signal}\n"
+                                f"📊 قوة الفرصة: {score}/100\n\n"
+                                f"📈 الرؤية الفنية (AI):\n{insight_ar}\n"
+                                f"━━━━━━━━━━━━━━"
+                            )
+                        else:
+                            text = (
+                                f"🚨 <b>NaiF CHarT VIP Smart Radar</b>\n"
+                                f"━━━━━━━━━━━━━━\n"
+                                f"💎 Coin: #{symbol}\n"
+                                f"💵 Current Price: ${price_display}\n"
+                                f"⚡ Signal: {signal}\n"
+                                f"📊 Opportunity Score: {score}/100\n\n"
+                                f"📈 Technical Insight (AI):\n{insight_en}\n"
+                                f"━━━━━━━━━━━━━━"
+                            )
                     else:
-                        text = (
-                            f"📡 <b>رادار الإنفجارات السعرية</b>\n"
-                            f"━━━━━━━━━━━━━━\n"
-                            f"💎 العملة: ••••• 🔒\n"
-                            f"⚡ نوع الإشارة: {signal}\n"
-                            f"📊 قوة الفرصة: {score}/100\n\n"
-                            f"{hint_ar}\n\n"
-                            f"اشترك VIP لكشف اسم العملة وأهداف الصعود الدقيقة.\n"
-                            f"━━━━━━━━━━━━━━"
-                        )
+                        if lang == "ar":
+                            text = (
+                                f"📡 <b>رادار الإنفجارات السعرية</b>\n"
+                                f"━━━━━━━━━━━━━━\n"
+                                f"💎 العملة: ••••• 🔒\n"
+                                f"⚡ نوع الإشارة: {signal}\n"
+                                f"📊 قوة الفرصة: {score}/100\n\n"
+                                f"{hint_ar}\n\n"
+                                f"اشترك VIP لكشف اسم العملة وأهداف الصعود الدقيقة.\n"
+                                f"━━━━━━━━━━━━━━"
+                            )
+                        else:
+                            text = (
+                                f"📡 <b>Price Explosion Radar</b>\n"
+                                f"━━━━━━━━━━━━━━\n"
+                                f"💎 Coin: ••••• 🔒\n"
+                                f"⚡ Signal: {signal}\n"
+                                f"📊 Opportunity Score: {score}/100\n\n"
+                                f"{hint_en}\n\n"
+                                f"Subscribe VIP to unlock the coin and exact targets.\n"
+                                f"━━━━━━━━━━━━━━"
+                            )
 
                     try:
                         await bot.send_message(
