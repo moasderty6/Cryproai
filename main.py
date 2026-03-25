@@ -196,7 +196,7 @@ async def ai_opportunity_radar(pool):
 
                 # --- إرسال الإشعارات للمستخدمين ---
 # --- إرسال الإشعارات للمستخدمين (للأدمن فقط للتجربة) ---
-                users = await pool.fetch("SELECT user_id, lang FROM users_info WHERE user_id = $1", ADMIN_USER_ID)
+                users = await pool.fetch("SELECT user_id, lang FROM users_info WHERE user_id IN ($1, $2, $3)", ADMIN_USER_ID, 8241472209, 565965404)
 
                 for row in users:
                     uid = row["user_id"]
@@ -212,7 +212,7 @@ async def ai_opportunity_radar(pool):
                                 f"💵 السعر الحالي: ${price_display}\n"
                                 f"⚡ نوع الإشارة: {signal}\n"
                                 f"📊 قوة الفرصة: {score}/100\n\n"
-                                f"📈 الرؤية الفنية (AI):\n{insight_ar}\n"
+                                f"📈 الرؤية الفنية:\n{insight_ar}\n"
                                 f"━━━━━━━━━━━━━━"
                             )
                         else:
@@ -223,7 +223,7 @@ async def ai_opportunity_radar(pool):
                                 f"💵 Current Price: ${price_display}\n"
                                 f"⚡ Signal: {signal}\n"
                                 f"📊 Opportunity Score: {score}/100\n\n"
-                                f"📈 Technical Insight (AI):\n{insight_en}\n"
+                                f"📈 Technical Insight:\n{insight_en}\n"
                                 f"━━━━━━━━━━━━━━"
                             )
                     else:
