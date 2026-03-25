@@ -614,6 +614,8 @@ async def run_analysis(cb: types.CallbackQuery):
     bb0_fmt = format_price(last_bb[0])
     bb1_fmt = format_price(last_bb[1])
     bb2_fmt = format_price(last_bb[2])
+    macd_fmt = format_price(last_macd) if last_macd is not None else "0.0"
+    safe_rsi = f"{last_rsi:.2f}" if last_rsi is not None else "N/A"
 
     # --- صياغة البرومبت (نفس أسلوبك بالضبط) ---
     # ملاحظة: أضفت صمام أمان للـ RSI والماكد لضمان عدم ظهور خطأ f-string
@@ -652,7 +654,7 @@ Stop Loss: (ضع رقم منطقي)
 
 📈 <b>تحليل المؤشرات</b>
 - RSI: {safe_rsi} (اكتب القيمةواشرح باختصار شديد سطر واحد)
-- MACD: {last_macd:.4f} (اكتب القيمة واشرح باختصار شديد سطر واحد)
+- MACD: {macd_fmt} (اكتب القيمة واشرح باختصار شديد سطر واحد)
 - Bollinger Bands: (اشرح باختصار شديد سطر واحد)
 - Volume: {last_vol:.2f} (اكتب القيمة واشرح باختصار شديد سطر واحد)
 
@@ -690,7 +692,7 @@ Stop Loss: <code>(Price)</code>
 
 <b>📈 Indicator Analysis</b>
 • RSI: {safe_rsi} (value and One short sentence)
-• MACD: {last_macd:.4f} (value and One short sentence)
+• MACD: {macd_fmt} (value and One short sentence)
 • Bollinger Bands: (One short sentence)
 • Volume: {last_vol:.2f} (value and One short sentence)
 
