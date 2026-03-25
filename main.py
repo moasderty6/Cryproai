@@ -165,7 +165,7 @@ async def ai_opportunity_radar(pool):
                     if 35 < last_rsi < 60: score += 10
                     if last_vol > df["volume"].mean(): score += 10
 
-                    if score >= 70:  # أي عملة تحقق 70+ تعتبر VIP
+                    if score >= 0:  # أي عملة تحقق 70+ تعتبر VIP
                         best_opportunities.append({
                             "symbol": symbol,
                             "price": price, # السعر محفوظ هنا مباشرة
