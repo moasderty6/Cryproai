@@ -481,7 +481,7 @@ async def handle_symbol(m: types.Message):
             if res.status_code != 200 or "data" not in data or sym not in data["data"]:
                 raise ValueError("Symbol not found")
 
-                        price = data["data"][sym]["quote"]["USD"]["price"]
+            price = data["data"][sym]["quote"]["USD"]["price"]
             # 👇 جلب الفوليوم العالمي خلال 24 ساعة 👇
             volume_24h = data["data"][sym]["quote"]["USD"]["volume_24h"] 
             
