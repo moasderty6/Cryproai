@@ -651,12 +651,11 @@ Stop Loss: {calc_sl:.6f}
 - Volume: {last_vol:.2f} (اشرح دلالته باختصار)
 
 ⚠️ ملاحظة هامة: لا تغير الأرقام الموجودة أعلاه أبداً، فقط قم بإعادة ترتيبها وتنسيقها وإضافة الشرح النصي للمؤشرات. لا تكتب مقدمات أو خاتمات.
-"""
 **ملاحظة: لا تكتب مقدمات ولا جرايد، خليك محدد ومختصر ومرتب.**
 """
     else:
-     trend_en = "Bullish 📈" if calc_trend == "Bullish" else "Bearish 📉"
-     prompt = f"""
+        trend_en = "Bullish 📈" if calc_trend == "Bullish" else "Bearish 📉"
+        prompt = f"""
 You are an expert Technical Analyst at "NaiF CHarT". Write a technical report for {clean_sym} strictly using the provided data:
 
 <b>📊 Market Overview</b>
