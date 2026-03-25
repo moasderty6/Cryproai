@@ -275,8 +275,8 @@ async def ai_opportunity_radar(pool):
                     except Exception as e:
                         continue
 
-        except Exception as e:
-            print(f"Radar Error: {e}")
+                    except Exception as e:
+                        print(f"Radar Error: {e}")
 
         # تم تصحيح وقت الانتظار ليكون 6 ساعات بالضبط (6 * 60 * 60)
   # 6 ساعات # انتطار الدورة القادمة
