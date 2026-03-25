@@ -612,7 +612,7 @@ async def run_analysis(cb: types.CallbackQuery):
     gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
     candles = await get_candles_gate(f"{clean_sym}_USDT", gate_interval, limit=250)
 
-        if candles:
+    if candles:
         last_rsi, last_macd, last_bb, last_vol, high, low, calc_trend, calc_sl, calc_tp1, calc_tp2, calc_tp3 = compute_indicators(candles)
     else:
         # قيم افتراضية في حال فشل جلب الشموع
