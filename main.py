@@ -107,7 +107,7 @@ def get_payment_kb(lang):
     ])
 
 # --- رادار الفرص الذكي ---
-a# --- أقوى نسخة للرادار ---
+# --- أقوى نسخة للرادار ---
 async def ai_opportunity_radar(pool):
     headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
     async with httpx.AsyncClient(timeout=20) as client:
