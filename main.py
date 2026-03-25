@@ -108,7 +108,6 @@ def get_payment_kb(lang):
 
 # --- رادار الفرص الذكي ---
 async def ai_opportunity_radar(pool):
-    while True:
         try:
             headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
 
@@ -265,7 +264,6 @@ async def ai_opportunity_radar(pool):
             print(f"Radar Error: {e}")
 
         # تم تصحيح وقت الانتظار ليكون 6 ساعات بالضبط (6 * 60 * 60)
-        await asyncio.sleep(21600) 
   # 6 ساعات # انتطار الدورة القادمة
 async def daily_channel_post():
     # معرف القناة (تأكد من كتابة يوزر قناتك هنا)
@@ -394,6 +392,15 @@ async def admin_cmd(m: types.Message):
         "📌 للتواصل مع الدعم، يرجى التواصل مع هذا الحساب:\n@AiCrAdmin\n\n"
         "📌 For support, contact:\n@AiCrAdmin"
     )
+@dp.message(Command("radar"))
+async def radar_cmd(m: types.Message):
+
+    if m.from_user.id != ADMIN_USER_ID:
+        return await m.answer("❌ هذا الأمر للأدمن فقط")
+
+    await m.answer("📡 جاري تشغيل الرادار...")
+
+    asyncio.create_task(ai_opportunity_radar(dp['db_pool']))
 @dp.message(Command("clean"))
 async def clean_db_cmd(m: types.Message):
     if m.from_user.id != ADMIN_USER_ID:
@@ -863,7 +870,7 @@ async def on_startup(app):
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
     
-    asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
+    #asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
     #asyncio.create_task(daily_channel_post())
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
