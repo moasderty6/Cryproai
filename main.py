@@ -109,176 +109,174 @@ def get_payment_kb(lang):
 # --- رادار الفرص الذكي ---
 # --- أقوى نسخة للرادار ---
 async def ai_opportunity_radar(pool):
-    headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
-    async with httpx.AsyncClient(timeout=20) as client:
-        res = await client.get(
-            "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
-            headers=headers,
-            params={"limit": "100"}
-        )
-        coins = res.json()["data"]
-        opportunities = []
+    # 1. إضافة while True ليعمل الرادار بشكل مستمر كل 6 ساعات
+        try:
+            headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
+            async with httpx.AsyncClient(timeout=20) as client:
+                res = await client.get(
+                    "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
+                    headers=headers,
+                    params={"limit": "100"}
+                )
+                coins = res.json()["data"]
+                opportunities = []
 
-        # فلترة أولية
-        for c in coins:
-            volume = c["quote"]["USD"]["volume_24h"]
-            marketcap = c["quote"]["USD"]["market_cap"]
-            if volume > 60_000_000 and marketcap > 120_000_000:
-                opportunities.append(c)
+                # فلترة أولية
+                for c in coins:
+                    volume = c["quote"]["USD"]["volume_24h"]
+                    marketcap = c["quote"]["USD"]["market_cap"]
+                    if volume > 60_000_000 and marketcap > 120_000_000:
+                        opportunities.append(c)
 
-        best_opportunities = []
+                best_opportunities = []
 
-        for selected in opportunities:
-            symbol = selected["symbol"]
-            price = selected["quote"]["USD"]["price"]
-            candles = await get_candles_gate(f"{symbol}_USDT", "4h", limit=250)
-            if not candles: continue
+                for selected in opportunities:
+                    symbol = selected["symbol"]
+                    price = selected["quote"]["USD"]["price"]
+                    candles = await get_candles_gate(f"{symbol}_USDT", "4h", limit=250)
+                    if not candles: continue
 
-            # حساب المؤشرات الأساسية
-            last_rsi, last_macd_diff, last_bb, last_vol, high, low = compute_indicators(candles)
-            lower_band = last_bb[1]
+                    # حساب المؤشرات الأساسية
+                    last_rsi, last_macd_diff, last_bb, last_vol, high, low = compute_indicators(candles)
+                    lower_band = last_bb[1]
 
-            # --- إضافة أقوى فلاتر ---
-            df = pd.DataFrame(candles, columns=["timestamp","volume","close","high","low","open","amount","quote_volume"])
-            df = df[["timestamp","volume","close","high","low","open"]].astype(float)
-            
-            ema200 = df["close"].ewm(span=200, adjust=False).mean()
-            trend_up = price > ema200.iloc[-1]  # الاتجاه طويل المدى
-            recent_high = df["high"].rolling(20).max()
-            breakout = price > recent_high.iloc[-2]  # كسر مقاومة قصيرة
-            tr = pd.concat([
-                df["high"] - df["low"],
-                (df["high"] - df["close"].shift()).abs(),
-                (df["low"] - df["close"].shift()).abs()
-            ], axis=1).max(axis=1)
-            atr = tr.rolling(14).mean()
-            volatility_ok = atr.iloc[-1] > atr.mean()  # تقلب صحي
-
-            # --- حساب Score متقدم ---
-            score = 0
-            if breakout: score += 25
-            if trend_up: score += 20
-            if volatility_ok: score += 15
-            if last_macd_diff > 0: score += 10
-            if 35 < last_rsi < 60: score += 10
-            if last_vol > df["volume"].mean(): score += 10
-
-            if score >= 70:  # أي عملة تحقق 70+ تعتبر VIP
-                best_opportunities.append({
-                    "symbol": symbol,
-                    "price": price,
-                    "score": score,
-                    "signal": "Smart Money Setup 🎯",
-                    "rsi": last_rsi,
-                    "macd": last_macd_diff,
-                    "bb": last_bb,
-                    "high": high,
-                    "low": low
-                })
-
-        # إرسال كل الفرص المميزة للمستخدمين
-        for op in best_opportunities:
-            print(f"💎 {op['symbol']} - Score: {op['score']} - Price: {op['price']}$") 
-            # تعريف الفرصة الذهبية قبل استخدامها
-            golden_opportunity = best_opportunities[0] if best_opportunities else None
+                    # --- إضافة أقوى فلاتر ---
+                    df = pd.DataFrame(candles, columns=["timestamp","volume","close","high","low","open","amount","quote_volume"])
+                    df = df[["timestamp","volume","close","high","low","open"]].astype(float)
                     
-                    # انتظار بسيط لتجنب الحظر من API المنصة (Rate Limit)
-            await asyncio.sleep(0.5)
+                    ema200 = df["close"].ewm(span=200, adjust=False).mean()
+                    trend_up = price > ema200.iloc[-1]  # الاتجاه طويل المدى
+                    recent_high = df["high"].rolling(20).max()
+                    breakout = price > recent_high.iloc[-2]  # كسر مقاومة قصيرة
+                    tr = pd.concat([
+                        df["high"] - df["low"],
+                        (df["high"] - df["close"].shift()).abs(),
+                        (df["low"] - df["close"].shift()).abs()
+                    ], axis=1).max(axis=1)
+                    atr = tr.rolling(14).mean()
+                    volatility_ok = atr.iloc[-1] > atr.mean()  # تقلب صحي
 
-                # إذا لم يجد الرادار فرصة مثالية، ينتظر الدورة القادمة بصمت (لا نرسل فرص ضعيفة)
-            if not golden_opportunity:
-                print("Radar: No high-probability setup found in this cycle.")
-                return
+                    # --- حساب Score متقدم ---
+                    score = 0
+                    if breakout: score += 25
+                    if trend_up: score += 20
+                    if volatility_ok: score += 15
+                    if last_macd_diff > 0: score += 10
+                    if 35 < last_rsi < 60: score += 10
+                    if last_vol > df["volume"].mean(): score += 10
 
-                # 4. تجهيز البيانات للإرسال
-                symbol = golden_opportunity["symbol"]
-                price = golden_opportunity["quote"]["USD"]["price"]
-                price_display = f"{price:.6f}" if price < 1 else f"{price:,.2f}"
+                    if score >= 70:  # أي عملة تحقق 70+ تعتبر VIP
+                        best_opportunities.append({
+                            "symbol": symbol,
+                            "price": price, # السعر محفوظ هنا مباشرة
+                            "score": score,
+                            "signal": "Smart Money Setup 🎯",
+                            "rsi": last_rsi,
+                            "macd": last_macd_diff,
+                            "bb": last_bb,
+                            "high": high,
+                            "low": low
+                        })
 
-                # تحليل AI للفرصة الذهبية
-                insight_ar = await ask_groq(
-                    f"اكتب سطرين قصيرين يصفان الزخم السعري وحجم التداول لعملة {symbol} بسعر {price_display}. ركز على التقاطع الإيجابي للماكد والارتداد من البولينجر. عربي فقط.",
-                    lang="ar"
-                )
-                                # تحليل AI للفرصة الذهبية (إنجليزي)
-                insight_en = await ask_groq(
-                    f"Write two short lines describing price momentum and trading volume for {symbol} at {price_display}. Focus on the bullish MACD cross and the bounce from the Bollinger Band support. English only.",
-                    lang="en"
-                )
+                # إذا لم يجد الرادار فرصة مثالية، ينتظر الدورة القادمة بصمت
+                if not best_opportunities:
+                    print("Radar: No high-probability setup found in this cycle.")
+                else:
+                    # جلب أقوى فرصة فقط (التي تملك أعلى Score) لتجنب الإزعاج
+                    golden_opportunity = sorted(best_opportunities, key=lambda x: x['score'], reverse=True)[0]
+                    
+                    # تجهيز البيانات للإرسال (تم إصلاح استدعاء السعر والإشارة)
+                    symbol = golden_opportunity["symbol"]
+                    price = golden_opportunity["price"]
+                    score = golden_opportunity["score"]
+                    signal = golden_opportunity["signal"]
+                    price_display = f"{price:.6f}" if price < 1 else f"{price:,.2f}"
 
-                # تلميح للمجانيين
-                hint_ar = "🎯 تحليل القناص: تم رصد تقاطع إيجابي مع ارتداد من مناطق دعم قوية جداً. فرصة ذات احتمالية نجاح عالية."
-                hint_en = "🎯 Sniper Analysis: Bullish cross detected with a bounce from strong support zones. High probability setup."
+                    print(f"💎 Golden Op: {symbol} - Score: {score} - Price: {price_display}$") 
 
-                # --- إرسال الإشعارات للمستخدمين ---
-# --- إرسال الإشعارات للمستخدمين (للأدمن فقط للتجربة) ---
-                users = await pool.fetch("SELECT user_id, lang FROM users_info WHERE user_id IN ($1, $2, $3)", ADMIN_USER_ID, 8241472209, 565965404)
+                    # تحليل AI للفرصة الذهبية
+                    insight_ar = await ask_groq(
+                        f"اكتب سطرين قصيرين يصفان الزخم السعري وحجم التداول لعملة {symbol} بسعر {price_display}. ركز على التقاطع الإيجابي للماكد والارتداد من البولينجر. عربي فقط.",
+                        lang="ar"
+                    )
+                    insight_en = await ask_groq(
+                        f"Write two short lines describing price momentum and trading volume for {symbol} at {price_display}. Focus on the bullish MACD cross and the bounce from the Bollinger Band support. English only.",
+                        lang="en"
+                    )
 
-                for row in users:
-                    uid = row["user_id"]
-                    lang = row["lang"] or "ar"
-                    paid = await is_user_paid(pool, uid)
+                    hint_ar = "🎯 تحليل القناص: تم رصد تقاطع إيجابي مع ارتداد من مناطق دعم قوية جداً. فرصة ذات احتمالية نجاح عالية."
+                    hint_en = "🎯 Sniper Analysis: Bullish cross detected with a bounce from strong support zones. High probability setup."
 
-                    if paid:
-                        if lang == "ar":
-                            text = (
-                                f"🚨 <b>رادار السوق الذكي VIP</b>\n"
-                                f"━━━━━━━━━━━━━━\n"
-                                f"💎 العملة: #{symbol}\n"
-                                f"💵 السعر الحالي: ${price_display}\n"
-                                f"⚡ نوع الإشارة: {signal}\n"
-                                f"📊 قوة الفرصة: {score}/100\n\n"
-                                f"📈 الرؤية الفنية:\n{insight_ar}\n"
-                                f"━━━━━━━━━━━━━━"
-                            )
+                    # --- إرسال الإشعارات للمستخدمين ---
+                    users = await pool.fetch("SELECT user_id, lang FROM users_info WHERE user_id IN ($1, $2, $3)", ADMIN_USER_ID, 8241472209, 565965404)
+
+                    for row in users:
+                        uid = row["user_id"]
+                        lang = row["lang"] or "ar"
+                        paid = await is_user_paid(pool, uid)
+
+                        if paid:
+                            if lang == "ar":
+                                text = (
+                                    f"🚨 <b>رادار السوق الذكي VIP</b>\n"
+                                    f"━━━━━━━━━━━━━━\n"
+                                    f"💎 العملة: #{symbol}\n"
+                                    f"💵 السعر الحالي: ${price_display}\n"
+                                    f"⚡ نوع الإشارة: {signal}\n"
+                                    f"📊 قوة الفرصة: {score}/100\n\n"
+                                    f"📈 الرؤية الفنية:\n{insight_ar}\n"
+                                    f"━━━━━━━━━━━━━━"
+                                )
+                            else:
+                                text = (
+                                    f"🚨 <b>VIP Smart Market Radar</b>\n"
+                                    f"━━━━━━━━━━━━━━\n"
+                                    f"💎 Coin: #{symbol}\n"
+                                    f"💵 Current Price: ${price_display}\n"
+                                    f"⚡ Signal: {signal}\n"
+                                    f"📊 Opportunity Score: {score}/100\n\n"
+                                    f"📈 Technical Insight:\n{insight_en}\n"
+                                    f"━━━━━━━━━━━━━━"
+                                )
                         else:
-                            text = (
-                                f"🚨 <b>VIP Smart Market Radar</b>\n"
-                                f"━━━━━━━━━━━━━━\n"
-                                f"💎 Coin: #{symbol}\n"
-                                f"💵 Current Price: ${price_display}\n"
-                                f"⚡ Signal: {signal}\n"
-                                f"📊 Opportunity Score: {score}/100\n\n"
-                                f"📈 Technical Insight:\n{insight_en}\n"
-                                f"━━━━━━━━━━━━━━"
-                            )
-                    else:
-                        if lang == "ar":
-                            text = (
-                                f"📡 <b>رادار الإنفجارات السعرية</b>\n"
-                                f"━━━━━━━━━━━━━━\n"
-                                f"💎 العملة: ••••• 🔒\n"
-                                f"⚡ نوع الإشارة: {signal}\n"
-                                f"📊 قوة الفرصة: {score}/100\n\n"
-                                f"{hint_ar}\n\n"
-                                f"اشترك VIP لكشف اسم العملة وأهداف الصعود الدقيقة.\n"
-                                f"━━━━━━━━━━━━━━"
-                            )
-                        else:
-                            text = (
-                                f"📡 <b>Price Explosion Radar</b>\n"
-                                f"━━━━━━━━━━━━━━\n"
-                                f"💎 Coin: ••••• 🔒\n"
-                                f"⚡ Signal: {signal}\n"
-                                f"📊 Opportunity Score: {score}/100\n\n"
-                                f"{hint_en}\n\n"
-                                f"Subscribe VIP to unlock the coin and exact targets.\n"
-                                f"━━━━━━━━━━━━━━"
-                            )
+                            if lang == "ar":
+                                text = (
+                                    f"📡 <b>رادار الإنفجارات السعرية</b>\n"
+                                    f"━━━━━━━━━━━━━━\n"
+                                    f"💎 العملة: ••••• 🔒\n"
+                                    f"⚡ نوع الإشارة: {signal}\n"
+                                    f"📊 قوة الفرصة: {score}/100\n\n"
+                                    f"{hint_ar}\n\n"
+                                    f"اشترك VIP لكشف اسم العملة وأهداف الصعود الدقيقة.\n"
+                                    f"━━━━━━━━━━━━━━"
+                                )
+                            else:
+                                text = (
+                                    f"📡 <b>Price Explosion Radar</b>\n"
+                                    f"━━━━━━━━━━━━━━\n"
+                                    f"💎 Coin: ••••• 🔒\n"
+                                    f"⚡ Signal: {signal}\n"
+                                    f"📊 Opportunity Score: {score}/100\n\n"
+                                    f"{hint_en}\n\n"
+                                    f"Subscribe VIP to unlock the coin and exact targets.\n"
+                                    f"━━━━━━━━━━━━━━"
+                                )
 
-                    try:
-                        await bot.send_message(
-                            uid,
-                            text,
-                            parse_mode=ParseMode.HTML,
-                            reply_markup=None if paid else get_payment_kb(lang)
-                        )
-                        await asyncio.sleep(0.05)
-                    except Exception as e:
-                        continue
+                        try:
+                            await bot.send_message(
+                                uid,
+                                text,
+                                parse_mode=ParseMode.HTML,
+                                reply_markup=None if paid else get_payment_kb(lang)
+                            )
+                            await asyncio.sleep(0.05)
+                        except Exception as e:
+                            print(f"Failed to send to {uid}: {e}") # تم دمج أخطاء الإرسال هنا بشكل صحيح
 
-                    except Exception as e:
-                        print(f"Radar Error: {e}")
+        except Exception as e:
+            print(f"Main Radar Loop Error: {e}")
+
+        # الانتظار 6 ساعات بالضبط قبل الفحص التالي
 
         # تم تصحيح وقت الانتظار ليكون 6 ساعات بالضبط (6 * 60 * 60)
   # 6 ساعات # انتطار الدورة القادمة
