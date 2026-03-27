@@ -196,7 +196,7 @@ async def ai_opportunity_radar(pool):
 # --- إرسال الإشعارات للمستخدمين (للأدمن فقط للتجربة) ---
                 # --- إرسال الإشعارات للمستخدمين ---
                 # --- إرسال الإشعارات للمستخدمين ---
-                 users = await pool.fetch("SELECT user_id, lang FROM users_info")
+                users = await pool.fetch("SELECT user_id, lang FROM users_info")
 
 
                 for row in users:
