@@ -192,11 +192,8 @@ async def ai_opportunity_radar(pool):
                 hint_ar = "🎯 تحليل القناص: تم رصد تقاطع إيجابي مع ارتداد من مناطق دعم قوية جداً. فرصة ذات احتمالية نجاح عالية."
                 hint_en = "🎯 Sniper Analysis: Bullish cross detected with a bounce from strong support zones. High probability setup."
 
-                # --- إرسال الإشعارات للمستخدمين ---
-# --- إرسال الإشعارات للمستخدمين (للأدمن فقط للتجربة) ---
-                # --- إرسال الإشعارات للمستخدمين ---
-                # --- إرسال الإشعارات للمستخدمين ---
-                users = await pool.fetch("SELECT user_id, lang FROM users_info")
+            
+                users = await pool.fetch("SELECT user_id, lang FROM users_info WHERE user_id IN ($1, $2, $3)", ADMIN_USER_ID, 8241472209, 565965404)
 
 
                 for row in users:
