@@ -482,14 +482,14 @@ async def handle_symbol(m: types.Message):
             reply_markup=get_payment_kb(lang)
         )
     
-    sym = m.text.strip().upper()
+    user_sym = m.text.strip().upper()
 
     symbol_map = {
         "XAU": "PAXG",
         "GOLD": "PAXG"
 }
 
-    sym = symbol_map.get(sym, sym)
+    sym = symbol_map.get(user_sym, user_sym)
     
     # 2. إرسال رسالة الانتظار وتخزينها في متغير
     status_msg = await m.answer("⏳ جاري جلب السعر..." if lang=="ar" else "⏳ Fetching price...")
@@ -539,8 +539,8 @@ async def handle_symbol(m: types.Message):
             ]])
             
             await status_msg.edit_text(
-                f"✅ العملة: {sym}\n💵 السعر: ${format_price(price)}\n⏳ اختر الإطار الزمني للتحليل:" if lang=="ar" 
-            else f"✅ Symbol: {sym}\n💵 Price: ${format_price(price)}\n⏳ Select timeframe for analysis:",
+                f"✅ العملة: {user_sym}\n💵 السعر: ${format_price(price)}\n⏳ اختر الإطار الزمني للتحليل:" if lang=="ar" 
+            else f"✅ Symbol: {user_sym}\n💵 Price: ${format_price(price)}\n⏳ Select timeframe for analysis:",
                 reply_markup=kb
             )
 
