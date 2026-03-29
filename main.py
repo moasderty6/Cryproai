@@ -489,20 +489,36 @@ async def handle_symbol(m: types.Message):
 
     try:
         async with httpx.AsyncClient() as client:
-            res = await client.get(
-                f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={sym}", 
-                headers={"X-CMC_PRO_API_KEY": CMC_KEY},
-                timeout=10
-            )
-            data = res.json()
 
-            # التحقق مما إذا كان الـ API قد أعاد خطأ أو لم يجد العملة
-            if res.status_code != 200 or "data" not in data or sym not in data["data"]:
-                raise ValueError("Symbol not found")
+    # --- السعر من Gate.io ---
+    pair = f"{sym}_USDT"
+    res_gate = await client.get(
+        "https://api.gateio.ws/api/v4/spot/tickers",
+        params={"currency_pair": pair},
+        timeout=10
+    )
 
-            price = data["data"][sym]["quote"]["USD"]["price"]
-            # 👇 جلب الفوليوم العالمي خلال 24 ساعة 👇
-            volume_24h = data["data"][sym]["quote"]["USD"]["volume_24h"] 
+    data_gate = res_gate.json()
+
+    if not data_gate:
+        raise ValueError("Symbol not found")
+
+    price = float(data_gate[0]["last"])
+
+
+    # --- الفوليوم من CMC ---
+    res_cmc = await client.get(
+        f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={sym}",
+        headers={"X-CMC_PRO_API_KEY": CMC_KEY},
+        timeout=10
+    )
+
+    data_cmc = res_cmc.json()
+
+    if res_cmc.status_code != 200 or "data" not in data_cmc or sym not in data_cmc["data"]:
+        raise ValueError("Volume not found")
+
+    volume_24h = data_cmc["data"][sym]["quote"]["USD"]["volume_24h"] 
             
             # 👇 إضافة الفوليوم للجلسة 👇
             user_session_data[uid] = {"sym": sym, "price": price, "volume_24h": volume_24h, "lang": lang}
@@ -871,7 +887,7 @@ async def on_startup(app):
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
     
     #asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
-    asyncio.create_task(daily_channel_post())
+    #asyncio.create_task(daily_channel_post())
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
 app = web.Application()
