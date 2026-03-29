@@ -483,6 +483,13 @@ async def handle_symbol(m: types.Message):
         )
     
     sym = m.text.strip().upper()
+
+    symbol_map = {
+        "XAU": "PAXG",
+        "GOLD": "PAXG"
+}
+
+    sym = symbol_map.get(sym, sym)
     
     # 2. إرسال رسالة الانتظار وتخزينها في متغير
     status_msg = await m.answer("⏳ جاري جلب السعر..." if lang=="ar" else "⏳ Fetching price...")
