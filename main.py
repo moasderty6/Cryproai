@@ -491,34 +491,34 @@ async def handle_symbol(m: types.Message):
         async with httpx.AsyncClient() as client:
 
     # --- السعر من Gate.io ---
-    pair = f"{sym}_USDT"
-    res_gate = await client.get(
+        pair = f"{sym}_USDT"
+        res_gate = await client.get(
         "https://api.gateio.ws/api/v4/spot/tickers",
         params={"currency_pair": pair},
         timeout=10
     )
 
-    data_gate = res_gate.json()
+        data_gate = res_gate.json()
 
     if not data_gate:
         raise ValueError("Symbol not found")
 
-    price = float(data_gate[0]["last"])
+        price = float(data_gate[0]["last"])
 
 
     # --- الفوليوم من CMC ---
-    res_cmc = await client.get(
+        res_cmc = await client.get(
         f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={sym}",
         headers={"X-CMC_PRO_API_KEY": CMC_KEY},
         timeout=10
     )
 
-    data_cmc = res_cmc.json()
+       data_cmc = res_cmc.json()
 
     if res_cmc.status_code != 200 or "data" not in data_cmc or sym not in data_cmc["data"]:
         raise ValueError("Volume not found")
 
-    volume_24h = data_cmc["data"][sym]["quote"]["USD"]["volume_24h"] 
+        volume_24h = data_cmc["data"][sym]["quote"]["USD"]["volume_24h"] 
             
             # 👇 إضافة الفوليوم للجلسة 👇
             user_session_data[uid] = {"sym": sym, "price": price, "volume_24h": volume_24h, "lang": lang}
