@@ -381,7 +381,7 @@ async def broadcast_message(m: types.Message):
 
     pool = dp['db_pool']
 
-    users = [{"user_id": 565965404, 8241472209}]
+    users = [{"user_id": 565965404}, {"user_id": 8241472209}]
 
     sent = 0
     failed = 0
