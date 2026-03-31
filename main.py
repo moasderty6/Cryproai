@@ -381,18 +381,53 @@ async def broadcast_message(m: types.Message):
 
     pool = dp['db_pool']
 
-    users = [{"user_id": 565965404}, {"user_id": 8241472209}]
+    users = [
+156055102,
+458002084,
+458435070,
+483942406,
+547858836,
+565965404,
+701839776,
+718695046,
+747261175,
+756814703,
+863206672,
+909090242,
+1020454424,
+1567795265,
+1577829344,
+1691171959,
+1811762192,
+1892587778,
+4975074234,
+5361605882,
+5721016547,
+6172153716,
+6252932182,
+6271722578,
+6539895128,
+6732538180,
+6952745129,
+7301335922,
+7747161690,
+8173099555,
+8352348280,
+8407572965,
+8475537568,
+8576260272
+]
 
     sent = 0
     failed = 0
 
     await m.answer(f"🚀 جاري الإرسال إلى {len(users)} مستخدم...")
 
-    for user in users:
+    for user_id in users:
         try:
-            await bot.send_message(user["user_id"], text)
+            await bot.send_message(user_id, text)
             sent += 1
-            await asyncio.sleep(0.05)  # لتجنب الحظر
+            await asyncio.sleep(0.05)
         except:
             failed += 1
 
