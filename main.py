@@ -368,6 +368,39 @@ async def ask_groq(prompt, lang="ar"):
 
 
 # --- الأوامر ---
+@dp.message(Command("send"))
+async def broadcast_message(m: types.Message):
+    if m.from_user.id != ADMIN_USER_ID:
+        return await m.answer("❌ هذا الأمر مخصص للأدمن فقط.")
+
+    # استخراج نص الرسالة بعد الأمر
+    text = m.text.replace("/send", "").strip()
+
+    if not text:
+        return await m.answer("⚠️ اكتب الرسالة بعد الأمر.\n\nمثال:\n/send مرحباً بالجميع")
+
+    pool = dp['db_pool']
+
+    users = [{"user_id": 565965404}]
+
+    sent = 0
+    failed = 0
+
+    await m.answer(f"🚀 جاري الإرسال إلى {len(users)} مستخدم...")
+
+    for user in users:
+        try:
+            await bot.send_message(user["user_id"], text)
+            sent += 1
+            await asyncio.sleep(0.05)  # لتجنب الحظر
+        except:
+            failed += 1
+
+    await m.answer(
+        f"✅ انتهى الإرسال\n\n"
+        f"📨 تم الإرسال: {sent}\n"
+        f"❌ فشل: {failed}"
+    )
 @dp.message(Command("status"))
 async def status_cmd(m: types.Message):
     pool = dp['db_pool']
