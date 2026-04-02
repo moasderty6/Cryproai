@@ -382,7 +382,7 @@ async def broadcast_message(m: types.Message):
     pool = dp['db_pool']
 
     users = [
-6816792094
+1870691465
 ]
 
     sent = 0
