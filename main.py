@@ -161,53 +161,93 @@ async def ai_opportunity_radar(pool):
 
                 last_rsi, last_macd_diff, last_bb, last_vol, high, low = compute_indicators(candles)
 
-                # EMA Trend
+                # -----------------
+                # Indicators
+                # -----------------
                 ema50 = df["close"].ewm(span=50).mean()
                 ema200 = df["close"].ewm(span=200).mean()
                 trend_up = df["close"].iloc[-1] > ema200.iloc[-1]
 
-                # Volume Explosion
                 avg_vol = df["volume"].rolling(20).mean()
                 volume_spike = df["volume"].iloc[-1] > (avg_vol.iloc[-1] * 2.5)
 
-                # Accumulation (Squeeze)
                 range_20 = df["high"].rolling(20).max() - df["low"].rolling(20).min()
                 squeeze = range_20.iloc[-1] < (price * 0.07)
 
-                # Breakout
                 recent_high = df["high"].rolling(20).max().iloc[-2]
                 breakout = price > recent_high
 
-                # Fake breakout filter
                 fake_move = (high - low) / price > 0.35
                 if fake_move:
                     continue
 
                 # -----------------
-                # 🎯 SCORING SYSTEM
+                # 🎯 PRO SCORING SYSTEM (MAX 100)
                 # -----------------
                 score = 0
 
-                if 35 < last_rsi < 55:
+                # RSI
+                if 40 <= last_rsi <= 55:
                     score += 15
+                elif 35 <= last_rsi < 40:
+                    score += 10
 
+                # MACD
                 if last_macd_diff > 0:
-                    score += 20
+                    score += 15
+                    if last_macd_diff > 0.002:
+                        score += 5
 
+                # Trend
                 if trend_up:
                     score += 15
 
+                # Volume
                 if volume_spike:
-                    score += 25
+                    score += 20
+                    if df["volume"].iloc[-1] > (avg_vol.iloc[-1] * 3):
+                        score += 5
 
+                # Squeeze
                 if squeeze:
+                    score += 10
+
+                # Breakout
+                if breakout:
                     score += 15
 
-                if breakout:
-                    score += 20
-
+                # Small cap boost
                 if marketcap < 150_000_000:
-                    score += 10
+                    score += 5
+
+                # -----------------
+                # 🛑 HARD FILTERS
+                # -----------------
+                if not volume_spike:
+                    score -= 15
+
+                if last_rsi < 35:
+                    score -= 10
+
+                if not trend_up:
+                    score -= 15
+
+                # شمعة ضعيفة
+                body = abs(df["close"].iloc[-1] - df["open"].iloc[-1])
+                if body < (price * 0.003):
+                    score -= 5
+
+                # -----------------
+                # 🔒 Clamp
+                # -----------------
+                score = max(0, min(score, 100))
+
+                # -----------------
+                # 💣 Elite filter
+                # -----------------
+                if score >= 90:
+                    if not (volume_spike and breakout and trend_up):
+                        score = 85
 
                 # -----------------
                 # اختيار الأفضل
@@ -217,11 +257,7 @@ async def ai_opportunity_radar(pool):
                     best_coin = c
                     best_meta = {
                         "symbol": symbol,
-                        "price": price,
-                        "score": score,
-                        "volume_spike": volume_spike,
-                        "squeeze": squeeze,
-                        "breakout": breakout
+                        "price": price
                     }
 
                 await asyncio.sleep(0.15)
@@ -258,14 +294,17 @@ async def ai_opportunity_radar(pool):
                 lang="en"
             )
 
-            users = await pool.fetch("SELECT user_id, lang FROM users_info WHERE user_id IN ($1, $2, $3)", ADMIN_USER_ID, 8241472209, 565965404)
+            users = await pool.fetch(
+                "SELECT user_id, lang FROM users_info WHERE user_id IN ($1, $2, $3)",
+                ADMIN_USER_ID, 8241472209, 565965404
+            )
 
             for row in users:
                 uid = row["user_id"]
                 lang = row["lang"] or "ar"
                 paid = await is_user_paid(pool, uid)
 
-                # ---------------- VIP ----------------
+                # ---------- VIP ----------
                 if paid:
                     if lang == "ar":
                         text = (
@@ -290,7 +329,7 @@ async def ai_opportunity_radar(pool):
                             f"━━━━━━━━━━━━━━"
                         )
 
-                # ---------------- FREE ----------------
+                # ---------- FREE ----------
                 else:
                     if lang == "ar":
                         text = (
@@ -300,8 +339,8 @@ async def ai_opportunity_radar(pool):
                             f"⚡ الإشارة: {signal}\n"
                             f"📊 السكور: {best_score}/100\n\n"
                             f"🔥 تم رصد تجميع قوي + فوليوم غير طبيعي\n"
-                            f"🚀 احتمال حركة كبيرة قريباً\n\n"
-                            f"اشترك VIP لكشف العملة قبل الانفجار\n"
+                            f"🚀 احتمال انفجار سعري قريب\n\n"
+                            f"اشترك VIP لكشف العملة\n"
                             f"━━━━━━━━━━━━━━"
                         )
                     else:
@@ -311,9 +350,9 @@ async def ai_opportunity_radar(pool):
                             f"💎 Coin: •••• 🔒\n"
                             f"⚡ Signal: {signal}\n"
                             f"📊 Score: {best_score}/100\n\n"
-                            f"🔥 Strong accumulation + abnormal volume detected\n"
-                            f"🚀 Big move likely soon\n\n"
-                            f"Subscribe VIP to unlock the coin\n"
+                            f"🔥 Strong accumulation + abnormal volume\n"
+                            f"🚀 Possible breakout soon\n\n"
+                            f"Subscribe VIP to unlock\n"
                             f"━━━━━━━━━━━━━━"
                         )
 
