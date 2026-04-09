@@ -71,8 +71,8 @@ async def create_nowpayments_invoice(user_id: int):
     url = "https://api.nowpayments.io/v1/invoice"
     headers = {"x-api-key": NOWPAYMENTS_API_KEY, "Content-Type": "application/json"}
     data = {
-        "price_amount": 10,
-        "price_currency": "usd",
+        "price_amount": 30,
+        "price_currency": "usdt",
         "order_id": str(user_id),
         "ipn_callback_url": f"{WEBHOOK_URL}/webhook/nowpayments",
         "success_url": f"https://t.me/{(await bot.get_me()).username}",
@@ -84,11 +84,11 @@ async def create_nowpayments_invoice(user_id: int):
     except: return None
 
 async def send_stars_invoice(chat_id: int, lang="ar"):
-    prices = [LabeledPrice(label="اشتراك البوت بـ 500 نجمة مدى الحياة ⭐" if lang=="ar" else "Subscribe Now with 500 ⭐ Lifetime", amount=500)]
+    prices = [LabeledPrice(label="اشتراك البوت بـ 1500 نجمة مدى الحياة ⭐" if lang=="ar" else "Subscribe Now with 1500 ⭐ Lifetime", amount=1500)]
     await bot.send_invoice(
         chat_id=chat_id,
         title="اشتراك VIP" if lang=="ar" else "VIP Subscription",
-        description="اشترك الآن باستخدام 500 ⭐ للوصول الكامل" if lang=="ar" else "Subscribe Now with 500 ⭐ for full access",
+        description="اشترك الآن باستخدام 1500 ⭐ للوصول الكامل" if lang=="ar" else "Subscribe Now with 1500 ⭐ for full access",
         payload="stars_pay",
         provider_token="", 
         currency="XTR",
@@ -98,12 +98,12 @@ async def send_stars_invoice(chat_id: int, lang="ar"):
 def get_payment_kb(lang):
     if lang == "ar":
         return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💎 اشترك الآن (10 USDT مدى الحياة)", callback_data="pay_crypto")],
-            [InlineKeyboardButton(text=" اشترك الآن بـ 500 نجمة مدى الحياة⭐", callback_data="pay_stars")]
+            [InlineKeyboardButton(text="💎 اشترك الآن (30 USDT مدى الحياة)", callback_data="pay_crypto")],
+            [InlineKeyboardButton(text=" اشترك الآن بـ 1500 نجمة مدى الحياة⭐", callback_data="pay_stars")]
         ])
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💎 Subscribe Now (10 USDT Lifetime)", callback_data="pay_crypto")],
-        [InlineKeyboardButton(text="⭐ Subscribe Now with 500 Stars Lifetime", callback_data="pay_stars")]
+        [InlineKeyboardButton(text="💎 Subscribe Now (30 USDT Lifetime)", callback_data="pay_crypto")],
+        [InlineKeyboardButton(text="⭐ Subscribe Now with 1500 Stars Lifetime", callback_data="pay_stars")]
     ])
 
 # --- رادار الفرص الذكي ---
@@ -483,7 +483,7 @@ async def set_lang(cb: types.CallbackQuery):
     elif has_tr:
         msg = "🎁 لديك تجربة مجانية واحدة! أرسل رمز العملة للتحليل." if lang == "ar" else "🎁 You have one free trial! Send a coin symbol for analysis."
     else:
-        msg = "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة." if lang == "ar" else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐."
+        msg = "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 30 USDT أو 1500 ⭐ لمرة واحدة." if lang == "ar" else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 30 USDT or 1500 ⭐."
     
     await cb.message.edit_text(msg, reply_markup=None if (is_paid or has_tr) else get_payment_kb(lang))
 
@@ -513,8 +513,8 @@ async def handle_symbol(m: types.Message):
     # 1. التحقق من الصلاحية
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
         return await m.answer(
-            "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة." if lang=="ar" 
-            else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐.", 
+            "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 30 USDT أو 1500 ⭐ لمرة واحدة." if lang=="ar" 
+            else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 30 USDT or 1500 ⭐.", 
             reply_markup=get_payment_kb(lang)
         )
     
@@ -793,7 +793,7 @@ Stop Loss: <code>(Price)</code>
     if not (await is_user_paid(pool, uid)):
         async with pool.acquire() as conn:
             await conn.execute("INSERT INTO trial_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
-        await cb.message.answer("⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ لمرة واحدة." if lang=="ar" else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 10 USDT or 500 ⭐.", reply_markup=get_payment_kb(lang))
+        await cb.message.answer("⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 30 USDT أو 1500 ⭐ لمرة واحدة." if lang=="ar" else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 30 USDT or 1500 ⭐.", reply_markup=get_payment_kb(lang))
 
 # --- الدفع الكريبتو ---
 @dp.callback_query(F.data == "pay_crypto")
