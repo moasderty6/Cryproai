@@ -273,7 +273,7 @@ async def ai_opportunity_radar(pool):
             # نوع الإشارة
             # -----------------
             if best_score >= 90:
-                signal = "💣 INSANE PRE-PUMP"
+                signal = "💣 SMART MONEY"
             elif best_score >= 80:
                 signal = "🚀 STRONG BREAKOUT"
             elif best_score >= 70:
@@ -308,7 +308,7 @@ async def ai_opportunity_radar(pool):
                 if paid:
                     if lang == "ar":
                         text = (
-                            f"🚨 <b>رادار PRO MAX</b>\n"
+                            f"🚨 <b>رادار السوق الذكي VIP</b>\n"
                             f"━━━━━━━━━━━━━━\n"
                             f"💎 العملة: #{symbol}\n"
                             f"💵 السعر: ${format_price(price)}\n"
@@ -319,7 +319,7 @@ async def ai_opportunity_radar(pool):
                         )
                     else:
                         text = (
-                            f"🚨 <b>PRO MAX RADAR</b>\n"
+                            f"🚨 <b>VIP Smart Market Radar</b>\n"
                             f"━━━━━━━━━━━━━━\n"
                             f"💎 Coin: #{symbol}\n"
                             f"💵 Price: ${format_price(price)}\n"
@@ -333,26 +333,26 @@ async def ai_opportunity_radar(pool):
                 else:
                     if lang == "ar":
                         text = (
-                            f"📡 <b>رادار البومب</b>\n"
+                            f"📡 <b>رادار الإنفجارات السعرية</b>\n"
                             f"━━━━━━━━━━━━━━\n"
                             f"💎 العملة: •••• 🔒\n"
                             f"⚡ الإشارة: {signal}\n"
                             f"📊 السكور: {best_score}/100\n\n"
                             f"🔥 تم رصد تجميع قوي + فوليوم غير طبيعي\n"
                             f"🚀 احتمال انفجار سعري قريب\n\n"
-                            f"اشترك VIP لكشف العملة\n"
+                            f"اشترك VIP لكشف اسم العملة والأهداف\n"
                             f"━━━━━━━━━━━━━━"
                         )
                     else:
                         text = (
-                            f"📡 <b>PUMP RADAR</b>\n"
+                            f"📡 <b>Price Explosion Radar</b>\n"
                             f"━━━━━━━━━━━━━━\n"
                             f"💎 Coin: •••• 🔒\n"
                             f"⚡ Signal: {signal}\n"
                             f"📊 Score: {best_score}/100\n\n"
                             f"🔥 Strong accumulation + abnormal volume\n"
                             f"🚀 Possible breakout soon\n\n"
-                            f"Subscribe VIP to unlock\n"
+                            f"Subscribe VIP to unlock the coin and exact targets.\n"
                             f"━━━━━━━━━━━━━━"
                         )
 
