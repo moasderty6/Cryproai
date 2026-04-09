@@ -465,8 +465,44 @@ async def ask_groq(prompt, lang="ar"):
         print(f"Error in ask_groq: {e}")
         return "⚠️ Error generating analysis"
 
-
 # --- الأوامر ---
+@dp.message(Command("sendphoto"))
+async def send_photo_to_trials(m: types.Message):
+    if m.from_user.id != ADMIN_USER_ID:
+        return await m.answer("❌ هذا الأمر للأدمن فقط")
+
+    pool = dp['db_pool']
+
+    # جلب مستخدمي التجربة فقط واستثناء VIP
+    users = await pool.fetch("""
+    SELECT u.user_id
+    FROM users_info u
+    JOIN trial_users t ON u.user_id = t.user_id
+    WHERE u.user_id NOT IN (SELECT user_id FROM paid_users)
+    """)
+
+    # تأكد أن الأدمن أرسل صورة مع الأمر
+    if not m.photo:
+        return await m.answer("❌ أرسل الأمر مع صورة")
+
+    photo = m.photo[-1].file_id  # أعلى جودة
+    caption = m.caption or ""
+
+    sent = 0
+
+    for row in users:
+        try:
+            await bot.send_photo(
+                chat_id=row["user_id"],
+                photo=photo,
+                caption=caption
+            )
+            sent += 1
+            await asyncio.sleep(0.05)
+        except:
+            continue
+
+    await m.answer(f"✅ تم إرسال الصورة إلى {sent} مستخدم تجربة")
 @dp.message(Command("send"))
 async def broadcast_message(m: types.Message):
     if m.from_user.id != ADMIN_USER_ID:
