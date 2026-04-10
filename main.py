@@ -628,6 +628,61 @@ async def set_lang(cb: types.CallbackQuery):
 
 # --- التعامل مع الرموز ---
 @dp.message(F.text)
+async def search_dex_coin(symbol: str):
+    """تبحث عن العملة في DexScreener بناءً على التوثيق الرسمي"""
+    url = f"https://api.dexscreener.com/latest/dex/search?q={symbol}"
+    
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            res = await client.get(url)
+            data = res.json()
+            
+            # التأكد من وجود أزواج تداول (Pairs)
+            if data.get("pairs") and len(data["pairs"]) > 0:
+                # نأخذ أول نتيجة (صاحبة أعلى سيولة عادة)
+                best_pair = data["pairs"][0]
+                
+                return {
+                    "network": best_pair["chainId"],
+                    "pool_address": best_pair["pairAddress"],
+                    "price": float(best_pair.get("priceUsd", 0)),
+                    "volume_24h": float(best_pair.get("volume", {}).get("h24", 0)),
+                    "base_symbol": best_pair.get("baseToken", {}).get("symbol", symbol)
+                }
+    except Exception as e:
+        print(f"DexScreener Error: {e}")
+    return None
+
+async def get_candles_dex(network: str, pool_address: str, interval: str, limit: int = 120):
+    """تجلب الشموع من GeckoTerminal وتعيد ترتيبها لتطابق تنسيق Gate.io"""
+    # تحويل الإطارات الزمنية
+    if interval == "1d" or interval == "1w":
+        timeframe = "day"
+        aggregate = 1
+    else: # الافتراضي 4h
+        timeframe = "hour"
+        aggregate = 4
+
+    url = f"https://api.geckoterminal.com/api/v2/networks/{network}/pools/{pool_address}/ohlcv/{timeframe}?aggregate={aggregate}&limit={limit}"
+    
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            res = await client.get(url)
+            if res.status_code == 200:
+                data = res.json()
+                ohlcv_list = data["data"]["attributes"]["ohlcv_list"]
+                
+                formatted_candles = []
+                for candle in ohlcv_list:
+                    t, o, h, l, c, v = candle
+                    # الترتيب الخاص بك: [timestamp, volume, close, high, low, open]
+                    formatted_candles.append([t, v, c, h, l, o])
+                    
+                # GeckoTerminal يرسل الشموع من الأحدث للأقدم، لذا نعكسها لتصبح من الأقدم للأحدث مثل Gate.io
+                return formatted_candles[::-1] 
+    except Exception as e:
+        print(f"GeckoTerminal Error: {e}")
+    return None
 async def handle_symbol(m: types.Message):
     if m.text.startswith('/'):
         return
@@ -671,53 +726,80 @@ async def handle_symbol(m: types.Message):
 
     try:
         async with httpx.AsyncClient() as client:
-
-    # --- السعر من Gate.io ---
+            # --- المحاولة الأولى: السعر من Gate.io (المركزي) ---
             pair = f"{sym}_USDT"
             res_gate = await client.get(
                 "https://api.gateio.ws/api/v4/spot/tickers",
                 params={"currency_pair": pair},
                 timeout=10
-    )
-
+            )
             data_gate = res_gate.json()
 
-            if not data_gate:
-                raise ValueError("Symbol not found")
+            if isinstance(data_gate, list) and len(data_gate) > 0 and "last" in data_gate[0]:
+                price = float(data_gate[0]["last"])
+                
+                # جلب الفوليوم من CMC (إذا أردت، أو ضع فوليوم افتراضي لتسريع العملية)
+                volume_24h = 0
+                try:
+                    res_cmc = await client.get(
+                        f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={sym}",
+                        headers={"X-CMC_PRO_API_KEY": CMC_KEY},
+                        timeout=5
+                    )
+                    data_cmc = res_cmc.json()
+                    if res_cmc.status_code == 200 and sym in data_cmc.get("data", {}):
+                        volume_24h = data_cmc["data"][sym]["quote"]["USD"]["volume_24h"]
+                except:
+                    pass
 
-            price = float(data_gate[0]["last"])
+                # حفظ بيانات الجلسة (عملة مركزية)
+                user_session_data[uid] = {
+                    "sym": sym, "price": price, "volume_24h": volume_24h, 
+                    "lang": lang, "is_dex": False
+                }
+            else:
+                # 🛑 رفع خطأ لكي ينتقل للـ except ويبحث في اللامركزي 🛑
+                raise ValueError("Symbol not found in Gate.io")
 
+    except Exception as e:
+        # --- المحاولة الثانية: البحث في DexScreener (اللامركزي) ---
+        dex_data = await search_dex_coin(sym)
+        
+        if dex_data:
+            # تم إيجاد العملة في اللامركزي!
+            sym = dex_data["base_symbol"] # أخذ الرمز الصحيح من العقد
+            price = dex_data["price"]
+            
+            # حفظ بيانات الجلسة (عملة لامركزية)
+            user_session_data[uid] = {
+                "sym": sym, "price": price, "volume_24h": dex_data["volume_24h"], 
+                "lang": lang, "is_dex": True, 
+                "network": dex_data["network"], "pool_address": dex_data["pool_address"]
+            }
+        else:
+            # لم يجدها في الاثنين
+            error_text = (
+                f"❌ الرمز `{sym}` غير صحيح أو العملة غير متوفرة في منصات التداول." if lang=="ar" 
+                else f"❌ Symbol `{sym}` is invalid or not found on exchanges."
+            )
+            return await status_msg.edit_text(error_text, parse_mode=ParseMode.MARKDOWN)
 
-    # --- الفوليوم من CMC ---
-            res_cmc = await client.get(
-                f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={sym}",
-                headers={"X-CMC_PRO_API_KEY": CMC_KEY},
-                timeout=10
+    # 3. تحديث رسالة الانتظار بالخيارات
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="أسبوعي" if lang=="ar" else "Weekly", callback_data="tf_weekly"),
+        InlineKeyboardButton(text="يومي" if lang=="ar" else "Daily", callback_data="tf_daily"),
+        InlineKeyboardButton(text="4 ساعات" if lang=="ar" else "4H", callback_data="tf_4h")
+    ]])
+    
+    # تحديد نوع العملة لإظهاره للمستخدم (لمسة جمالية)
+    coin_type = "🌐 DEX" if user_session_data[uid].get("is_dex") else "🏦 CEX"
+    
+    await status_msg.edit_text(
+        f"✅ العملة: {sym} ({coin_type})\n💵 السعر: ${format_price(price)}\n⏳ اختر الإطار الزمني للتحليل:" if lang=="ar" 
+        else f"✅ Symbol: {sym} ({coin_type})\n💵 Price: ${format_price(price)}\n⏳ Select timeframe for analysis:",
+        reply_markup=kb
     )
 
-            data_cmc = res_cmc.json()
-
-            if res_cmc.status_code != 200 or "data" not in data_cmc or sym not in data_cmc["data"]:
-                raise ValueError("Volume not found")
-
-            volume_24h = data_cmc["data"][sym]["quote"]["USD"]["volume_24h"] 
-            
-            # 👇 إضافة الفوليوم للجلسة 👇
-            user_session_data[uid] = {"sym": sym, "price": price, "volume_24h": volume_24h, "lang": lang}
-
-            
-            # 3. تحديث رسالة الانتظار بالخيارات الجديدة في حال النجاح
-            kb = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="أسبوعي" if lang=="ar" else "Weekly", callback_data="tf_weekly"),
-                InlineKeyboardButton(text="يومي" if lang=="ar" else "Daily", callback_data="tf_daily"),
-                InlineKeyboardButton(text="4 ساعات" if lang=="ar" else "4H", callback_data="tf_4h")
-            ]])
-            
-            await status_msg.edit_text(
-                f"✅ العملة: {user_sym}\n💵 السعر: ${format_price(price)}\n⏳ اختر الإطار الزمني للتحليل:" if lang=="ar" 
-            else f"✅ Symbol: {user_sym}\n💵 Price: ${format_price(price)}\n⏳ Select timeframe for analysis:",
-                reply_markup=kb
-            )
 
     except Exception as e:
         # 4. في حال حدوث أي خطأ، يتم تعديل رسالة "جاري الجلب" لتوضيح الخطأ
@@ -825,8 +907,19 @@ async def run_analysis(cb: types.CallbackQuery):
 
     # --- تنظيف الرمز وجلب البيانات ---
     clean_sym = sym.replace("USDT", "").strip().upper()
-    gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
-    candles = await get_candles_gate(f"{clean_sym}_USDT", gate_interval, limit=250)
+        is_dex = data.get('is_dex', False)
+    
+    if is_dex:
+        # جلب شموع اللامركزي (GeckoTerminal)
+        network = data.get('network')
+        pool_address = data.get('pool_address')
+        gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
+        candles = await get_candles_dex(network, pool_address, gate_interval, limit=120)
+    else:
+        # جلب شموع المركزي (Gate.io)
+        gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
+        candles = await get_candles_gate(f"{clean_sym}_USDT", gate_interval, limit=250)
+
 
     if candles:
         last_rsi, last_macd, last_bb, last_vol, high, low = compute_indicators(candles)
