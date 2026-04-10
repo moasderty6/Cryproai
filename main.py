@@ -1,4 +1,4 @@
-import asyncio
+#import asyncio
 import os
 import re
 import json
@@ -517,7 +517,7 @@ async def broadcast_message(m: types.Message):
     pool = dp['db_pool']
 
     users = [
-1158956775
+7843256763
 ]
 
     sent = 0
