@@ -627,21 +627,17 @@ async def set_lang(cb: types.CallbackQuery):
     await cb.message.edit_text(msg, reply_markup=None if (is_paid or has_tr) else get_payment_kb(lang))
 
 # --- التعامل مع الرموز ---
-@dp.message(F.text)
+# --- التعامل مع الرموز ---
+
 async def search_dex_coin(symbol: str):
     """تبحث عن العملة في DexScreener بناءً على التوثيق الرسمي"""
     url = f"https://api.dexscreener.com/latest/dex/search?q={symbol}"
-    
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             res = await client.get(url)
             data = res.json()
-            
-            # التأكد من وجود أزواج تداول (Pairs)
             if data.get("pairs") and len(data["pairs"]) > 0:
-                # نأخذ أول نتيجة (صاحبة أعلى سيولة عادة)
                 best_pair = data["pairs"][0]
-                
                 return {
                     "network": best_pair["chainId"],
                     "pool_address": best_pair["pairAddress"],
@@ -655,34 +651,30 @@ async def search_dex_coin(symbol: str):
 
 async def get_candles_dex(network: str, pool_address: str, interval: str, limit: int = 120):
     """تجلب الشموع من GeckoTerminal وتعيد ترتيبها لتطابق تنسيق Gate.io"""
-    # تحويل الإطارات الزمنية
     if interval == "1d" or interval == "1w":
         timeframe = "day"
         aggregate = 1
-    else: # الافتراضي 4h
+    else:
         timeframe = "hour"
         aggregate = 4
 
     url = f"https://api.geckoterminal.com/api/v2/networks/{network}/pools/{pool_address}/ohlcv/{timeframe}?aggregate={aggregate}&limit={limit}"
-    
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             res = await client.get(url)
             if res.status_code == 200:
                 data = res.json()
                 ohlcv_list = data["data"]["attributes"]["ohlcv_list"]
-                
                 formatted_candles = []
                 for candle in ohlcv_list:
                     t, o, h, l, c, v = candle
-                    # الترتيب الخاص بك: [timestamp, volume, close, high, low, open]
                     formatted_candles.append([t, v, c, h, l, o])
-                    
-                # GeckoTerminal يرسل الشموع من الأحدث للأقدم، لذا نعكسها لتصبح من الأقدم للأحدث مثل Gate.io
                 return formatted_candles[::-1] 
     except Exception as e:
         print(f"GeckoTerminal Error: {e}")
     return None
+
+@dp.message(F.text)
 async def handle_symbol(m: types.Message):
     if m.text.startswith('/'):
         return
@@ -697,14 +689,10 @@ async def handle_symbol(m: types.Message):
             ON CONFLICT (user_id)
             DO UPDATE SET last_active = CURRENT_DATE
         """, uid)
-    # --------------------------------------------
 
     user = await pool.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", uid)
-    # ... باقي كود الدالة كما هو ...
-
     lang = user['lang'] if user else "ar"
     
-    # 1. التحقق من الصلاحية
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
         return await m.answer(
             "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 30 USDT أو 1500 ⭐ لمرة واحدة." if lang=="ar" 
@@ -713,20 +701,13 @@ async def handle_symbol(m: types.Message):
         )
     
     user_sym = m.text.strip().upper()
-
-    symbol_map = {
-        "XAU": "PAXG",
-        "GOLD": "PAXG"
-}
-
+    symbol_map = {"XAU": "PAXG", "GOLD": "PAXG"}
     sym = symbol_map.get(user_sym, user_sym)
     
-    # 2. إرسال رسالة الانتظار وتخزينها في متغير
     status_msg = await m.answer("⏳ جاري جلب السعر..." if lang=="ar" else "⏳ Fetching price...")
 
     try:
         async with httpx.AsyncClient() as client:
-            # --- المحاولة الأولى: السعر من Gate.io (المركزي) ---
             pair = f"{sym}_USDT"
             res_gate = await client.get(
                 "https://api.gateio.ws/api/v4/spot/tickers",
@@ -737,8 +718,6 @@ async def handle_symbol(m: types.Message):
 
             if isinstance(data_gate, list) and len(data_gate) > 0 and "last" in data_gate[0]:
                 price = float(data_gate[0]["last"])
-                
-                # جلب الفوليوم من CMC (إذا أردت، أو ضع فوليوم افتراضي لتسريع العملية)
                 volume_24h = 0
                 try:
                     res_cmc = await client.get(
@@ -752,46 +731,36 @@ async def handle_symbol(m: types.Message):
                 except:
                     pass
 
-                # حفظ بيانات الجلسة (عملة مركزية)
                 user_session_data[uid] = {
                     "sym": sym, "price": price, "volume_24h": volume_24h, 
                     "lang": lang, "is_dex": False
                 }
             else:
-                # 🛑 رفع خطأ لكي ينتقل للـ except ويبحث في اللامركزي 🛑
                 raise ValueError("Symbol not found in Gate.io")
 
-    except Exception as e:
-        # --- المحاولة الثانية: البحث في DexScreener (اللامركزي) ---
+    except Exception:
         dex_data = await search_dex_coin(sym)
-        
         if dex_data:
-            # تم إيجاد العملة في اللامركزي!
-            sym = dex_data["base_symbol"] # أخذ الرمز الصحيح من العقد
+            sym = dex_data["base_symbol"]
             price = dex_data["price"]
-            
-            # حفظ بيانات الجلسة (عملة لامركزية)
             user_session_data[uid] = {
                 "sym": sym, "price": price, "volume_24h": dex_data["volume_24h"], 
                 "lang": lang, "is_dex": True, 
                 "network": dex_data["network"], "pool_address": dex_data["pool_address"]
             }
         else:
-            # لم يجدها في الاثنين
             error_text = (
-                f"❌ الرمز `{sym}` غير صحيح أو العملة غير متوفرة في منصات التداول." if lang=="ar" 
+                f"❌ الرمز `{sym}` غير صحيح أو غير متوفر في منصات التداول." if lang=="ar" 
                 else f"❌ Symbol `{sym}` is invalid or not found on exchanges."
             )
             return await status_msg.edit_text(error_text, parse_mode=ParseMode.MARKDOWN)
 
-    # 3. تحديث رسالة الانتظار بالخيارات
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="أسبوعي" if lang=="ar" else "Weekly", callback_data="tf_weekly"),
         InlineKeyboardButton(text="يومي" if lang=="ar" else "Daily", callback_data="tf_daily"),
         InlineKeyboardButton(text="4 ساعات" if lang=="ar" else "4H", callback_data="tf_4h")
     ]])
     
-    # تحديد نوع العملة لإظهاره للمستخدم (لمسة جمالية)
     coin_type = "🌐 DEX" if user_session_data[uid].get("is_dex") else "🏦 CEX"
     
     await status_msg.edit_text(
@@ -799,15 +768,6 @@ async def handle_symbol(m: types.Message):
         else f"✅ Symbol: {sym} ({coin_type})\n💵 Price: ${format_price(price)}\n⏳ Select timeframe for analysis:",
         reply_markup=kb
     )
-
-
-    except Exception as e:
-        # 4. في حال حدوث أي خطأ، يتم تعديل رسالة "جاري الجلب" لتوضيح الخطأ
-        error_text = (
-            f"❌ الرمز `{sym}` غير صحيح. تأكد من كتابة الرمز بشكل صحيح (مثل BTC أو ETH)." if lang=="ar" 
-            else f"❌ Symbol `{sym}` is invalid. Please check the ticker (e.g., BTC, ETH)."
-        )
-        await status_msg.edit_text(error_text, parse_mode=ParseMode.MARKDOWN)
 
 # --- توقيع الهيدر للـ API ---
 def gate_sign(params: dict):
@@ -827,28 +787,17 @@ async def get_candles_gate(symbol: str, interval: str, limit: int = 250):
 
 # --- حساب المؤشرات ---
 def compute_indicators(candles):
-    # التعديل هون: بناخد أول 8 أعمدة بس بنسمي أول 6 بيهمونا للحسابات
-    # Gate.io V4 بيبعت: [Timestamp, Volume, Close, High, Low, Open, Amount, Quote_Volume]
-    
-    # تحويل البيانات لـ DataFrame
     df = pd.DataFrame(candles)
-    
-    # تسمية الأعمدة الـ 6 الأولى فقط وتجاهل الباقي
-    df = df.iloc[:, :6] # هاد السطر بيضمن إننا ناخد أول 6 أعمدة مهما كان العدد الكلي
+    df = df.iloc[:, :6] 
     df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
     
-    # تحويل البيانات لأرقام عشرية لضمان صحة الحسابات
     for col in ["close", "high", "low", "open", "volume"]:
         df[col] = pd.to_numeric(df[col], errors='coerce')
 
-    # --- باقي الكود كما هو بدون أي تغيير ---
-    # RSI
-        # RSI (متطابق مع TradingView)
     delta = df["close"].diff()
     gain = delta.clip(lower=0)
     loss = -1 * delta.clip(upper=0)
     
-    # استخدام ewm بدلاً من rolling
     avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
     
@@ -856,30 +805,24 @@ def compute_indicators(candles):
     rsi_val = 100 - (100 / (1 + rs))
     last_rsi = rsi_val.iloc[-1]
 
-
-    # MACD
     ema12 = df["close"].ewm(span=12, adjust=False).mean()
     ema26 = df["close"].ewm(span=26, adjust=False).mean()
     macd_val = ema12 - ema26
     signal = macd_val.ewm(span=9, adjust=False).mean()
     last_macd_diff = macd_val.iloc[-1] - signal.iloc[-1]
 
-    # Bollinger Bands
-        # Bollinger Bands (مع إضافة ddof=0)
     sma20 = df["close"].rolling(20).mean()
     std20 = df["close"].rolling(20).std(ddof=0) 
     upper_band = sma20 + 2*std20
     lower_band = sma20 - 2*std20
     last_bb = (df["close"].iloc[-1], lower_band.iloc[-1], upper_band.iloc[-1])
 
-    # بيانات إضافية
     last_vol = df["volume"].iloc[-1]
     recent = df.tail(20)
     high_price = recent["high"].max()
     low_price = recent["low"].min()
 
     return last_rsi, last_macd_diff, last_bb, last_vol, high_price, low_price
-
 
 # --- دالة التحليل المعدلة ---
 @dp.callback_query(F.data.startswith("tf_"))
@@ -890,13 +833,12 @@ async def run_analysis(cb: types.CallbackQuery):
     if not data:
         return await cb.answer("⚠️ انتهت الجلسة، يرجى إرسال الرمز من جديد.", show_alert=True)
 
-    # 👇 تم إصلاح المسافات واستخدام get للحماية من الأعطال 👇
     lang = data.get('lang', 'ar')
     sym = data.get('sym')
     price = data.get('price')
     volume_24h = data.get('volume_24h', 0)
     tf = cb.data.replace("tf_", "")
-    # --- تحقق من الاشتراك / التجربة ---
+    
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
         return await cb.message.edit_text(
             "⚠️ انتهت تجربتك المجانية." if lang=="ar" else "⚠️ Trial ended.",
@@ -905,27 +847,23 @@ async def run_analysis(cb: types.CallbackQuery):
 
     await cb.message.edit_text("🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing...")
 
-    # --- تنظيف الرمز وجلب البيانات ---
     clean_sym = sym.replace("USDT", "").strip().upper()
-        is_dex = data.get('is_dex', False)
+    is_dex = data.get('is_dex', False)
     
     if is_dex:
-        # جلب شموع اللامركزي (GeckoTerminal)
         network = data.get('network')
         pool_address = data.get('pool_address')
         gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
         candles = await get_candles_dex(network, pool_address, gate_interval, limit=120)
     else:
-        # جلب شموع المركزي (Gate.io)
         gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
         candles = await get_candles_gate(f"{clean_sym}_USDT", gate_interval, limit=250)
-
 
     if candles:
         last_rsi, last_macd, last_bb, last_vol, high, low = compute_indicators(candles)
     else:
         last_rsi, last_macd, last_bb, last_vol, high, low = 50.0, 0.0, (price, price*0.95, price*1.05), 0.0, price*1.05, price*0.95
-            # --- تنسيق الأسعار للعملات الصفرية والعادية ---
+        
     price_fmt = format_price(price)
     low_fmt = format_price(low)
     high_fmt = format_price(high)
@@ -936,11 +874,6 @@ async def run_analysis(cb: types.CallbackQuery):
     safe_rsi = f"{last_rsi:.2f}" if last_rsi is not None else "N/A"
     vol24_fmt = format_price(volume_24h)
 
-    # --- صياغة البرومبت (نفس أسلوبك بالضبط) ---
-    # ملاحظة: أضفت صمام أمان للـ RSI والماكد لضمان عدم ظهور خطأ f-string
-    safe_rsi = f"{last_rsi:.2f}" if last_rsi is not None else "N/A"
-    
-        # --- برومبت التحليل مع إجبار الـ AI على التنسيق الصارم ---
     if lang == "ar":
         prompt = f"""
 أنت محلل فني خبير في شركة "NaiF CHarT". حلل عملة {clean_sym} بناءً على البيانات التالية:
@@ -998,8 +931,7 @@ TP targets MUST be below current price.
 Trend: (Bullish/Bearish)
 
 <b>📉 Support & Resistance</b>
-Nearest Support: <code>{low_fmt}</code> $
-Nearest Resistance: <code>{high_fmt}</code> $
+Nearest Support: <code>{low_fmt}</code> $Nearest Resistance: <code>{high_fmt}</code>$
 
 <b>🎯 Price Targets</b>
 TP1: <code>(Price)</code>
@@ -1018,7 +950,6 @@ Stop Loss: <code>(Price)</code>
 <b>Note: No intro/outro, strictly follow the headers above.</b>
 """
 
-    # --- استدعاء API داخل الدالة فقط ---
     res = await ask_groq(prompt, lang=lang)
     await cb.message.answer(res, parse_mode=ParseMode.HTML)
     
@@ -1026,7 +957,6 @@ Stop Loss: <code>(Price)</code>
         async with pool.acquire() as conn:
             await conn.execute("INSERT INTO trial_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
         await cb.message.answer("⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 30 USDT أو 1500 ⭐ لمرة واحدة." if lang=="ar" else "⚠️ Your free trial has ended. For full access, please subscribe for a one-time fee of 30 USDT or 1500 ⭐.", reply_markup=get_payment_kb(lang))
-
 # --- الدفع الكريبتو ---
 @dp.callback_query(F.data == "pay_crypto")
 async def crypto_pay(cb: types.CallbackQuery):
