@@ -567,6 +567,12 @@ async def admin_cmd(m: types.Message):
         "📌 للتواصل مع الدعم، يرجى التواصل مع هذا الحساب:\n@AiCrAdmin\n\n"
         "📌 For support, contact:\n@AiCrAdmin"
     )
+@dp.message(Command("results"))
+async def admin_cmd(m: types.Message):
+    await m.answer(
+        "📌 قناة النتائج، لمشاهدة احدث نتائج البوت:\n@N_Results\n\n"
+        "📌 For bor results, in channel:\n@N_Results"
+    )
 @dp.message(Command("radar"))
 async def radar_cmd(m: types.Message):
 
