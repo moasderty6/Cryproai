@@ -107,22 +107,57 @@ def get_payment_kb(lang):
     ])
 
 # --- رادار الفرص الذكي ---
+# --- دوال الرادار المساعدة (ضعها فوق دالة الرادار) ---
+async def get_btc_trend(client):
+    """جلب حالة البيتكوين لمعرفة ترند السوق العام"""
+    try:
+        res = await client.get("https://api.gateio.ws/api/v4/spot/candlesticks", params={
+            "currency_pair": "BTC_USDT", "interval": "1d", "limit": 25
+        })
+        if res.status_code == 200:
+            data = res.json()
+            close_prices = [float(c[2]) for c in data]
+            sma20 = sum(close_prices[-20:]) / 20
+            # هل البيتكوين فوق متوسط 20 يوم؟
+            return close_prices[-1] > sma20
+    except:
+        pass
+    return True # افتراضي في حال فشل الـ API
+
+async def get_orderbook_pressure(client, symbol):
+    """حساب ضغط الشراء من دفتر الأوامر (حيتان مخفية)"""
+    try:
+        res = await client.get("https://api.gateio.ws/api/v4/spot/order_book", params={
+            "currency_pair": f"{symbol}_USDT", "limit": 50
+        })
+        if res.status_code == 200:
+            data = res.json()
+            bids = sum([float(b[1]) for b in data.get("bids", [])]) # قوة الدعم (الشراء)
+            asks = sum([float(a[1]) for a in data.get("asks", [])]) # قوة المقاومة (البيع)
+            if asks == 0: return 1.0
+            return bids / asks
+    except:
+        pass
+    return 1.0
+
+
+# --- الرادار الخارق المعدل ---
 async def ai_opportunity_radar(pool):
     try:
         headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
+        STABLE_COINS = {"USDT","USDC","BUSD","DAI","TUSD","FDUSD","USDP","GUSD","USDD","LUSD"}
 
-        STABLE_COINS = {
-            "USDT","USDC","BUSD","DAI","TUSD","FDUSD","USDP","GUSD","USDD","LUSD"
-        }
+        async with httpx.AsyncClient(timeout=25) as client:
+            
+            # 1. تحديد بوصلة السوق (Bitcoin Trend)
+            is_btc_bullish = await get_btc_trend(client)
 
-        async with httpx.AsyncClient(timeout=20) as client:
-
+            # 2. جلب قائمة العملات
             res = await client.get(
                 "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
                 headers=headers,
                 params={"limit": "250"}
             )
-
             coins = res.json()["data"]
 
             best_coin = None
@@ -131,39 +166,30 @@ async def ai_opportunity_radar(pool):
 
             for c in coins:
                 symbol = c["symbol"]
-
-                if symbol in STABLE_COINS:
-                    continue
+                if symbol in STABLE_COINS: continue
 
                 volume = c["quote"]["USD"]["volume_24h"]
                 marketcap = c["quote"]["USD"]["market_cap"]
                 change24 = c["quote"]["USD"]["percent_change_24h"]
 
-                # فلترة ذكية
-                if volume < 5_000_000 or marketcap < 10_000_000:
-                    continue
-
-                if abs(change24) < 0.4:
-                    continue
+                # 🛑 الفلترة الذكية (Hard Filters)
+                if volume < 5_000_000 or marketcap < 10_000_000: continue
+                if abs(change24) < 0.4: continue
 
                 price = c["quote"]["USD"]["price"]
 
+                # 📊 جلب بيانات 1H كفريم أساسي (نفس نظامك القديم)
                 candles = await get_candles_gate(f"{symbol}_USDT", "1h", limit=120)
-                if not candles:
-                    continue
+                if not candles: continue
 
                 df = pd.DataFrame(candles)
                 df = df.iloc[:, :6]
                 df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
-
                 for col in ["close","high","low","open","volume"]:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
 
                 last_rsi, last_macd_diff, last_bb, last_vol, high, low = compute_indicators(candles)
 
-                # -----------------
-                # Indicators
-                # -----------------
                 ema50 = df["close"].ewm(span=50).mean()
                 ema200 = df["close"].ewm(span=200).mean()
                 trend_up = df["close"].iloc[-1] > ema200.iloc[-1]
@@ -173,78 +199,83 @@ async def ai_opportunity_radar(pool):
 
                 range_20 = df["high"].rolling(20).max() - df["low"].rolling(20).min()
                 squeeze = range_20.iloc[-1] < (price * 0.07)
-
                 recent_high = df["high"].rolling(20).max().iloc[-2]
                 breakout = price > recent_high
 
                 fake_move = (high - low) / price > 0.35
-                if fake_move:
-                    continue
+                if fake_move: continue
 
                 # -----------------
-                # 🎯 PRO SCORING SYSTEM (MAX 100)
+                # 🎯 1H BASE SCORING
                 # -----------------
-                score = 0
-
-                # RSI
-                if 40 <= last_rsi <= 55:
-                    score += 15
-                elif 35 <= last_rsi < 40:
-                    score += 10
-
-                # MACD
+                base_score = 0
+                if 40 <= last_rsi <= 55: base_score += 15
+                elif 35 <= last_rsi < 40: base_score += 10
+                
                 if last_macd_diff > 0:
-                    score += 15
-                    if last_macd_diff > 0.002:
-                        score += 5
-
-                # Trend
-                if trend_up:
-                    score += 15
-
-                # Volume
+                    base_score += 15
+                    if last_macd_diff > 0.002: base_score += 5
+                
+                if trend_up: base_score += 15
+                
                 if volume_spike:
-                    score += 20
-                    if df["volume"].iloc[-1] > (avg_vol.iloc[-1] * 3):
-                        score += 5
+                    base_score += 20
+                    if df["volume"].iloc[-1] > (avg_vol.iloc[-1] * 3): base_score += 5
+                
+                if squeeze: base_score += 10
+                if breakout: base_score += 15
+                if marketcap < 150_000_000: base_score += 5
 
-                # Squeeze
-                if squeeze:
-                    score += 10
+                if not volume_spike: base_score -= 15
+                if last_rsi < 35: base_score -= 10
+                if not trend_up: base_score -= 15
 
-                # Breakout
-                if breakout:
-                    score += 15
-
-                # Small cap boost
-                if marketcap < 150_000_000:
-                    score += 5
-
-                # -----------------
-                # 🛑 HARD FILTERS
-                # -----------------
-                if not volume_spike:
-                    score -= 15
-
-                if last_rsi < 35:
-                    score -= 10
-
-                if not trend_up:
-                    score -= 15
-
-                # شمعة ضعيفة
                 body = abs(df["close"].iloc[-1] - df["open"].iloc[-1])
-                if body < (price * 0.003):
-                    score -= 5
+                if body < (price * 0.003): base_score -= 5
+
+                # ----------------------------------------------------
+                # 🚀 SUPER RADAR: Multi-Timeframe & Orderbook Funnel
+                # ----------------------------------------------------
+                # نفحص بعمق فقط العملات التي لديها أساس قوي (توفر استهلاك الـ API)
+                score = base_score
+                if score >= 45: 
+                    # 1. تأثير البيتكوين (الترند العام)
+                    if is_btc_bullish: score += 10
+                    else: score -= 5 # عقوبة إذا كان السوق ينزف
+
+                    # 2. فريم 15 دقيقة (نقطة الدخول والانفجار اللحظي)
+                    candles_15m = await get_candles_gate(f"{symbol}_USDT", "15m", limit=30)
+                    if candles_15m:
+                        df_15m = pd.DataFrame(candles_15m).iloc[:, :6]
+                        df_15m.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+                        for col in ["close","volume","open"]: df_15m[col] = pd.to_numeric(df_15m[col], errors='coerce')
+                        
+                        vol_15m_avg = df_15m["volume"].rolling(10).mean().iloc[-1]
+                        # فوليوم انفجاري لحظي الآن
+                        if df_15m["volume"].iloc[-1] > (vol_15m_avg * 2): score += 15
+                        # شمعة 15 دقيقة خضراء صاعدة
+                        if df_15m["close"].iloc[-1] > df_15m["open"].iloc[-1]: score += 5
+
+                    # 3. فريم 4 ساعات (التأكيد الكلي)
+                    candles_4h = await get_candles_gate(f"{symbol}_USDT", "4h", limit=60)
+                    if candles_4h:
+                        df_4h = pd.DataFrame(candles_4h).iloc[:, :6]
+                        df_4h.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+                        df_4h["close"] = pd.to_numeric(df_4h["close"], errors='coerce')
+                        ema50_4h = df_4h["close"].ewm(span=50).mean().iloc[-1]
+                        # ترند الماكرو إيجابي
+                        if df_4h["close"].iloc[-1] > ema50_4h: score += 10
+
+                    # 4. دفتر الأوامر (السيولة المخفية)
+                    buy_pressure = await get_orderbook_pressure(client, symbol)
+                    if buy_pressure > 2.0: score += 20 # حيتان تشتري بجنون
+                    elif buy_pressure > 1.3: score += 10
 
                 # -----------------
-                # 🔒 Clamp
+                # 🔒 Clamp & Elite Filter
                 # -----------------
                 score = max(0, min(score, 100))
 
-                # -----------------
-                # 💣 Elite filter
-                # -----------------
                 if score >= 90:
                     if not (volume_spike and breakout and trend_up):
                         score = 85
@@ -263,15 +294,12 @@ async def ai_opportunity_radar(pool):
                 await asyncio.sleep(0.15)
 
             # -----------------
-            # فلترة نهائية
+            # فلترة نهائية وتجهيز الإرسال
             # -----------------
             if not best_coin or best_score < 60:
                 print("Radar: No strong setup.")
                 return
 
-            # -----------------
-            # نوع الإشارة
-            # -----------------
             if best_score >= 90:
                 signal = "💣 SMART MONEY"
             elif best_score >= 80:
@@ -294,8 +322,8 @@ async def ai_opportunity_radar(pool):
                 lang="en"
             )
 
-            # --- إرسال الإشعارات للمستخدمين ---
-            users = await pool.fetch("SELECT user_id, lang FROM users_info")
+            # --- إرسال الإشعارات للمستخدمين (نفس نصوصك تماماً) ---
+            users = await pool.fetch("SELECT user_id, lang FROM users_info WHERE user_id IN ($1, $2, $3)", ADMIN_USER_ID, 8241472209, 565965404)
 
             for row in users:
                 uid = row["user_id"]
