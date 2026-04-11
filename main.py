@@ -551,9 +551,9 @@ async def broadcast_message(m: types.Message):
 
     await m.answer(f"🚀 جاري الإرسال إلى {len(users)} مستخدم...")
 
-    for user_id in users:
+    for row in users:
         try:
-            await bot.send_message(user_id, text)
+            await bot.send_message(row["user_id"], text)
             sent += 1
             await asyncio.sleep(0.05)
         except:
