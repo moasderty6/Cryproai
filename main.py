@@ -323,7 +323,8 @@ async def ai_opportunity_radar(pool):
             )
 
             # --- إرسال الإشعارات للمستخدمين (نفس نصوصك تماماً) ---
-            users = await pool.fetch("SELECT user_id, lang FROM users_info WHERE user_id IN ($1, $2, $3)", ADMIN_USER_ID, 8241472209, 565965404)
+            # --- إرسال الإشعارات للمستخدمين ---
+            users = await pool.fetch("SELECT user_id, lang FROM users_info")
 
             for row in users:
                 uid = row["user_id"]
@@ -1124,7 +1125,7 @@ async def on_startup(app):
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
     
     #asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
-    #asyncio.create_task(daily_channel_post())
+    asyncio.create_task(daily_channel_post())
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
 app = web.Application()
