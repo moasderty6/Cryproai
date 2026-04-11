@@ -544,9 +544,7 @@ async def broadcast_message(m: types.Message):
 
     pool = dp['db_pool']
 
-    users = [
-7843256763
-]
+    users = await pool.fetch("SELECT user_id FROM users_info")
 
     sent = 0
     failed = 0
