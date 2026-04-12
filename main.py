@@ -1107,13 +1107,13 @@ async def handle_webhook(req: web.Request):
 
 async def on_startup(app):
     pool = await asyncpg.create_pool(
-    DATABASE_URL,
-    min_size=1,                   # لا اتصالات مفتوحة وقت الخمول
-    max_size=10,                   # عدد الاتصالات المتزامنة كافي للبوت المتوسط
-    command_timeout=60,
-    timeout=60,
-    max_inactive_connection_lifetime=60  # اغلاق الاتصالات الغير مستخدمة
-)
+        DATABASE_URL,
+        min_size=1,
+        max_size=10,
+        command_timeout=60,
+        timeout=60,
+        max_inactive_connection_lifetime=60
+    )
 
     app['db_pool'] = dp['db_pool'] = pool
 
@@ -1124,39 +1124,27 @@ async def on_startup(app):
         print("✅ Database connected successfully")
     except Exception as e:
         print(f"❌ Database connection failed: {e}")
-        async with pool.acquire() as conn:
-        # 1. جدول المستخدمين
-            await conn.execute("CREATE TABLE IF NOT EXISTS users_info (user_id BIGINT PRIMARY KEY, lang TEXT)")
-        try:
-            await conn.execute("ALTER TABLE users_info ADD COLUMN last_active DATE")
-        except asyncpg.exceptions.DuplicateColumnError:
-            pass # العمود موجود مسبقاً، تجاهل
-        except Exception as e:
-            print(f"Error updating users_info: {e}")
-
-        # 2. جدول المشتركين
-            await conn.execute("CREATE TABLE IF NOT EXISTS paid_users (user_id BIGINT PRIMARY KEY)")
-        try:
-            # محاولة إضافة عمود التاريخ للمشتركين القدامى والجدد
-            await conn.execute("ALTER TABLE paid_users ADD COLUMN expiry_date TIMESTAMP")
-            print("✅ Column 'expiry_date' added successfully!")
-        except asyncpg.exceptions.DuplicateColumnError:
-            pass # العمود موجود مسبقاً، لا تفعل شيء
-        except Exception as e:
-            print(f"❌ Error adding expiry_date: {e}")
-            
-        # 3. جدول التجربة
+        
+    # ⚠️ إنشاء وتحديث الجداول (يجب أن يكون خارج الـ except)
+    async with pool.acquire() as conn:
+        # 1. إنشاء الجداول بالشكل الجديد
+        await conn.execute("CREATE TABLE IF NOT EXISTS users_info (user_id BIGINT PRIMARY KEY, lang TEXT, last_active DATE)")
+        await conn.execute("CREATE TABLE IF NOT EXISTS paid_users (user_id BIGINT PRIMARY KEY, expiry_date TIMESTAMP)")
         await conn.execute("CREATE TABLE IF NOT EXISTS trial_users (user_id BIGINT PRIMARY KEY)")
         
-        # 4. تفعيل الأدمنز
+        # 2. إجبار تحديث الجداول القديمة (للمشتركين الحاليين)
+        await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS last_active DATE")
+        await conn.execute("ALTER TABLE paid_users ADD COLUMN IF NOT EXISTS expiry_date TIMESTAMP")
+        
+        # 3. تفعيل حسابات الأدمن بشكل دائم
         initial_paid_users = {5687542129, 756814703}
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
 
-    
-    #asyncio.create_task(ai_opportunity_radar(pool))  # تم التعليق لإيقاف الرادار عند التشغيل
+    #asyncio.create_task(ai_opportunity_radar(pool))
     asyncio.create_task(daily_channel_post())
     await bot.set_webhook(f"{WEBHOOK_URL}/")
+
 
 app = web.Application()
 app.router.add_post("/", handle_webhook)
