@@ -356,7 +356,7 @@ async def ai_opportunity_radar(pool):
                             f"⚡ الإشارة: {signal}\n"
                             f"📊 السكور: {best_score}/100\n\n"
                             f"📈 التحليل:\n{insight_ar}\n"
-                            f"━━━━━━━━━━━━━━"
+                            f"━━━━━━━━━━━━━━\n"
                             f"📌 نتائج تحليلات البوت: @N_Results"
                         )
                     else:
@@ -368,8 +368,8 @@ async def ai_opportunity_radar(pool):
                             f"⚡ Signal: {signal}\n"
                             f"📊 Score: {best_score}/100\n\n"
                             f"📈 Insight:\n{insight_en}\n"
-                            f"━━━━━━━━━━━━━━"
-                             f"📌 Bot Results: @N_Results"
+                            f"━━━━━━━━━━━━━━\n"
+                            f"📌 Bot Results: @N_Results"
                         )
 
                 # ---------- FREE ----------
@@ -384,8 +384,8 @@ async def ai_opportunity_radar(pool):
                             f"🔥 تم رصد تجميع قوي + فوليوم غير طبيعي\n"
                             f"🚀 احتمال انفجار سعري قريب\n\n"
                             f"اشترك VIP لكشف اسم العملة والأهداف\n"
-                            f"━━━━━━━━━━━━━━"
-                             f"📌 نتائج تحليلات البوت: @N_Results"
+                            f"━━━━━━━━━━━━━━\n"
+                            f"📌 نتائج تحليلات البوت: @N_Results"
                         )
                     else:
                         text = (
@@ -397,7 +397,7 @@ async def ai_opportunity_radar(pool):
                             f"🔥 Strong accumulation + abnormal volume\n"
                             f"🚀 Possible breakout soon\n\n"
                             f"Subscribe VIP to unlock the coin and exact targets.\n"
-                            f"━━━━━━━━━━━━━━"
+                            f"━━━━━━━━━━━━━━\n"
                             f"📌 Bot Results: @N_Results"
                         )
 
