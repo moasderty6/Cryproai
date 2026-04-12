@@ -509,6 +509,71 @@ async def ask_groq(prompt, lang="ar"):
         return "⚠️ Error generating analysis"
 
 # --- الأوامر ---
+@dp.message(Command("convert_old"))
+async def convert_old_users_cmd(m: types.Message):
+    if m.from_user.id != ADMIN_USER_ID:
+        return await m.answer("❌ هذا الأمر للأدمن فقط")
+    
+    pool = dp['db_pool']
+    
+    # 1. جلب المستخدمين القدامى (الذين ليس لديهم تاريخ انتهاء)
+    old_users = await pool.fetch("SELECT user_id FROM paid_users WHERE expiry_date IS NULL")
+    
+    if not old_users:
+        return await m.answer("⚠️ لا يوجد مشتركون بنظام مدى الحياة لتحويلهم.")
+
+    async with pool.acquire() as conn:
+        # 2. تحديث قاعدة البيانات وإعطائهم 30 يوم من الآن
+        await conn.execute("""
+            UPDATE paid_users 
+            SET expiry_date = CURRENT_TIMESTAMP + INTERVAL '30 days'
+            WHERE expiry_date IS NULL
+        """)
+
+    # 3. صياغة الرسائل التوضيحية
+    msg_ar = (
+        "📢 <b>تحديث هام بخصوص اشتراكك</b>\n"
+        "━━━━━━━━━━━━━━\n\n"
+        "مرحباً بك عميلنا العزيز،\n"
+        "لضمان استمرارية عمل البوت بأعلى كفاءة وتغطية التكاليف التشغيلية (لخوادم الذكاء الاصطناعي وجلب البيانات)، تم تحديث نظام الاشتراك ليكون <b>شهرياً</b>.\n\n"
+        "🎁 <b>تقديراً لدعمك المبكر لنا</b>:\n"
+        "تم منحك فترة مجانية لمدة <b>30 يوماً</b> تبدأ من هذه اللحظة. سيُطلب منك تجديد الاشتراك الشهري بعد انتهاء هذا الشهر.\n\n"
+        "شكراً لتفهمك ودعمك المستمر لنجاح بوتنا! 💎"
+    )
+    
+    msg_en = (
+        "📢 <b>Important Update Regarding Your Subscription</b>\n"
+        "━━━━━━━━━━━━━━\n\n"
+        "Dear valued user,\n"
+        "To ensure the bot continues operating at maximum efficiency and to cover operational costs (AI and data servers), our subscription model has been updated to a <b>monthly</b> plan.\n\n"
+        "🎁 <b>As a token of appreciation for your early support</b>:\n"
+        "Your account has been granted a free <b>30-day</b> period starting today. Monthly renewals will apply after this month ends.\n\n"
+        "Thank you for your understanding and continuous support for NaiF CHarT! 💎"
+    )
+
+    await m.answer(f"⏳ جاري تحويل {len(old_users)} اشتراك وإرسال الرسائل التوضيحية...")
+    sent_count = 0
+
+    # 4. إرسال الرسالة لكل مستخدم قديم
+    for row in old_users:
+        uid = row["user_id"]
+        
+        # معرفة لغة المستخدم
+        user_info = await pool.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", uid)
+        lang = user_info['lang'] if user_info and user_info['lang'] else "ar"
+        
+        text = msg_ar if lang == "ar" else msg_en
+        
+        try:
+            await bot.send_message(uid, text, parse_mode=ParseMode.HTML)
+            sent_count += 1
+            await asyncio.sleep(0.05) # أمان لتجنب حظر التليجرام بسبب الإرسال السريع
+        except Exception as e:
+            print(f"Failed to send to {uid}: {e}")
+            continue
+
+    await m.answer(f"✅ تمت العملية بنجاح!\n👥 تم تحويل اشتراك {len(old_users)} مستخدم.\n📨 تم إيصال الرسالة إلى {sent_count} منهم.")
+
 @dp.message(Command("sendphoto"))
 async def send_photo_to_trials(m: types.Message):
     if m.from_user.id != ADMIN_USER_ID:
