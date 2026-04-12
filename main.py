@@ -1124,9 +1124,9 @@ async def on_startup(app):
         print("✅ Database connected successfully")
     except Exception as e:
         print(f"❌ Database connection failed: {e}")
-            async with pool.acquire() as conn:
+        async with pool.acquire() as conn:
         # 1. جدول المستخدمين
-        await conn.execute("CREATE TABLE IF NOT EXISTS users_info (user_id BIGINT PRIMARY KEY, lang TEXT)")
+            await conn.execute("CREATE TABLE IF NOT EXISTS users_info (user_id BIGINT PRIMARY KEY, lang TEXT)")
         try:
             await conn.execute("ALTER TABLE users_info ADD COLUMN last_active DATE")
         except asyncpg.exceptions.DuplicateColumnError:
@@ -1135,7 +1135,7 @@ async def on_startup(app):
             print(f"Error updating users_info: {e}")
 
         # 2. جدول المشتركين
-        await conn.execute("CREATE TABLE IF NOT EXISTS paid_users (user_id BIGINT PRIMARY KEY)")
+            await conn.execute("CREATE TABLE IF NOT EXISTS paid_users (user_id BIGINT PRIMARY KEY)")
         try:
             # محاولة إضافة عمود التاريخ للمشتركين القدامى والجدد
             await conn.execute("ALTER TABLE paid_users ADD COLUMN expiry_date TIMESTAMP")
