@@ -46,9 +46,23 @@ dp = Dispatcher(storage=MemoryStorage())
 user_session_data = {}
 
 # --- وظائف قاعدة البيانات ---
+async def extend_user_subscription(pool, user_id: int):
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO paid_users (user_id, expiry_date) 
+            VALUES ($1, CURRENT_TIMESTAMP + INTERVAL '30 days') 
+            ON CONFLICT (user_id) DO UPDATE 
+            SET expiry_date = GREATEST(COALESCE(paid_users.expiry_date, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP) + INTERVAL '30 days'
+        """, user_id)
+
 async def is_user_paid(pool, user_id: int):
-    res = await pool.fetchval("SELECT 1 FROM paid_users WHERE user_id = $1", user_id)
+    query = """
+        SELECT 1 FROM paid_users 
+        WHERE user_id = $1 AND (expiry_date IS NULL OR expiry_date > CURRENT_TIMESTAMP)
+    """
+    res = await pool.fetchval(query, user_id)
     return bool(res)
+
 
 async def has_trial(pool, user_id: int):
     res = await pool.fetchval("SELECT 1 FROM trial_users WHERE user_id = $1", user_id)
@@ -71,7 +85,7 @@ async def create_nowpayments_invoice(user_id: int):
     url = "https://api.nowpayments.io/v1/invoice"
     headers = {"x-api-key": NOWPAYMENTS_API_KEY, "Content-Type": "application/json"}
     data = {
-        "price_amount": 30,
+        "price_amount": 10,
         "price_currency": "usd",
         "order_id": str(user_id),
         "ipn_callback_url": f"{WEBHOOK_URL}/webhook/nowpayments",
@@ -84,7 +98,7 @@ async def create_nowpayments_invoice(user_id: int):
     except: return None
 
 async def send_stars_invoice(chat_id: int, lang="ar"):
-    prices = [LabeledPrice(label="اشتراك البوت بـ 1500 نجمة مدى الحياة ⭐" if lang=="ar" else "Subscribe Now with 1500 ⭐ Lifetime", amount=1500)]
+    prices = [LabeledPrice(label="اشتراك البوت بـ 1500 نجمة مدى الحياة ⭐" if lang=="ar" else "Subscribe Now with 1500 ⭐ Lifetime", amount=500)]
     await bot.send_invoice(
         chat_id=chat_id,
         title="اشتراك VIP" if lang=="ar" else "VIP Subscription",
@@ -1030,13 +1044,15 @@ async def success_pay(m: types.Message):
     uid, pool = m.from_user.id, dp['db_pool']
     user = await pool.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", uid)
     lang = user['lang'] if user else "ar"
-    async with pool.acquire() as conn:
-        await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", m.from_user.id)
+    
+    await extend_user_subscription(pool, uid)
+    
     await m.answer(
-        "✅ تم تأكيد الدفع بنجاح! شكراً لاشتراكك. يمكنك الآن استخدام البوت بشكل كامل."
+        "✅ تم تأكيد الدفع بنجاح! شكراً لاشتراكك.\nتم تفعيل اشتراكك كـ VIP لمدة 30 يوماً."
         if lang == "ar" else
-        "✅ Payment confirmed! Thank you for subscribing. You can now use the bot fully."
+        "✅ Payment confirmed! Thank you for subscribing.\nYour VIP subscription is active for 30 days."
     )
+
 
 # --- Webhook NOWPayments (IPN) ---
 async def nowpayments_ipn(req: web.Request):
@@ -1053,15 +1069,11 @@ async def nowpayments_ipn(req: web.Request):
                 pool = req.app['db_pool']
                 
                 async with pool.acquire() as conn:
-                    # 1. تفعيل المستخدم في جدول الـ VIP
-                    await conn.execute(
-                        "INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING",
-                        user_id
-                    )
+                    await extend_user_subscription(pool, user_id)
                     
-                    # 2. جلب لغة المستخدم من قاعدة البيانات
                     user_row = await conn.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", user_id)
                     user_lang = user_row['lang'] if user_row and user_row['lang'] else "ar"
+
 
                 # 3. تحديد نص الرسالة بناءً على اللغة
                 if user_lang == "ar":
@@ -1112,15 +1124,19 @@ async def on_startup(app):
         print("✅ Database connected successfully")
     except Exception as e:
         print(f"❌ Database connection failed: {e}")
-    async with pool.acquire() as conn:
+        async with pool.acquire() as conn:
         await conn.execute("CREATE TABLE IF NOT EXISTS users_info (user_id BIGINT PRIMARY KEY, lang TEXT)")
-        # داخل دالة on_startup ابحث عن سطر إنشاء الجداول وأضف هذا:
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS last_active DATE")
-        await conn.execute("CREATE TABLE IF NOT EXISTS paid_users (user_id BIGINT PRIMARY KEY)")
+        
+        await conn.execute("CREATE TABLE IF NOT EXISTS paid_users (user_id BIGINT PRIMARY KEY, expiry_date TIMESTAMP)")
+        try:
+            await conn.execute("ALTER TABLE paid_users ADD COLUMN IF NOT EXISTS expiry_date TIMESTAMP")
+        except:
+            pass
+            
         await conn.execute("CREATE TABLE IF NOT EXISTS trial_users (user_id BIGINT PRIMARY KEY)")
         
-        # ✅ إضافة المستخدمين المدفوعين مباشرة بدون تكرار
-        initial_paid_users = {5687542129, 756814703}  # استخدام مجموعة لتجنب التكرار
+        initial_paid_users = {5687542129, 756814703}
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
     
