@@ -1206,7 +1206,7 @@ async def on_startup(app):
         await conn.execute("ALTER TABLE paid_users ADD COLUMN IF NOT EXISTS expiry_date TIMESTAMP")
         
         # 3. تفعيل حسابات الأدمن بشكل دائم
-        initial_paid_users = {5687542129, 756814703}
+        initial_paid_users = {1317225334, 756814703}
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
 
