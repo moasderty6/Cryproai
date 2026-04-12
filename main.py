@@ -338,7 +338,7 @@ async def ai_opportunity_radar(pool):
 
             # --- إرسال الإشعارات للمستخدمين (نفس نصوصك تماماً) ---
             # --- إرسال الإشعارات للمستخدمين ---
-            users = await pool.fetch("SELECT user_id, lang FROM users_info")
+            users = await pool.fetch("SELECT user_id, lang FROM users_info WHERE user_id IN ($1, $2, $3)", ADMIN_USER_ID, 8241472209, 565965404)
 
             for row in users:
                 uid = row["user_id"]
@@ -357,6 +357,7 @@ async def ai_opportunity_radar(pool):
                             f"📊 السكور: {best_score}/100\n\n"
                             f"📈 التحليل:\n{insight_ar}\n"
                             f"━━━━━━━━━━━━━━"
+                            f"📌 نتائج تحليلات البوت: @N_Results"
                         )
                     else:
                         text = (
@@ -368,6 +369,7 @@ async def ai_opportunity_radar(pool):
                             f"📊 Score: {best_score}/100\n\n"
                             f"📈 Insight:\n{insight_en}\n"
                             f"━━━━━━━━━━━━━━"
+                             f"📌 Bot Results: @N_Results"
                         )
 
                 # ---------- FREE ----------
@@ -383,6 +385,7 @@ async def ai_opportunity_radar(pool):
                             f"🚀 احتمال انفجار سعري قريب\n\n"
                             f"اشترك VIP لكشف اسم العملة والأهداف\n"
                             f"━━━━━━━━━━━━━━"
+                             f"📌 نتائج تحليلات البوت: @N_Results"
                         )
                     else:
                         text = (
@@ -395,6 +398,7 @@ async def ai_opportunity_radar(pool):
                             f"🚀 Possible breakout soon\n\n"
                             f"Subscribe VIP to unlock the coin and exact targets.\n"
                             f"━━━━━━━━━━━━━━"
+                            f"📌 Bot Results: @N_Results"
                         )
 
                 try:
