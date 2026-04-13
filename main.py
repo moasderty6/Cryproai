@@ -1098,6 +1098,7 @@ Stop Loss: <code>(Price)</code>
             res = await conn.execute("INSERT INTO trial_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
             
             # إذا كان المستخدم يستهلك التجربة لأول مرة
+                        # إذا كان المستخدم يستهلك التجربة لأول مرة
             if "INSERT 0 1" in res:
                 # نبحث هل هناك شخص قام بدعوته؟
                 inviter = await conn.fetchrow("SELECT invited_by FROM users_info WHERE user_id = $1", uid)
@@ -1108,17 +1109,28 @@ Stop Loss: <code>(Price)</code>
                     await conn.execute("UPDATE users_info SET ref_count = COALESCE(ref_count, 0) + 1 WHERE user_id = $1", inviter_id)
                     current_count = await conn.fetchval("SELECT ref_count FROM users_info WHERE user_id = $1", inviter_id)
                     
+                    # 🌐 جلب لغة المستدعي لتحديد لغة الرسالة
+                    inviter_lang_row = await conn.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", inviter_id)
+                    inv_lang = inviter_lang_row['lang'] if inviter_lang_row and inviter_lang_row['lang'] else "ar"
+                    
                     try:
                         # إذا لم يصل للـ 10، نرسل له تنبيه تشجيعي
                         if current_count < 10:
-                            await bot.send_message(inviter_id, f"🎁 <b>نقطة جديدة!</b>\nصديقك استخدم التجربة المجانية.\nرصيدك الحالي: {current_count}/10 نقاط.", parse_mode=ParseMode.HTML)
+                            msg_ar = f"🎁 <b>نقطة جديدة!</b>\nصديقك استخدم التجربة المجانية.\nرصيدك الحالي: {current_count}/10 نقاط."
+                            msg_en = f"🎁 <b>New Point!</b>\nYour friend used the free trial.\nCurrent balance: {current_count}/10 points."
+                            await bot.send_message(inviter_id, msg_ar if inv_lang == "ar" else msg_en, parse_mode=ParseMode.HTML)
+                        
                         # إذا وصل لـ 10، نفعل الشهر المجاني ونصفر العداد
                         else:
                             await extend_user_subscription(pool, inviter_id)
                             await conn.execute("UPDATE users_info SET ref_count = 0 WHERE user_id = $1", inviter_id)
-                            await bot.send_message(inviter_id, "🎉 <b>مبروك!</b>\nلقد دعوت 10 أشخاص بنجاح واستهلكوا تجربتهم.\nتم تفعيل اشتراك <b>شهر VIP مجاني</b> في حسابك مكافأة من نظام الدعوات!", parse_mode=ParseMode.HTML)
+                            
+                            win_msg_ar = "🎉 <b>مبروك!</b>\nلقد دعوت 10 أشخاص بنجاح واستهلكوا تجربتهم.\nتم تفعيل اشتراك <b>شهر VIP مجاني</b> في حسابك مكافأة من نظام الدعوات!"
+                            win_msg_en = "🎉 <b>Congratulations!</b>\nYou have successfully invited 10 friends who used their trial.\nA <b>Free VIP Month</b> has been activated in your account as a reward from the invite system!"
+                            await bot.send_message(inviter_id, win_msg_ar if inv_lang == "ar" else win_msg_en, parse_mode=ParseMode.HTML)
                     except Exception as e:
                         print(f"Ref notification error: {e}")
+
 
         await cb.message.answer("⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ شهرياً." if lang=="ar" else "⚠️ Your free trial has ended. For full access, please subscribe for a Monthly fee of 10 USDT or 500 ⭐.", reply_markup=get_payment_kb(lang))
 
