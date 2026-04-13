@@ -1353,7 +1353,7 @@ async def invite_pay_call(cb: types.CallbackQuery):
     except Exception as e:
         if "message is not modified" in str(e):
             # إذا ضغط على الزر وهو أصلاً فاتح نفس الرسالة نعطيه تنبيه خفيف
-            await cb.answer("الرابط الخاص بك معروض أمامك بالفعل 👆" if lang == "ar" else "Your link is already displayed 👆")
+            await cb.answer("الرابط الخاص بك معروض أمامك بالفعل 👇🏼" if lang == "ar" else "Your link is already displayed 👇🏼")
         else:
             print(f"Edit message error: {e}")
 
