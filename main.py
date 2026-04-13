@@ -834,7 +834,11 @@ async def handle_symbol(m: types.Message):
 
             if isinstance(data_gate, list) and len(data_gate) > 0 and "last" in data_gate[0]:
                 price = float(data_gate[0]["last"])
-                volume_24h = 0
+                
+                # ✅ التعديل هنا: نأخذ الفوليوم من Gate.io كقيمة افتراضية (quote_volume يمثل الفوليوم بـ USDT)
+                volume_24h = float(data_gate[0].get("quote_volume", 0))
+
+                # محاولة جلب الفوليوم الأدق من CMC
                 try:
                     res_cmc = await client.get(
                         f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={sym}",
@@ -843,9 +847,10 @@ async def handle_symbol(m: types.Message):
                     )
                     data_cmc = res_cmc.json()
                     if res_cmc.status_code == 200 and sym in data_cmc.get("data", {}):
-                        volume_24h = data_cmc["data"][sym]["quote"]["USD"]["volume_24h"]
+                        # إذا نجح، استبدل فوليوم Gate.io بفوليوم CMC الكلي
+                        volume_24h = float(data_cmc["data"][sym]["quote"]["USD"]["volume_24h"])
                 except:
-                    pass
+                    pass # إذا فشل CMC، سيبقى الفوليوم محتفظاً بقيمة Gate.io ولن يصبح 0
 
                 user_session_data[uid] = {
                     "sym": sym, "price": price, "volume_24h": volume_24h, 
@@ -853,6 +858,7 @@ async def handle_symbol(m: types.Message):
                 }
             else:
                 raise ValueError("Symbol not found in Gate.io")
+
 
     except Exception:
         dex_data = await search_dex_coin(sym)
