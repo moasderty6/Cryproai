@@ -618,38 +618,76 @@ async def send_photo_to_trials(m: types.Message):
 
     await m.answer(f"✅ تم إرسال الصورة إلى {sent} مستخدم تجربة")
 @dp.message(Command("send"))
-async def broadcast_message(m: types.Message):
+async def broadcast_to_trials(m: types.Message):
     if m.from_user.id != ADMIN_USER_ID:
         return await m.answer("❌ هذا الأمر مخصص للأدمن فقط.")
 
-    # استخراج نص الرسالة بعد الأمر
-    text = m.text.replace("/send", "").strip()
-
-    if not text:
-        return await m.answer("⚠️ اكتب الرسالة بعد الأمر.\n\nمثال:\n/send مرحباً بالجميع")
-
     pool = dp['db_pool']
 
-    users = await pool.fetch("SELECT user_id FROM users_info")
+    # جلب مستخدمي التجربة فقط واستثناء المشتركين VIP حالياً مع جلب لغتهم
+        # جلب مستخدم واحد فقط للتجربة
+    users = await pool.fetch("""
+        SELECT user_id, lang
+        FROM users_info
+        WHERE user_id = 8241472209
+    """)
 
+
+    if not users:
+        return await m.answer("⚠️ لا يوجد مستخدمو تجربة (غير مشتركين) لإرسال الرسالة لهم.")
+
+    # صياغة الرسائل الترويجية
+    msg_ar = (
+        "🎁 <b>خبر سار! يمكنك الآن الحصول على VIP مجاناً</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        "لقد أضفنا ميزة جديدة تتيح لك استخدام البوت بكامل مميزاته دون الحاجة للدفع!\n\n"
+        "فقط قم بدعوة 10 من أصدقائك لتجربة البوت، وسوف يتم تفعيل اشتراكك الشهري <b>تلقائياً ومجاناً</b>.\n\n"
+        "اضغط على الزر أدناه للحصول على رابط دعوتك الخاص وبدء جمع النقاط 👇"
+    )
+
+    msg_en = (
+        "🎁 <b>Great News! Get VIP for FREE</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        "We've added a new feature that lets you use all bot features for free!\n\n"
+        "Just invite 10 friends to try the bot, and your monthly subscription will be activated <b>automatically and for free</b>.\n\n"
+        "Click the button below to get your invite link and start earning points 👇"
+    )
+
+    await m.answer(f"🚀 جاري الإرسال إلى {len(users)} مستخدم تجربة (غير مشترك)...")
+    
     sent = 0
     failed = 0
 
-    await m.answer(f"🚀 جاري الإرسال إلى {len(users)} مستخدم...")
-
     for row in users:
+        uid = row["user_id"]
+        lang = row["lang"] or "ar"
+        
+        # إنشاء الزر الخاص بالدعوة لكل رسالة
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(
+                text="🎁 احصل على شهر مجاني" if lang == "ar" else "🎁 Get a Free Month", 
+                callback_data="pay_invite"
+            )
+        ]])
+
         try:
-            await bot.send_message(row["user_id"], text)
+            await bot.send_message(
+                uid, 
+                msg_ar if lang == "ar" else msg_en, 
+                parse_mode=ParseMode.HTML,
+                reply_markup=kb
+            )
             sent += 1
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.05) # أمان لتجنب الحظر
         except:
             failed += 1
 
     await m.answer(
-        f"✅ انتهى الإرسال\n\n"
+        f"✅ انتهى الإرسال بنجاح\n\n"
         f"📨 تم الإرسال: {sent}\n"
         f"❌ فشل: {failed}"
     )
+
 @dp.message(Command("status"))
 async def status_cmd(m: types.Message):
     pool = dp['db_pool']
