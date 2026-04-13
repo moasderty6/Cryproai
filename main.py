@@ -28,7 +28,9 @@ CMC_KEY = os.getenv("CMC_API_KEY")
 GATE_API_KEY = "a3f6a57b42f6106011e6890049e57b2e"
 GATE_API_SECRET = "1ac18e0a690ce782f6854137908a6b16eb910cf02f5b95fa3c43b670758f79bc"
 GATE_BASE = "https://api.gateio.ws/api/v4/spot/candlesticks"
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+# استخراج قائمة مفاتيح Groq
+GROQ_KEYS_STR = os.getenv("GROQ_API_KEYS", "")
+GROQ_API_KEYS = [k.strip() for k in GROQ_KEYS_STR.split(",") if k.strip()]
 WEBHOOK_URL = os.getenv("WEBHOOK_URL") 
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()[:20]
 PORT = int(os.getenv("PORT", 10000))
@@ -489,30 +491,47 @@ async def daily_channel_post():
 # --- نظام الـ AI ---
 # --- النسخة الجديدة والمستقرة ---
 async def ask_groq(prompt, lang="ar"):
-    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-    
+    if not GROQ_API_KEYS:
+        print("❌ لا يوجد مفاتيح Groq في الإعدادات!")
+        return "⚠️ Error: API keys missing"
+
     data = {
         "model": GROQ_MODEL, 
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.1,  # 👈 هاد اللي بيمنع الـ AI من تغيير رأيه (برودة وهدوء)
-        "max_tokens": 800    # 👈 زيادة المساحة عشان التحليل ما ينقطع
+        "temperature": 0.1,  
+        "max_tokens": 800    
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=45) as client:
-            res = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=headers,
-                json=data
-            )
-            # إضافة سطر التأكد من الاستجابة لضمان عدم وجود أخطاء صامتة
-            res.raise_for_status() 
-            
-            ans = res.json()["choices"][0]["message"]["content"]
-            return ans
-    except Exception as e:
-        print(f"Error in ask_groq: {e}")
-        return "⚠️ Error generating analysis"
+    async with httpx.AsyncClient(timeout=45) as client:
+        # 🔄 البوت سيمر على كل المفاتيح بالترتيب
+        for api_key in GROQ_API_KEYS:
+            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+            try:
+                res = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=headers,
+                    json=data
+                )
+                res.raise_for_status() # إذا كان هناك خطأ ليمت (429) سينتقل للـ except
+                
+                ans = res.json()["choices"][0]["message"]["content"]
+                return ans # نجح التحليل! نخرج من الدالة ونعطي النتيجة للزبون
+                
+            except httpx.HTTPStatusError as e:
+                # إذا كان الخطأ بسبب الليمت (429) أو مشكلة بالسيرفر، نجرب المفتاح اللي بعده
+                if e.response.status_code == 429:
+                    print(f"⚠️ المفتاح {api_key[:8]}... استنفذ الليمت. جاري تجربة المفتاح التالي...")
+                    continue
+                else:
+                    print(f"⚠️ خطأ HTTP في المفتاح {api_key[:8]}... : {e}")
+                    continue
+            except Exception as e:
+                print(f"⚠️ خطأ غير متوقع في المفتاح {api_key[:8]}... : {e}")
+                continue # في حال فشل الاتصال تماماً، نجرب اللي بعده
+                
+    # إذا لفت الدوامة على كل الـ 10 مفاتيح وكلهم فيهم ليمت أو خطأ
+    print("❌ كل مفاتيح Groq فشلت أو استنفذت الليمت!")
+    return "⚠️ Error generating analysis. Server is highly loaded."
 
 # --- الأوامر ---
 @dp.message(Command("convert_old"))
