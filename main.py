@@ -1442,7 +1442,7 @@ async def on_startup(app):
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS ref_count INTEGER DEFAULT 0")
 
         # 3. تفعيل حسابات الأدمن بشكل دائم
-        initial_paid_users = {1317225334, 756814703}
+        initial_paid_users = {1317225334, 5527572646}
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
 
