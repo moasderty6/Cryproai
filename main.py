@@ -1202,7 +1202,7 @@ async def invite_pay_call(cb: types.CallbackQuery):
             "ادعُ أصدقاءك لاستخدام البوت واحصل على اشتراك VIP مجاني كبديل للدفع.\n\n"
             "🎁 <b>المكافأة:</b> شهر VIP مجاني لكل 10 أشخاص يستخدمون التجربة المجانية.\n\n"
             f"📊 <b>رصيدك الحالي:</b> {count}/10 نقاط\n"
-            f"🔗 <b>رابطك الخاص:</b>\n<code>{ref_link}</code>\n"
+            f"🔗 <b>رابطك الخاص:</b>\n{ref_link}\n"
             "━━━━━━━━━━━━━━\n"
             "انسخ الرابط وشاركه الآن لتفعيل اشتراكك تلقائياً عند اكتمال العدد!"
         )
@@ -1213,7 +1213,7 @@ async def invite_pay_call(cb: types.CallbackQuery):
             "Invite friends to use the bot and get a free VIP subscription instead of paying.\n\n"
             "🎁 <b>Reward:</b> 1 Free VIP Month for every 10 friends who use their free trial.\n\n"
             f"📊 <b>Current Balance:</b> {count}/10 points\n"
-            f"🔗 <b>Your Invite Link:</b>\n<code>{ref_link}</code>\n"
+            f"🔗 <b>Your Invite Link:</b>\n{ref_link}\n"
             "━━━━━━━━━━━━━━\n"
             "Copy the link and share it now to automatically activate your subscription!"
         )
