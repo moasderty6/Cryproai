@@ -10,6 +10,7 @@ import random
 import time
 import base64
 import pandas as pd
+import uuid
 from aiohttp import web
 from dotenv import load_dotenv
 
@@ -46,7 +47,7 @@ GROQ_MODEL = "llama-3.3-70b-versatile"
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 user_session_data = {}
-
+radar_pending_approvals = {}
 # --- وظائف قاعدة البيانات ---
 async def extend_user_subscription(pool, user_id: int):
     async with pool.acquire() as conn:
@@ -342,78 +343,43 @@ async def ai_opportunity_radar(pool):
 
             # --- إرسال الإشعارات للمستخدمين (نفس نصوصك تماماً) ---
             # --- إرسال الإشعارات للمستخدمين ---
-            users = await pool.fetch("SELECT user_id, lang FROM users_info WHERE user_id IN ($1, $2, $3)", ADMIN_USER_ID, 8241472209, 565965404)
+                        # --- إرسال الإشارة للأدمن للموافقة ---
+            signal_id = str(uuid.uuid4())[:8] # إنشاء معرف فريد للإشارة
+            radar_pending_approvals[signal_id] = {
+                "symbol": symbol,
+                "price": price,
+                "signal": signal,
+                "score": best_score,
+                "insight_ar": insight_ar,
+                "insight_en": insight_en
+            }
 
-            for row in users:
-                uid = row["user_id"]
-                lang = row["lang"] or "ar"
-                paid = await is_user_paid(pool, uid)
+            admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ موافقة ونشر للمشتركين", callback_data=f"rad_app_{signal_id}")
+                ],
+                [
+                    InlineKeyboardButton(text="❌ إلغاء وتجاهل", callback_data=f"rad_rej_{signal_id}")
+                ]
+            ])
 
-                # ---------- VIP ----------
-                if paid:
-                    if lang == "ar":
-                        text = (
-                            f"🚨 <b>رادار السوق الذكي VIP</b>\n"
-                            f"━━━━━━━━━━━━━━\n"
-                            f"💎 العملة: #{symbol}\n"
-                            f"💵 السعر: ${format_price(price)}\n"
-                            f"⚡ الإشارة: {signal}\n"
-                            f"📊 السكور: {best_score}/100\n\n"
-                            f"📈 التحليل:\n{insight_ar}\n"
-                            f"━━━━━━━━━━━━━━\n"
-                            f"📌 نتائج تحليلات البوت: @N_Results"
-                        )
-                    else:
-                        text = (
-                            f"🚨 <b>VIP Smart Market Radar</b>\n"
-                            f"━━━━━━━━━━━━━━\n"
-                            f"💎 Coin: #{symbol}\n"
-                            f"💵 Price: ${format_price(price)}\n"
-                            f"⚡ Signal: {signal}\n"
-                            f"📊 Score: {best_score}/100\n\n"
-                            f"📈 Insight:\n{insight_en}\n"
-                            f"━━━━━━━━━━━━━━\n"
-                            f"📌 Bot Results: @N_Results"
-                        )
+            admin_text = (
+                f"⚠️ <b>تنبيه أدمن: رادار جديد ينتظر موافقتك</b>\n"
+                f"━━━━━━━━━━━━━━\n"
+                f"العملة: #{symbol}\n"
+                f"السعر: ${format_price(price)}\n"
+                f"الإشارة: {signal}\n"
+                f"السكور: {best_score}/100\n\n"
+                f"📝 <b>التحليل (عربي):</b>\n{insight_ar}\n\n"
+                f"📝 <b>التحليل (إنجليزي):</b>\n{insight_en}\n"
+                f"━━━━━━━━━━━━━━\n"
+                f"هل تريد الموافقة على نشرها؟"
+            )
 
-                # ---------- FREE ----------
-                else:
-                    if lang == "ar":
-                        text = (
-                            f"📡 <b>رادار الإنفجارات السعرية</b>\n"
-                            f"━━━━━━━━━━━━━━\n"
-                            f"💎 العملة: •••• 🔒\n"
-                            f"⚡ الإشارة: {signal}\n"
-                            f"📊 السكور: {best_score}/100\n\n"
-                            f"🔥 تم رصد تجميع قوي + فوليوم غير طبيعي\n"
-                            f"🚀 احتمال انفجار سعري قريب\n\n"
-                            f"اشترك VIP لكشف اسم العملة والأهداف\n"
-                            f"━━━━━━━━━━━━━━\n"
-                            f"📌 نتائج تحليلات البوت: @N_Results"
-                        )
-                    else:
-                        text = (
-                            f"📡 <b>Price Explosion Radar</b>\n"
-                            f"━━━━━━━━━━━━━━\n"
-                            f"💎 Coin: •••• 🔒\n"
-                            f"⚡ Signal: {signal}\n"
-                            f"📊 Score: {best_score}/100\n\n"
-                            f"🔥 Strong accumulation + abnormal volume\n"
-                            f"🚀 Possible breakout soon\n\n"
-                            f"Subscribe VIP to unlock the coin and exact targets.\n"
-                            f"━━━━━━━━━━━━━━\n"
-                            f"📌 Bot Results: @N_Results"
-                        )
-
-                try:
-                    await bot.send_message(
-                        uid,
-                        text,
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=None if paid else get_payment_kb(lang)
-                    )
-                except:
-                    continue
+            try:
+                await bot.send_message(ADMIN_USER_ID, admin_text, reply_markup=admin_kb, parse_mode=ParseMode.HTML)
+            except Exception as e:
+                print(f"Failed to send approval to admin: {e}")
 
     except Exception as e:
         print(f"Radar Error: {e}")
@@ -534,6 +500,110 @@ async def ask_groq(prompt, lang="ar"):
     return "⚠️ Error generating analysis. Server is highly loaded."
 
 # --- الأوامر ---
+# --- أزرار موافقة الأدمن على الرادار ---
+@dp.callback_query(F.data.startswith("rad_app_"))
+async def approve_radar_signal(cb: types.CallbackQuery):
+    if cb.from_user.id != ADMIN_USER_ID:
+        return await cb.answer("❌ هذا الزر للأدمن فقط.", show_alert=True)
+
+    signal_id = cb.data.replace("rad_app_", "")
+    data = radar_pending_approvals.get(signal_id)
+
+    if not data:
+        return await cb.message.edit_text("❌ انتهت صلاحية هذه الإشارة أو تم اتخاذ قرار مسبقاً.")
+
+    await cb.message.edit_text(f"✅ تمت الموافقة! جاري إرسال إشارة {data['symbol']} لجميع المستخدمين...")
+
+    pool = dp['db_pool']
+    users = await pool.fetch("SELECT user_id, lang FROM users_info") # إرسال لجميع القاعدة
+
+    for row in users:
+        uid = row["user_id"]
+        lang = row["lang"] or "ar"
+        paid = await is_user_paid(pool, uid)
+
+        # ---------- VIP ----------
+        if paid:
+            if lang == "ar":
+                text = (
+                    f"🚨 <b>رادار السوق الذكي VIP</b>\n"
+                    f"━━━━━━━━━━━━━━\n"
+                    f"💎 العملة: #{data['symbol']}\n"
+                    f"💵 السعر: ${format_price(data['price'])}\n"
+                    f"⚡ الإشارة: {data['signal']}\n"
+                    f"📊 السكور: {data['score']}/100\n\n"
+                    f"📈 التحليل:\n{data['insight_ar']}\n"
+                    f"━━━━━━━━━━━━━━\n"
+                    f"📌 نتائج تحليلات البوت: @N_Results"
+                )
+            else:
+                text = (
+                    f"🚨 <b>VIP Smart Market Radar</b>\n"
+                    f"━━━━━━━━━━━━━━\n"
+                    f"💎 Coin: #{data['symbol']}\n"
+                    f"💵 Price: ${format_price(data['price'])}\n"
+                    f"⚡ Signal: {data['signal']}\n"
+                    f"📊 Score: {data['score']}/100\n\n"
+                    f"📈 Insight:\n{data['insight_en']}\n"
+                    f"━━━━━━━━━━━━━━\n"
+                    f"📌 Bot Results: @N_Results"
+                )
+        # ---------- FREE ----------
+        else:
+            if lang == "ar":
+                text = (
+                    f"📡 <b>رادار الإنفجارات السعرية</b>\n"
+                    f"━━━━━━━━━━━━━━\n"
+                    f"💎 العملة: •••• 🔒\n"
+                    f"⚡ الإشارة: {data['signal']}\n"
+                    f"📊 السكور: {data['score']}/100\n\n"
+                    f"🔥 تم رصد تجميع قوي + فوليوم غير طبيعي\n"
+                    f"🚀 احتمال انفجار سعري قريب\n\n"
+                    f"اشترك VIP لكشف اسم العملة والأهداف\n"
+                    f"━━━━━━━━━━━━━━\n"
+                    f"📌 نتائج تحليلات البوت: @N_Results"
+                )
+            else:
+                text = (
+                    f"📡 <b>Price Explosion Radar</b>\n"
+                    f"━━━━━━━━━━━━━━\n"
+                    f"💎 Coin: •••• 🔒\n"
+                    f"⚡ Signal: {data['signal']}\n"
+                    f"📊 Score: {data['score']}/100\n\n"
+                    f"🔥 Strong accumulation + abnormal volume\n"
+                    f"🚀 Possible breakout soon\n\n"
+                    f"Subscribe VIP to unlock the coin and exact targets.\n"
+                    f"━━━━━━━━━━━━━━\n"
+                    f"📌 Bot Results: @N_Results"
+                )
+
+        try:
+            await bot.send_message(
+                uid,
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=None if paid else get_payment_kb(lang)
+            )
+            await asyncio.sleep(0.05)
+        except:
+            continue
+            
+    # مسح الإشارة من الذاكرة بعد نشرها
+    del radar_pending_approvals[signal_id]
+
+
+@dp.callback_query(F.data.startswith("rad_rej_"))
+async def reject_radar_signal(cb: types.CallbackQuery):
+    if cb.from_user.id != ADMIN_USER_ID:
+        return await cb.answer("❌ هذا الزر للأدمن فقط.", show_alert=True)
+
+    signal_id = cb.data.replace("rad_rej_", "")
+    
+    if signal_id in radar_pending_approvals:
+        del radar_pending_approvals[signal_id]
+
+    await cb.message.edit_text("❌ تم تجاهل الإشارة ولن يتم إرسالها للمستخدمين.")
+
 @dp.message(Command("convert_old"))
 async def convert_old_users_cmd(m: types.Message):
     if m.from_user.id != ADMIN_USER_ID:
