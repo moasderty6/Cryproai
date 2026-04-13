@@ -1276,7 +1276,16 @@ async def invite_pay_call(cb: types.CallbackQuery):
         )
         
     # نعرض له الرابط ونبقي أزرار الدفع موجودة في حال غير رأيه وقرر يدفع
-    await cb.message.edit_text(msg, parse_mode=ParseMode.HTML, reply_markup=get_payment_kb(lang))
+        # نعرض له الرابط ونبقي أزرار الدفع موجودة في حال غير رأيه وقرر يدفع
+    try:
+        await cb.message.edit_text(msg, parse_mode=ParseMode.HTML, reply_markup=get_payment_kb(lang))
+        await cb.answer() # لإنهاء حالة التحميل في الزر
+    except Exception as e:
+        if "message is not modified" in str(e):
+            # إذا ضغط على الزر وهو أصلاً فاتح نفس الرسالة نعطيه تنبيه خفيف
+            await cb.answer("الرابط الخاص بك معروض أمامك بالفعل 👆" if lang == "ar" else "Your link is already displayed 👆")
+        else:
+            print(f"Edit message error: {e}")
 
 # --- Webhook NOWPayments (IPN) ---
 async def nowpayments_ipn(req: web.Request):
