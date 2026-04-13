@@ -625,13 +625,12 @@ async def broadcast_to_trials(m: types.Message):
     pool = dp['db_pool']
 
     # جلب مستخدمي التجربة فقط واستثناء المشتركين VIP حالياً مع جلب لغتهم
-        # جلب مستخدم واحد فقط للتجربة
     users = await pool.fetch("""
-        SELECT user_id, lang
-        FROM users_info
-        WHERE user_id = 8241472209
+        SELECT u.user_id, u.lang
+        FROM users_info u
+        JOIN trial_users t ON u.user_id = t.user_id
+        WHERE u.user_id NOT IN (SELECT user_id FROM paid_users)
     """)
-
 
     if not users:
         return await m.answer("⚠️ لا يوجد مستخدمو تجربة (غير مشتركين) لإرسال الرسالة لهم.")
@@ -687,6 +686,7 @@ async def broadcast_to_trials(m: types.Message):
         f"📨 تم الإرسال: {sent}\n"
         f"❌ فشل: {failed}"
     )
+
 
 @dp.message(Command("status"))
 async def status_cmd(m: types.Message):
