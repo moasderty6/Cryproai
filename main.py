@@ -20,6 +20,9 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+
 
 # --- تحميل الإعدادات ---
 load_dotenv()
@@ -603,6 +606,81 @@ async def reject_radar_signal(cb: types.CallbackQuery):
         del radar_pending_approvals[signal_id]
 
     await cb.message.edit_text("❌ تم تجاهل الإشارة ولن يتم إرسالها للمستخدمين.")
+# --- إعداد حالة الانتظار ---
+class ManageSub(StatesGroup):
+    waiting_for_user_id = State()
+
+# 1. أمر طلب الـ ID
+@dp.message(Command("manage"))
+async def manage_cmd(m: types.Message, state: FSMContext):
+    if m.from_user.id != ADMIN_USER_ID:
+        return
+    await m.answer("✍️ أرسل الـ ID الخاص بالمستخدم الذي تريد تعديل اشتراكه:")
+    await state.set_state(ManageSub.waiting_for_user_id)
+
+# 2. استقبال الـ ID وإرسال الأزرار
+@dp.message(ManageSub.waiting_for_user_id)
+async def process_manage_id(m: types.Message, state: FSMContext):
+    if not m.text.isdigit():
+        return await m.answer("❌ يرجى إرسال أرقام فقط (ID صحيح). أعد الإرسال:")
+    
+    target_id = int(m.text)
+    await state.clear() # ننهي حالة الانتظار
+
+    # إنشاء الأزرار
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="➕ إضافة شهر", callback_data=f"sub_add_{target_id}"),
+            InlineKeyboardButton(text="➖ خصم شهر", callback_data=f"sub_min_{target_id}")
+        ]
+    ])
+    
+    await m.answer(f"⚙️ <b>إدارة اشتراك المستخدم:</b> <code>{target_id}</code>\nاختر الإجراء المطلوب:", reply_markup=kb)
+
+# 3. معالجة زر الإضافة
+@dp.callback_query(F.data.startswith("sub_add_"))
+async def add_month_btn(cb: types.CallbackQuery):
+    if cb.from_user.id != ADMIN_USER_ID:
+        return
+    
+    target_id = int(cb.data.replace("sub_add_", ""))
+    pool = dp['db_pool']
+    
+    async with pool.acquire() as conn:
+        # إضافة شهر (نفس نظام الدفع تماماً)
+        await conn.execute("""
+            INSERT INTO paid_users (user_id, expiry_date) 
+            VALUES ($1, CURRENT_TIMESTAMP + INTERVAL '30 days') 
+            ON CONFLICT (user_id) DO UPDATE 
+            SET expiry_date = GREATEST(COALESCE(paid_users.expiry_date, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP) + INTERVAL '30 days'
+        """, target_id)
+        
+        new_date = await conn.fetchval("SELECT expiry_date FROM paid_users WHERE user_id = $1", target_id)
+        
+    await cb.message.edit_text(f"✅ <b>تمت الإضافة!</b>\nتم إضافة 30 يوم بنجاح للمستخدم: <code>{target_id}</code>\n📅 تاريخ الانتهاء الجديد: {new_date.strftime('%Y-%m-%d')}")
+
+# 4. معالجة زر الخصم
+@dp.callback_query(F.data.startswith("sub_min_"))
+async def minus_month_btn(cb: types.CallbackQuery):
+    if cb.from_user.id != ADMIN_USER_ID:
+        return
+    
+    target_id = int(cb.data.replace("sub_min_", ""))
+    pool = dp['db_pool']
+    
+    async with pool.acquire() as conn:
+        # خصم شهر
+        res = await conn.execute("""
+            UPDATE paid_users 
+            SET expiry_date = expiry_date - INTERVAL '30 days' 
+            WHERE user_id = $1
+        """, target_id)
+        
+        if res == "UPDATE 1":
+            new_date = await conn.fetchval("SELECT expiry_date FROM paid_users WHERE user_id = $1", target_id)
+            await cb.message.edit_text(f"✅ <b>تم الخصم!</b>\nتم خصم 30 يوم بنجاح من المستخدم: <code>{target_id}</code>\n📅 تاريخ الانتهاء الجديد: {new_date.strftime('%Y-%m-%d')}")
+        else:
+            await cb.message.edit_text(f"❌ المستخدم <code>{target_id}</code> غير موجود في جدول المشتركين!")
 
 @dp.message(Command("convert_old"))
 async def convert_old_users_cmd(m: types.Message):
