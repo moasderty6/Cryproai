@@ -1366,7 +1366,7 @@ async def nowpayments_ipn(req: web.Request):
 
         print(f"إشعار دفع جديد: الحالة {status} للمستخدم {order_id}")
 
-        if status in ["finished", "confirmed"]:
+        if status == "finished":
             if order_id:
                 user_id = int(order_id)
                 pool = req.app['db_pool']
@@ -1447,7 +1447,7 @@ async def on_startup(app):
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
 
     #asyncio.create_task(ai_opportunity_radar(pool))
-    #asyncio.create_task(daily_channel_post())
+    asyncio.create_task(daily_channel_post())
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
 
