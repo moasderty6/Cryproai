@@ -1155,7 +1155,7 @@ TP targets MUST be above current price.
 If Trend = Bearish
 TP targets MUST be below current price.
 
-<b>📊 Market Overview</b>
+📊 <b>Analysis: {clean_sym}</b> | {tf} | {price_fmt}$
 Trend: (Bullish/Bearish)
 
 <b>📉 Support & Resistance</b>
