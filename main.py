@@ -52,27 +52,27 @@ dp = Dispatcher(storage=MemoryStorage())
 user_session_data = {}
 radar_pending_approvals = {}
 # --- وظائف قاعدة البيانات ---
-async def extend_user_subscription(pool, user_id: int):
-    async with pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO paid_users (user_id, expiry_date) 
-            VALUES ($1, CURRENT_TIMESTAMP + INTERVAL '30 days') 
-            ON CONFLICT (user_id) DO UPDATE 
-            SET expiry_date = GREATEST(COALESCE(paid_users.expiry_date, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP) + INTERVAL '30 days'
-        """, user_id)
+async def extend_user_subscription(db, user_id: int):
+    # db هنا ممكن تكون pool أو conn، الاثنين فيهم execute
+    await db.execute("""
+        INSERT INTO paid_users (user_id, expiry_date) 
+        VALUES ($1, CURRENT_TIMESTAMP + INTERVAL '30 days') 
+        ON CONFLICT (user_id) DO UPDATE 
+        SET expiry_date = GREATEST(COALESCE(paid_users.expiry_date, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP) + INTERVAL '30 days'
+    """, user_id)
 
-async def is_user_paid(pool, user_id: int):
+async def is_user_paid(db, user_id: int):
     query = """
         SELECT 1 FROM paid_users 
         WHERE user_id = $1 AND (expiry_date IS NULL OR expiry_date > CURRENT_TIMESTAMP)
     """
-    res = await pool.fetchval(query, user_id)
+    res = await db.fetchval(query, user_id)
     return bool(res)
 
-
-async def has_trial(pool, user_id: int):
-    res = await pool.fetchval("SELECT 1 FROM trial_users WHERE user_id = $1", user_id)
+async def has_trial(db, user_id: int):
+    res = await db.fetchval("SELECT 1 FROM trial_users WHERE user_id = $1", user_id)
     return not bool(res)
+
 def format_price(price):
     if price is None:
         return "0.0"
@@ -503,7 +503,7 @@ async def ask_groq(prompt, lang="ar"):
     return "⚠️ Error generating analysis. Server is highly loaded."
 
 # --- الأوامر ---
-# --- أزرار موافقة الأدمن على الرادار ---
+# --- أزرار موافقة الأدمن على الرادار ---# --- أزرار موافقة الأدمن على الرادار ---
 @dp.callback_query(F.data.startswith("rad_app_"))
 async def approve_radar_signal(cb: types.CallbackQuery):
     if cb.from_user.id != ADMIN_USER_ID:
@@ -518,12 +518,20 @@ async def approve_radar_signal(cb: types.CallbackQuery):
     await cb.message.edit_text(f"✅ تمت الموافقة! جاري إرسال إشارة {data['symbol']} لجميع المستخدمين...")
 
     pool = dp['db_pool']
-    users = await pool.fetch("SELECT user_id, lang FROM users_info") # إرسال لجميع القاعدة
+    
+    # 🛡️ استعلام واحد يجلب الجميع مع حالة اشتراكهم لعدم تدمير قاعدة البيانات
+    async with pool.acquire() as conn:
+        users = await conn.fetch("""
+            SELECT u.user_id, u.lang, 
+                   CASE WHEN p.expiry_date > CURRENT_TIMESTAMP THEN true ELSE false END as is_paid
+            FROM users_info u
+            LEFT JOIN paid_users p ON u.user_id = p.user_id
+        """)
 
     for row in users:
         uid = row["user_id"]
         lang = row["lang"] or "ar"
-        paid = await is_user_paid(pool, uid)
+        paid = row["is_paid"] # أخذنا الحالة بدون ما نكلم الداتابيز مرة ثانية!
 
         # ---------- VIP ----------
         if paid:
@@ -588,12 +596,12 @@ async def approve_radar_signal(cb: types.CallbackQuery):
                 reply_markup=None if paid else get_payment_kb(lang)
             )
             await asyncio.sleep(0.05)
-        except:
+        except Exception as e:
+            print(f"Failed to send to {uid}: {e}")
             continue
             
     # مسح الإشارة من الذاكرة بعد نشرها
     del radar_pending_approvals[signal_id]
-
 
 @dp.callback_query(F.data.startswith("rad_rej_"))
 async def reject_radar_signal(cb: types.CallbackQuery):
@@ -723,25 +731,22 @@ async def send_photo_to_trials(m: types.Message):
 @dp.message(Command("status"))
 async def status_cmd(m: types.Message):
     pool = dp['db_pool']
-    
-    # 1. إجمالي المستخدمين
-    total = await pool.fetchval("SELECT count(*) FROM users_info")
-    # 2. إجمالي المشتركين VIP
-    vips = await pool.fetchval("SELECT count(*) FROM paid_users")
-    # 3. إجمالي الذين استخدموا التجربة المجانية (الموجودين في جدول trial_users)
-    total_trials = await pool.fetchval("SELECT count(*) FROM trial_users")
-    # 4. النشطين اليوم (الذين أرسلوا رسائل اليوم)
-    active_today = await pool.fetchval("SELECT count(*) FROM users_info WHERE last_active = CURRENT_DATE")
-    
-    msg = (f"📊 **إحصائيات البوت المتقدمة:**\n"
-           f"───────────────────\n"
-           f"👥 **إجمالي القاعدة:** `{total}` مستخدم\n"
-           f"🔥 **النشاط اليومي:** `{active_today}` مستخدم نشط\n"
-           f"🎁 **مستخدمي التجربة:** `{total_trials}` شخص\n"
-           f"💎 **المشتركين VIP:** `{vips}` مشترك")
-    
-    await m.answer(msg, parse_mode=ParseMode.MARKDOWN)
-
+    try:
+        async with pool.acquire() as conn:
+            total = await conn.fetchval("SELECT count(*) FROM users_info")
+            vips = await conn.fetchval("SELECT count(*) FROM paid_users")
+            total_trials = await conn.fetchval("SELECT count(*) FROM trial_users")
+            active_today = await conn.fetchval("SELECT count(*) FROM users_info WHERE last_active = CURRENT_DATE")
+        
+        msg = (f"📊 **إحصائيات البوت المتقدمة:**\n"
+               f"───────────────────\n"
+               f"👥 **إجمالي القاعدة:** `{total}` مستخدم\n"
+               f"🔥 **النشاط اليومي:** `{active_today}` مستخدم نشط\n"
+               f"🎁 **مستخدمي التجربة:** `{total_trials}` شخص\n"
+               f"💎 **المشتركين VIP:** `{vips}` مشترك")
+        await m.answer(msg, parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        print(f"Status Error: {e}")
     
 @dp.message(Command("admin"))
 async def admin_cmd(m: types.Message):
