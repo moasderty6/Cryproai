@@ -885,23 +885,37 @@ async def handle_symbol(m: types.Message):
     uid = m.from_user.id
     pool = dp['db_pool']
 
-    async with pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO users_info (user_id, last_active)
-            VALUES ($1, CURRENT_DATE)
-            ON CONFLICT (user_id)
-            DO UPDATE SET last_active = CURRENT_DATE
-        """, uid)
+    # 🛡️ فتح اتصال واحد محمي لكل العمليات لتجنب انقطاع Neon
+    try:
+        async with pool.acquire() as conn:
+            # 1. تحديث تاريخ الظهور
+            await conn.execute("""
+                INSERT INTO users_info (user_id, last_active)
+                VALUES ($1, CURRENT_DATE)
+                ON CONFLICT (user_id)
+                DO UPDATE SET last_active = CURRENT_DATE
+            """, uid)
 
-    user = await pool.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", uid)
-    lang = user['lang'] if user else "ar"
-    
-    if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
+            # 2. جلب لغة المستخدم
+            user = await conn.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", uid)
+            lang = user['lang'] if user and user['lang'] else "ar"
+            
+            # 3 و 4. فحص الاشتراك والتجربة (نمرر conn بدلاً من pool للحفاظ على نفس الاتصال)
+            paid = await is_user_paid(conn, uid)
+            trial = await has_trial(conn, uid)
+            
+    except Exception as e:
+        print(f"DB Error in handle_symbol: {e}")
+        return await m.answer("⚠️ حدث خطأ في الاتصال بقاعدة البيانات. يرجى المحاولة مرة أخرى.")
+
+    # فحص النتيجة ومنع المستخدم إذا انتهت تجربته
+    if not paid and not trial:
         return await m.answer(
-            "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 1500 ⭐ شهرياً." if lang=="ar" 
+            "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ شهرياً." if lang=="ar" 
             else "⚠️ Your free trial has ended. For full access, please subscribe for a Monthly fee of 10 USDT or 500 ⭐.", 
             reply_markup=get_payment_kb(lang)
         )
+
     
     user_sym = m.text.strip().upper()
     symbol_map = {"XAU": "PAXG", "GOLD": "PAXG"}
