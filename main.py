@@ -1073,7 +1073,13 @@ async def run_analysis(cb: types.CallbackQuery):
             reply_markup=get_payment_kb(lang)
         )
 
-    await cb.message.edit_text("🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing...")
+    try:
+        await cb.message.edit_text("🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing...")
+    except Exception as e:
+        if "message is not modified" in str(e):
+            pass  # تجاهل الخطأ لأن الرسالة تغيرت بالفعل
+        else:
+            print(f"Edit msg error in analysis: {e}")
 
     clean_sym = sym.replace("USDT", "").strip().upper()
     is_dex = data.get('is_dex', False)
