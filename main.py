@@ -388,6 +388,54 @@ async def ai_opportunity_radar(pool):
         print(f"Radar Error: {e}")
 
         # تم تصحيح وقت الانتظار ليكون 6 ساعات بالضبط (6 * 60 * 60)
+async def background_market_monitor(pool):
+    """مراقب السوق الخلفي: يسجل التجميع والتصريف لكل العملات يومياً"""
+    while True:
+        try:
+            print("🔄 جاري تحديث ذاكرة السوق (التجميع والتصريف)...")
+            headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
+            async with httpx.AsyncClient(timeout=30) as client:
+                res = await client.get(
+                    "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
+                    headers=headers,
+                    params={"limit": "250"} # نراقب أفضل 250 عملة
+                )
+                
+                if res.status_code == 200:
+                    coins = res.json()["data"]
+                    
+                    async with pool.acquire() as conn:
+                        for c in coins:
+                            sym = c["symbol"]
+                            price_change_24h = c["quote"]["USD"]["percent_change_24h"]
+                            price_change_7d = c["quote"]["USD"]["percent_change_7d"]
+                            vol_change_24h = c["quote"]["USD"].get("volume_change_24h", 0)
+
+                            # 🧠 خوارزمية اكتشاف التجميع والتصريف (Smart Logic)
+                            phase = "حيادي (Neutral)"
+                            if price_change_7d < -5 and vol_change_24h > 20 and price_change_24h > 0:
+                                phase = "تجميع حيتان (Accumulation) - السعر هبط سابقاً لكن الفوليوم انفجر الآن للشراء"
+                            elif price_change_7d > 10 and vol_change_24h > 20 and price_change_24h < 0:
+                                phase = "تصريف حيتان (Distribution) - السعر صعد سابقاً والحيتان يبيعون الآن"
+                            elif price_change_24h > 5 and vol_change_24h > 30:
+                                phase = "موجة صعود قوية (Strong Bullish Momentum)"
+                            elif price_change_24h < -5 and vol_change_24h > 30:
+                                phase = "انهيار وبيع هلع (Panic Selling)"
+
+                            # تخزين البيانات في ذاكرة البوت
+                            await conn.execute("""
+                                INSERT INTO market_memory (symbol, market_phase, volume_change, last_updated)
+                                VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+                                ON CONFLICT (symbol) DO UPDATE 
+                                SET market_phase = $2, volume_change = $3, last_updated = CURRENT_TIMESTAMP
+                            """, sym, phase, str(round(vol_change_24h, 1)) + "%")
+                    print("✅ تمت أرشفة بيانات السوق بنجاح في الذاكرة.")
+        except Exception as e:
+            print(f"Market Monitor Error: {e}")
+            
+        # ينام لمدة 4 ساعات ثم يعيد فحص السوق
+        await asyncio.sleep(14400) 
+
   # 6 ساعات # انتطار الدورة القادمة
 async def daily_channel_post():
     # معرف القناة (تأكد من كتابة يوزر قناتك هنا)
@@ -1107,9 +1155,29 @@ async def run_analysis(cb: types.CallbackQuery):
     macd_fmt = format_price(last_macd) if last_macd is not None else "0.0"
     safe_rsi = f"{last_rsi:.2f}" if last_rsi is not None else "N/A"
     vol24_fmt = format_price(volume_24h)
+    # 🕵️‍♂️ استخراج ذاكرة السوق السرية لهذه العملة
+    market_memory_phase = "غير متوفرة"
+    market_vol_change = "غير متوفر"
+    try:
+        async with pool.acquire() as conn:
+            mem = await conn.fetchrow("SELECT market_phase, volume_change FROM market_memory WHERE symbol = $1", clean_sym)
+            if mem:
+                market_memory_phase = mem['market_phase']
+                market_vol_change = mem['volume_change']
+    except:
+        pass
+
+    # تجهيز الداتا السرية للذكاء الاصطناعي (لن يراها المستخدم)
+    hidden_context = f"""
+[SECRET BACKGROUND DATA - DO NOT SHOW TO USER]
+Market Phase (Background Monitor): {market_memory_phase}
+Volume Change vs Yesterday: {market_vol_change}
+INSTRUCTION: Base your TP and SL targets on this background data. If phase is 'Distribution', targets must be tight and SL must be close. If 'Accumulation', TP targets can be higher.
+"""
 
     if lang == "ar":
         prompt = f"""
+{hidden_context}
 أنت محلل فني خبير في شركة "NaiF CHarT". حلل عملة {clean_sym} بناءً على البيانات التالية:
 السعر الحالي: {price_fmt}$ | الإطار: {tf} | RSI: {safe_rsi} | MACD: {macd_fmt} ({"صاعد" if (last_macd or 0)>0 else "هابط"})
 البولينجر: السعر {bb0_fmt} (نطاق {bb1_fmt} - {bb2_fmt}) | الفوليوم: {vol24_fmt}
@@ -1148,6 +1216,7 @@ Stop Loss: (ضع رقم منطقي)
 """
     else:
         prompt = f"""
+{hidden_context}
 You are an expert Technical Analyst at "NaiF CHarT". Analyze {clean_sym} based on:
 Price: {price_fmt}$ | Timeframe: {tf} | RSI: {safe_rsi} | MACD: {macd_fmt} ({"Bullish" if (last_macd or 0)>0 else "Bearish"})
 Bollinger: {bb0_fmt} (Range {bb1_fmt}-{bb2_fmt}) | Volume: {vol24_fmt}
@@ -1408,7 +1477,15 @@ async def on_startup(app):
         await conn.execute("ALTER TABLE paid_users ADD COLUMN IF NOT EXISTS expiry_date TIMESTAMP")
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS invited_by BIGINT")
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS ref_count INTEGER DEFAULT 0")
-
+        # جدول ذاكرة السوق
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS market_memory (
+                symbol TEXT PRIMARY KEY,
+                market_phase TEXT,
+                volume_change TEXT,
+                last_updated TIMESTAMP
+            )
+        """)
         # 3. تفعيل حسابات الأدمن بشكل دائم
         initial_paid_users = {1317225334, 5527572646}
         for uid in initial_paid_users:
