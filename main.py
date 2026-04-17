@@ -11,6 +11,8 @@ import time
 import base64
 import pandas as pd
 import uuid
+import numpy as np
+
 from aiohttp import web
 from dotenv import load_dotenv
 
@@ -1062,6 +1064,70 @@ def detect_fake_breakout(df):
     if last["high"] > recent_high and last["close"] < recent_high:
         return -20
     return 0
+import numpy as np # تأكد من إضافتها في الأعلى
+
+def calculate_smart_trend_and_targets(df, current_price):
+    # 1. حساب الـ ATR (لقياس التذبذب ووضع الأهداف ووقف الخسارة)
+    df['prev_close'] = df['close'].shift(1)
+    df['tr0'] = abs(df['high'] - df['low'])
+    df['tr1'] = abs(df['high'] - df['prev_close'])
+    df['tr2'] = abs(df['low'] - df['prev_close'])
+    df['tr'] = df[['tr0', 'tr1', 'tr2']].max(axis=1)
+    atr = df['tr'].rolling(14).mean().iloc[-1]
+
+    # 2. حساب الاتجاه (Trend) باستخدام EMA 20 و 50
+    ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
+    ema50 = df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
+    
+    if current_price > ema20 and ema20 > ema50:
+        trend_direction = "Bullish" # صاعد
+    elif current_price < ema20 and ema20 < ema50:
+        trend_direction = "Bearish" # هابط
+    else:
+        trend_direction = "Neutral" # عرضي / متذبذب
+
+    # 3. حساب الـ ADX (لقياس قوة الاتجاه)
+    df['up_move'] = df['high'] - df['high'].shift(1)
+    df['down_move'] = df['low'].shift(1) - df['low']
+    
+    df['+dm'] = np.where((df['up_move'] > df['down_move']) & (df['up_move'] > 0), df['up_move'], 0.0)
+    df['-dm'] = np.where((df['down_move'] > df['up_move']) & (df['down_move'] > 0), df['down_move'], 0.0)
+    
+    atr_series = df['tr'].rolling(14).mean()
+    plus_di = 100 * (df['+dm'].rolling(14).mean() / atr_series)
+    minus_di = 100 * (df['-dm'].rolling(14).mean() / atr_series)
+    
+    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+    adx = dx.rolling(14).mean().iloc[-1]
+
+    # تصنيف قوة الاتجاه بناءً على قيمة ADX
+    if adx >= 40:
+        trend_strength = "قوي جداً 🔥"
+    elif adx >= 25:
+        trend_strength = "قوي 💪"
+    elif adx >= 20:
+        trend_strength = "متوسط ⚖️"
+    else:
+        trend_strength = "ضعيف / عرضي ⚠️"
+
+    # 4. حساب الأهداف (TP) ووقف الخسارة (SL) رياضياً بناءً على الـ ATR
+    if trend_direction == "Bullish" or trend_direction == "Neutral":
+        sl = current_price - (atr * 1.5)
+        tp1 = current_price + (atr * 1.2)
+        tp2 = current_price + (atr * 2.5)
+        tp3 = current_price + (atr * 4.0)
+    else: # Bearish
+        sl = current_price + (atr * 1.5)
+        tp1 = current_price - (atr * 1.2)
+        tp2 = current_price - (atr * 2.5)
+        tp3 = current_price - (atr * 4.0)
+
+    # 5. حساب الدعم والمقاومة التاريخية القريبة
+    support = df['low'].rolling(20).min().iloc[-1]
+    resistance = df['high'].rolling(20).max().iloc[-1]
+
+    return trend_direction, trend_strength, adx, sl, tp1, tp2, tp3, support, resistance
+
 def compute_indicators(candles):
     df = pd.DataFrame(candles)
     df = df.iloc[:, :6] 
@@ -1143,85 +1209,27 @@ async def run_analysis(cb: types.CallbackQuery):
         candles = await get_candles_gate(f"{clean_sym}_USDT", gate_interval, limit=250)
 
     # ✅ بداية الإصلاح: إدخال الكود داخل الدالة بالمسافات الصحيحة
+        # (داخل دالة run_analysis بعد تحويل df من الشموع)
     if candles:
-        last_rsi, last_macd, last_bb, last_vol, high, low = compute_indicators(candles)
-
-        # ===== تحويل البيانات =====
-        df = pd.DataFrame(candles)
-        df = df.iloc[:, :6]
-        df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
-
-        for col in ["close", "high", "low", "open", "volume"]:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-
-        # ===== SMART FEATURES =====
-        volume_delta = compute_volume_delta(df)
-        candle_score = detect_candle_strength(df)
-        volatility_score = detect_volatility(df)
-        momentum_score = compute_momentum(df)
-        fake_breakout_score = detect_fake_breakout(df)
-
-    else:
-        last_rsi, last_macd, last_bb, last_vol, high, low = (
-            50.0, 0.0, (price, price*0.95, price*1.05),
-            0.0, price*1.05, price*0.95
-        )
-
-        volume_delta = 0
-        candle_score = 0
-        volatility_score = 0
-        momentum_score = 0
-        fake_breakout_score = 0
+        last_rsi, last_macd, last_bb, last_vol, _, _ = compute_indicators(candles) # ألغينا الـ high/low القديمة
         
-    # ===== SMART SCORING ENGINE =====
-    smart_score = 0
+        # استدعاء دالة الاتجاه والأهداف الرياضية
+        trend_dir, trend_str, adx_val, calc_sl, calc_tp1, calc_tp2, calc_tp3, calc_sup, calc_res = calculate_smart_trend_and_targets(df, price)
+        
+        # ترجمة الاتجاه
+        if lang == "ar":
+            real_trend = "صاعد 🟢" if trend_dir == "Bullish" else "هابط 🔴" if trend_dir == "Bearish" else "عرضي ⚪"
+            trend_strength = trend_str
+        else:
+            real_trend = trend_dir
+            trend_strength_en = {"قوي جداً 🔥": "Very Strong 🔥", "قوي 💪": "Strong 💪", "متوسط ⚖️": "Moderate ⚖️", "ضعيف / عرضي ⚠️": "Weak/Ranging ⚠️"}
+            trend_strength = trend_strength_en.get(trend_str, trend_str)
 
-    # RSI
-    if last_rsi < 30:
-        smart_score += 15
-    elif last_rsi > 70:
-        smart_score -= 15
-
-    # MACD
-    if last_macd > 0:
-        smart_score += 10
     else:
-        smart_score -= 10
+        # قيم افتراضية في حال فشل جلب الشموع
+        real_trend, trend_strength = ("غير معروف", "غير معروف")
+        calc_sl, calc_tp1, calc_tp2, calc_tp3, calc_sup, calc_res = (price*0.9, price*1.05, price*1.1, price*1.15, price*0.95, price*1.05)
 
-    # Volume Delta
-    if volume_delta > 0:
-        smart_score += 15
-    else:
-        smart_score -= 15
-
-    # Candle & Indicators
-    smart_score += candle_score
-    smart_score += volatility_score
-    smart_score += momentum_score
-    smart_score += fake_breakout_score
-    
-    # ===== FINAL TREND DECISION =====
-    bias = smart_score
-
-    # فلترة ذكية لمنع الإشارات الضعيفة
-    if -10 < bias < 10:
-        bias = 10 if bias >= 0 else -10
-
-    if bias >= 0:
-        real_trend = "صاعد" if lang == "ar" else "Bullish"
-    else:
-        real_trend = "هابط" if lang == "ar" else "Bearish"
-
-    # قوة الاتجاه
-    strength = abs(bias)
-
-    if strength >= 60:
-        trend_strength = "قوي 🔥" if lang == "ar" else "Strong 🔥"
-    elif strength >= 30:
-        trend_strength = "متوسط 💪" if lang == "ar" else "Moderate 💪"
-    else:
-        trend_strength = "ضعيف ⚠️" if lang == "ar" else "Weak ⚠️"
-    
     price_fmt = format_price(price)
     low_fmt = format_price(low)
     high_fmt = format_price(high)
@@ -1234,78 +1242,59 @@ async def run_analysis(cb: types.CallbackQuery):
 
     if lang == "ar":
         prompt = f"""
-أنت محلل فني خبير في شركة "NaiF CHarT". حلل عملة {clean_sym} بناءً على البيانات التالية:
-السعر الحالي: {price_fmt}$ | الإطار: {tf} | RSI: {safe_rsi} | MACD: {macd_fmt} ({"صاعد" if (last_macd or 0)>0 else "هابط"})
-البولينجر: السعر {bb0_fmt} (نطاق {bb1_fmt} - {bb2_fmt}) | الفوليوم: {vol24_fmt}
+أنت محلل فني خبير في شركة "NaiF CHarT". قم بصياغة هذا التحليل لعملة {clean_sym} بشكل احترافي ومختصر.
+البيانات محسوبة رياضياً وجاهزة، ⚠️ يمنع منعاً باتاً تغيير أرقام الأهداف أو الوقف ⚠️، فقط قم بترتيبها في القالب المطلوب واكتب تعليقاً فنياً دقيقاً في سطر واحد لكل مؤشر.
 
-⚠️ الالتزام التام بهذا التنسيق (استخدم وسوم HTML فقط):
-⚠️ قواعد صارمة:
+⚠️ التزم بهذا القالب بحذافيره (استخدم HTML فقط):
 
-إذا كان الاتجاه "صاعد":
-- يجب أن تكون TP1 و TP2 و TP3 أعلى من السعر الحالي
-
-إذا كان الاتجاه "هابط":
-- يجب أن تكون TP1 و TP2 و TP3 أقل من السعر الحالي
-
-📊 <b>التحليل لـ {clean_sym}</b> | {tf} | {price_fmt}$
+📊 <b>التحليل لـ {clean_sym}</b> | {tf} | {format_price(price)}$
 الاتجاه: {real_trend} ({trend_strength})
 
 📉 <b>الدعم والمقاومة</b>
-الدعم الأقرب: {low_fmt} دولار
-المقاومة الأقرب: {high_fmt} دولار
+الدعم الأقرب: <code>{format_price(calc_sup)}</code>$
+المقاومة الأقرب: <code>{format_price(calc_res)}</code>$
 
-🎯 <b>الأهداف السعرية</b>
-TP1: (ضع رقم منطقي)
-TP2: (ضع رقم منطقي)
-TP3: (ضع رقم منطقي)
+🎯 <b>الأهداف السعرية (TP)</b>
+TP1: <code>{format_price(calc_tp1)}</code>
+TP2: <code>{format_price(calc_tp2)}</code>
+TP3: <code>{format_price(calc_tp3)}</code>
 
-🛑 <b>وقف الخسارة</b>
-Stop Loss: (ضع رقم منطقي)
+🛑 <b>وقف الخسارة (SL)</b>
+Stop Loss: <code>{format_price(calc_sl)}</code>
 
 📈 <b>تحليل المؤشرات</b>
-- RSI: {safe_rsi} (اكتب القيمة واشرح باختصار شديد سطر واحد)
-- MACD: {macd_fmt} (اكتب القيمة واشرح باختصار شديد سطر واحد)
-- Bollinger Bands: (اشرح باختصار شديد سطر واحد)
-- Volume: {vol24_fmt} (اكتب القيمة واشرح باختصار شديد سطر واحد)
-
-**ملاحظة: لا تكتب مقدمات ولا جرايد، خليك محدد ومختصر ومرتب.**
+• RSI ({safe_rsi}): (اكتب سطر واحد يوضح التشبع أو الحياد)
+• MACD ({macd_fmt}): (اكتب سطر واحد يوضح الزخم)
+• ADX ({adx_val:.1f}): (اكتب سطر واحد يوضح قوة الترند)
+• Volume: (اكتب سطر واحد يوضح حالة السيولة بناءً على القيمة {format_price(volume_24h)})
 """
     else:
         prompt = f"""
-You are an expert Technical Analyst at "NaiF CHarT". Analyze {clean_sym} based on:
-Price: {price_fmt}$ | Timeframe: {tf} | RSI: {safe_rsi} | MACD: {macd_fmt} ({"Bullish" if (last_macd or 0)>0 else "Bearish"})
-Bollinger: {bb0_fmt} (Range {bb1_fmt}-{bb2_fmt}) | Volume: {vol24_fmt}
+You are an expert Technical Analyst at "NaiF CHarT". Format this analysis for {clean_sym} professionally and concisely.
+The data is calculated mathematically and is completely ready. ⚠️ STRICT RULE: DO NOT change the TP or SL numbers ⚠️. Just arrange them in the required template and write a precise technical comment in one short line for each indicator.
 
-⚠️ Strictly follow this HTML format:
-Strict rule:
+⚠️ Strictly follow this template (Use HTML only):
 
-If Trend = Bullish
-TP targets MUST be above current price.
-
-If Trend = Bearish
-TP targets MUST be below current price.
-
-📊 <b>Analysis: {clean_sym}</b> | {tf} | {price_fmt}$
+📊 <b>Analysis: {clean_sym}</b> | {tf} | {format_price(price)}$
 Trend: {real_trend} ({trend_strength})
 
-<b>📉 Support & Resistance</b>
-Nearest Support: <code>{low_fmt}</code> $Nearest Resistance: <code>{high_fmt}</code>$
+📉 <b>Support & Resistance</b>
+Nearest Support: <code>{format_price(calc_sup)}</code>$
+Nearest Resistance: <code>{format_price(calc_res)}</code>$
 
-<b>🎯 Price Targets</b>
-TP1: <code>(Price)</code>
-TP2: <code>(Price)</code>
-TP3: <code>(Price)</code>
+🎯 <b>Price Targets (TP)</b>
+TP1: <code>{format_price(calc_tp1)}</code>
+TP2: <code>{format_price(calc_tp2)}</code>
+TP3: <code>{format_price(calc_tp3)}</code>
 
-<b>🛑 Stop Loss</b>
-Stop Loss: <code>(Price)</code>
+🛑 <b>Stop Loss (SL)</b>
+Stop Loss: <code>{format_price(calc_sl)}</code>
 
-<b>📈 Indicator Analysis</b>
-• RSI: {safe_rsi} (value and One short sentence)
-• MACD: {macd_fmt} (value and One short sentence)
-• Bollinger Bands: (One short sentence)
-• Volume: {vol24_fmt} (value and One short sentence)
-
-<b>Note: No intro/outro, strictly follow the headers above.</b>
+📈 <b>Indicator Analysis</b>
+• RSI ({safe_rsi}): (Write one line explaining overbought/oversold or neutrality)
+• MACD ({macd_fmt}): (Write one line explaining momentum)
+• ADX ({adx_val:.1f}): (Write one line explaining trend strength)
+• Volume: (Write one line explaining liquidity based on {format_price(volume_24h)})
 """
 
     res = await ask_groq(prompt, lang=lang)
