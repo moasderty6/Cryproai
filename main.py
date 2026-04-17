@@ -951,6 +951,7 @@ async def handle_symbol(m: types.Message):
                 volume_24h = float(data_gate[0].get("quote_volume", 0))
 
                 # محاولة جلب الفوليوم الأدق من CMC
+                                # محاولة جلب الفوليوم الأدق من CMC
                 try:
                     res_cmc = await client.get(
                         f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={sym}",
@@ -959,10 +960,22 @@ async def handle_symbol(m: types.Message):
                     )
                     data_cmc = res_cmc.json()
                     if res_cmc.status_code == 200 and sym in data_cmc.get("data", {}):
-                        # إذا نجح، استبدل فوليوم Gate.io بفوليوم CMC الكلي
-                        volume_24h = float(data_cmc["data"][sym]["quote"]["USD"]["volume_24h"])
-                except:
-                    pass # إذا فشل CMC، سيبقى الفوليوم محتفظاً بقيمة Gate.io ولن يصبح 0
+                        quote_data = data_cmc["data"][sym]["quote"]["USD"]
+                        # الفوليوم الكلي
+                        volume_24h = float(quote_data["volume_24h"])
+                        # نسبة تغير الفوليوم (مهم جداً لكشف الحيتان)
+                        vol_change_cmc = float(quote_data.get("volume_change_24h", 0))
+                        
+                        # 🔥 تحديث قاعدة البيانات فوراً بنسبة تغير الفوليوم
+                        async with pool.acquire() as conn:
+                            await conn.execute("""
+                                INSERT INTO market_memory (symbol, volume_change, last_updated)
+                                VALUES ($1, $2, CURRENT_TIMESTAMP)
+                                ON CONFLICT (symbol) DO UPDATE 
+                                SET volume_change = EXCLUDED.volume_change, last_updated = CURRENT_TIMESTAMP
+                            """, sym, f"{vol_change_cmc:.1f}%")
+                except Exception as e:
+                    print(f"CMC Fetch Error: {e}")
 
                 user_session_data[uid] = {
                     "sym": sym, "price": price, "volume_24h": volume_24h, 
@@ -1070,8 +1083,8 @@ def detect_fake_breakout(df):
     return 0
 import numpy as np # تأكد من إضافتها في الأعلى
 
-def calculate_smart_trend_and_targets(df, current_price):
-    # 1. حساب الـ ATR لقياس التذبذب الحقيقي
+def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
+    # 1. حساب الـ ATR
     df['prev_close'] = df['close'].shift(1)
     df['tr0'] = abs(df['high'] - df['low'])
     df['tr1'] = abs(df['high'] - df['prev_close'])
@@ -1079,46 +1092,59 @@ def calculate_smart_trend_and_targets(df, current_price):
     df['tr'] = df[['tr0', 'tr1', 'tr2']].max(axis=1)
     atr = df['tr'].rolling(14).mean().iloc[-1]
 
-    # تأمين قيمة الـ ATR في حال كانت مفقودة أو صفرية
     if pd.isna(atr) or atr == 0:
         atr = current_price * 0.02 
 
-    # حماية من تضخم الـ ATR (يجب ألا يتجاوز التذبذب 10% من السعر)
     max_atr = current_price * 0.10
     atr = min(atr, max_atr)
 
-    # 2. تحديد الاتجاه (إما صاعد أو هابط فقط)
+    # 2. تحديد الاتجاه
     ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
     ema50 = df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
 
-    # الفيصل القاطع: لا يوجد عرضي بعد اليوم
     if ema20 >= ema50:
         trend_direction = "Bullish"
     else:
         trend_direction = "Bearish"
 
-    # 3. قوة الاتجاه (بناءً على ابتعاد السعر عن متوسط 50)
     distance_pct = abs(current_price - ema50) / ema50 * 100
     
-    if distance_pct >= 8:
-        trend_strength = "قوي"
-        adx_dummy = 45.0
-    elif distance_pct >= 4:
-        trend_strength = "جيد"
-        adx_dummy = 30.0
-    elif distance_pct >= 1.5:
-        trend_strength = "متوسط"
-        adx_dummy = 20.0
-    else:
-        trend_strength = "ضعيف" # تم إلغاء كلمة عرضي من هنا أيضاً
-        adx_dummy = 12.0
+    # 🔥 3. كشف نوايا الحيتان بناءً على دمج الاتجاه مع الفوليوم التراكمي
+    market_action = "حركة طبيعية ⚖️" 
+    
+    if trend_direction == "Bearish" and distance_pct < 4 and db_vol_change > 60:
+        market_action = "تجميع حيتان مخفي 🔥 (Accumulation)"
+    elif trend_direction == "Bullish" and distance_pct > 6 and db_vol_change > 100:
+        market_action = "خطر تصريف قمم ⚠️ (Distribution)"
+    elif trend_direction == "Bullish" and db_vol_change < 20:
+        market_action = "اختراق كاذب أو ضعيف 🚨 (Fakeout)"
+    elif trend_direction == "Bullish" and db_vol_change >= 40:
+        market_action = "اختراق حقيقي مدعوم بسيولة ✅"
+    elif trend_direction == "Bearish" and db_vol_change > 60:
+        market_action = "بيع هلع أو هبوط قوي 🩸 (Panic Sell)"
 
-    # حد أدنى للسعر لمنع القيم السالبة
+    # تحديد قوة الاتجاه
+    if "Fakeout" not in market_action:
+        if distance_pct >= 8:
+            trend_strength = "قوي"
+            adx_dummy = 45.0
+        elif distance_pct >= 4:
+            trend_strength = "جيد"
+            adx_dummy = 30.0
+        elif distance_pct >= 1.5:
+            trend_strength = "متوسط"
+            adx_dummy = 20.0
+        else:
+            trend_strength = "ضعيف"
+            adx_dummy = 12.0
+    else:
+        trend_strength = "ضعيف ومخادع"
+        adx_dummy = 15.0
+
+    # 4. حساب الأهداف
     min_allowed_price = current_price * 0.000001 
 
-    # 4. حساب الأهداف (Long & Short)
     if trend_direction == "Bearish":
-        # سوق هابط (Short)
         sl = current_price + (atr * 1.5)
         tp1 = current_price - (atr * 1.5)
         tp2 = current_price - (atr * 2.5)
@@ -1128,9 +1154,7 @@ def calculate_smart_trend_and_targets(df, current_price):
         tp1 = min(current_price * 0.995, max(min_allowed_price, tp1)) 
         tp2 = min(tp1 * 0.995, max(min_allowed_price, tp2)) 
         tp3 = min(tp2 * 0.995, max(min_allowed_price, tp3)) 
-
     else:
-        # سوق صاعد (Long)
         sl = current_price - (atr * 1.5)
         tp1 = current_price + (atr * 1.5)
         tp2 = current_price + (atr * 2.5)
@@ -1144,7 +1168,8 @@ def calculate_smart_trend_and_targets(df, current_price):
     support = df['low'].rolling(20).min().iloc[-1]
     resistance = df['high'].rolling(20).max().iloc[-1]
 
-    return trend_direction, trend_strength, adx_dummy, sl, tp1, tp2, tp3, support, resistance
+    return trend_direction, trend_strength, market_action, adx_dummy, sl, tp1, tp2, tp3, support, resistance
+
 
 
 def compute_indicators(candles):
@@ -1232,8 +1257,7 @@ async def run_analysis(cb: types.CallbackQuery):
     if candles:
         last_rsi, last_macd, last_bb, last_vol, _, _ = compute_indicators(candles) 
         
-        # 1. ===== تحويل البيانات وإنشاء df (هذا الجزء الذي كان مفقوداً) =====
-        import pandas as pd # تأكد أن هذه في أعلى الملف
+        import pandas as pd 
         df = pd.DataFrame(candles)
         df = df.iloc[:, :6]
         df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
@@ -1241,29 +1265,37 @@ async def run_analysis(cb: types.CallbackQuery):
         for col in ["close", "high", "low", "open", "volume"]:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
-        # 2. ===== استدعاء دالة الاتجاه والأهداف الرياضية =====
-        trend_dir, trend_str, adx_val, calc_sl, calc_tp1, calc_tp2, calc_tp3, calc_sup, calc_res = calculate_smart_trend_and_targets(df, price)
+        # 🔥 سحب الفوليوم من قاعدة البيانات
+        db_vol_float = 0.0
+        try:
+            async with pool.acquire() as conn:
+                db_mem = await conn.fetchrow("SELECT volume_change FROM market_memory WHERE symbol = $1", clean_sym)
+                if db_mem and db_mem['volume_change']:
+                    vol_str = db_mem['volume_change'].replace('%', '').strip()
+                    db_vol_float = float(vol_str)
+        except Exception as e:
+            print(f"Failed to fetch market_memory for {clean_sym}: {e}")
+
+        # تمرير قيمة الفوليوم للدالة الذكية
+        trend_dir, trend_str, market_action, adx_val, calc_sl, calc_tp1, calc_tp2, calc_tp3, calc_sup, calc_res = calculate_smart_trend_and_targets(df, price, db_vol_float)
         
-        # 3. ===== ترجمة الاتجاه =====
         if lang == "ar":
-            real_trend = "صاعد" if trend_dir == "Bullish" else "هابط" if trend_dir == "Bearish" else "عرضي"
+            real_trend = "صاعد" if trend_dir == "Bullish" else "هابط"
             trend_strength = trend_str
         else:
             real_trend = trend_dir
-            trend_strength_en = {"قوي": "Strong", "جيد": "Good", "متوسط": "Moderate", "ضعيف / عرضي": "Weak/Ranging"}
+            trend_strength_en = {"قوي جداً": "Very Strong", "قوي": "Strong", "جيد": "Good", "متوسط": "Moderate", "ضعيف": "Weak", "ضعيف ومخادع": "Weak & Fake"}
             trend_strength = trend_strength_en.get(trend_str, trend_str)
 
     else:
-        # قيم افتراضية في حال فشل جلب الشموع من المنصة
-        real_trend, trend_strength = ("غير معروف", "غير معروف")
+        real_trend, trend_strength, market_action = ("غير معروف", "غير معروف", "لا توجد بيانات")
         calc_sl, calc_tp1, calc_tp2, calc_tp3, calc_sup, calc_res = (price*0.9, price*1.05, price*1.1, price*1.15, price*0.95, price*1.05)
-        adx_val = 0.0 # حتى لا يحدث خطأ في البرومبت
-
+        adx_val = 0.0 
 
     macd_fmt = format_price(last_macd) if last_macd is not None else "0.0"
     safe_rsi = f"{last_rsi:.2f}" if last_rsi is not None else "N/A"
 
-
+    # 🔥 تحديث البرومبت ليشمل الـ market_action
     if lang == "ar":
         prompt = f"""
 أنت محلل فني خبير في شركة "NaiF CHarT". قم بصياغة هذا التحليل لعملة {clean_sym} بشكل احترافي ومختصر.
@@ -1286,11 +1318,11 @@ TP3: <code>{format_price(calc_tp3)}</code>
 🛑 <b>وقف الخسارة (SL)</b>
 Stop Loss: <code>{format_price(calc_sl)}</code>
 
-📈 <b>تحليل المؤشرات</b>
+📈 <b>تحليل المؤشرات وحالة السوق</b>
+• السيولة الخفية: {market_action} (اكتب سطر يعلق على هذه الحالة)
 • RSI ({safe_rsi}): (اكتب سطر واحد يوضح التشبع أو الحياد)
 • MACD ({macd_fmt}): (اكتب سطر واحد يوضح الزخم)
 • ADX ({adx_val:.1f}): (اكتب سطر واحد يوضح قوة الترند)
-• Volume: (اكتب سطر واحد يوضح حالة السيولة بناءً على القيمة {format_price(volume_24h)})
 """
     else:
         prompt = f"""
@@ -1314,12 +1346,13 @@ TP3: <code>{format_price(calc_tp3)}</code>
 🛑 <b>Stop Loss (SL)</b>
 Stop Loss: <code>{format_price(calc_sl)}</code>
 
-📈 <b>Indicator Analysis</b>
+📈 <b>Indicator & Market Action Analysis</b>
+• Hidden Liquidity: {market_action} (Write one line commenting on this action)
 • RSI ({safe_rsi}): (Write one line explaining overbought/oversold or neutrality)
 • MACD ({macd_fmt}): (Write one line explaining momentum)
 • ADX ({adx_val:.1f}): (Write one line explaining trend strength)
-• Volume: (Write one line explaining liquidity based on {format_price(volume_24h)})
 """
+
 
     res = await ask_groq(prompt, lang=lang)
     await cb.message.answer(res, parse_mode=ParseMode.HTML)
@@ -1528,7 +1561,15 @@ async def on_startup(app):
         await conn.execute("CREATE TABLE IF NOT EXISTS users_info (user_id BIGINT PRIMARY KEY, lang TEXT, last_active DATE)")
         await conn.execute("CREATE TABLE IF NOT EXISTS paid_users (user_id BIGINT PRIMARY KEY, expiry_date TIMESTAMP)")
         await conn.execute("CREATE TABLE IF NOT EXISTS trial_users (user_id BIGINT PRIMARY KEY)")
-        
+           # 🔥 الجديد: إنشاء جدول الذاكرة للفوليوم
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS market_memory (
+                symbol TEXT PRIMARY KEY,
+                market_phase TEXT,
+                volume_change TEXT,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         # 2. إجبار تحديث الجداول القديمة (للمشتركين الحاليين)
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS last_active DATE")
         await conn.execute("ALTER TABLE paid_users ADD COLUMN IF NOT EXISTS expiry_date TIMESTAMP")
