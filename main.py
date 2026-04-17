@@ -521,12 +521,12 @@ async def approve_radar_signal(cb: types.CallbackQuery):
     
     # 🛡️ استعلام واحد يجلب الجميع مع حالة اشتراكهم لعدم تدمير قاعدة البيانات
     async with pool.acquire() as conn:
-        users = await conn.fetch("""
-            SELECT u.user_id, u.lang, 
-                   CASE WHEN p.expiry_date > CURRENT_TIMESTAMP THEN true ELSE false END as is_paid
-            FROM users_info u
-            LEFT JOIN paid_users p ON u.user_id = p.user_id
-        """)
+        users = await pool.fetch("""
+    SELECT u.user_id
+    FROM users_info u
+    JOIN trial_users t ON u.user_id = t.user_id
+    WHERE u.user_id NOT IN (SELECT user_id FROM paid_users)
+    """)
 
     for row in users:
         uid = row["user_id"]
