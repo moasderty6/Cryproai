@@ -7,4 +7,5 @@ asyncpg==0.29.*
 python-binance==1.0.16
 pandas
 numpy
-pandas-ta
+ta
+
