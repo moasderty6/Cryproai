@@ -1253,7 +1253,7 @@ async def run_analysis(cb: types.CallbackQuery):
 ⚠️ التزم بهذا القالب بحذافيره (استخدم HTML فقط):
 
 📊 <b>التحليل لـ {clean_sym}</b> | {tf} | {format_price(price)}$
-الاتجاه: {real_trend} ({trend_strength})
+الاتجاه: {real_trend}
 
 📉 <b>الدعم والمقاومة</b>
 الدعم الأقرب: <code>{format_price(calc_sup)}</code>$
@@ -1281,7 +1281,7 @@ The data is calculated mathematically and is completely ready. ⚠️ STRICT RUL
 ⚠️ Strictly follow this template (Use HTML only):
 
 📊 <b>Analysis: {clean_sym}</b> | {tf} | {format_price(price)}$
-Trend: {real_trend} ({trend_strength})
+Trend: {real_trend}
 
 📉 <b>Support & Resistance</b>
 Nearest Support: <code>{format_price(calc_sup)}</code>$
