@@ -1241,15 +1241,9 @@ async def run_analysis(cb: types.CallbackQuery):
         adx_val = 0.0 # حتى لا يحدث خطأ في البرومبت
 
 
-    price_fmt = format_price(price)
-    low_fmt = format_price(low)
-    high_fmt = format_price(high)
-    bb0_fmt = format_price(last_bb[0])
-    bb1_fmt = format_price(last_bb[1])
-    bb2_fmt = format_price(last_bb[2])
     macd_fmt = format_price(last_macd) if last_macd is not None else "0.0"
     safe_rsi = f"{last_rsi:.2f}" if last_rsi is not None else "N/A"
-    vol24_fmt = format_price(volume_24h)
+
 
     if lang == "ar":
         prompt = f"""
