@@ -10,7 +10,6 @@ import random
 import time
 import base64
 import pandas as pd
-import ta
 import uuid
 from aiohttp import web
 from dotenv import load_dotenv
@@ -163,29 +162,7 @@ async def get_orderbook_pressure(client, symbol):
         pass
     return 1.0
 
-# دالة مخصصة للرادار فقط
-def compute_indicators(candles):
-    df = pd.DataFrame(candles)
-    df = df.iloc[:, :6] 
-    df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
-    for col in ["close", "high", "low", "open", "volume"]: df[col] = pd.to_numeric(df[col], errors='coerce')
-    delta = df["close"].diff()
-    gain = delta.clip(lower=0)
-    loss = -1 * delta.clip(upper=0)
-    avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-    rs = avg_gain / avg_loss
-    last_rsi = (100 - (100 / (1 + rs))).iloc[-1]
-    ema12 = df["close"].ewm(span=12, adjust=False).mean()
-    ema26 = df["close"].ewm(span=26, adjust=False).mean()
-    macd_val = ema12 - ema26
-    signal = macd_val.ewm(span=9, adjust=False).mean()
-    last_macd_diff = macd_val.iloc[-1] - signal.iloc[-1]
-    sma20 = df["close"].rolling(20).mean()
-    std20 = df["close"].rolling(20).std(ddof=0) 
-    last_bb = (df["close"].iloc[-1], (sma20 - 2*std20).iloc[-1], (sma20 + 2*std20).iloc[-1])
-    recent = df.tail(20)
-    return last_rsi, last_macd_diff, last_bb, df["volume"].iloc[-1], recent["high"].max(), recent["low"].min()
+
 # --- الرادار الخارق المعدل ---
 async def ai_opportunity_radar(pool):
     try:
@@ -411,54 +388,6 @@ async def ai_opportunity_radar(pool):
         print(f"Radar Error: {e}")
 
         # تم تصحيح وقت الانتظار ليكون 6 ساعات بالضبط (6 * 60 * 60)
-async def background_market_monitor(pool):
-    """مراقب السوق الخلفي: يسجل التجميع والتصريف لكل العملات يومياً"""
-    while True:
-        try:
-            print("🔄 جاري تحديث ذاكرة السوق (التجميع والتصريف)...")
-            headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
-            async with httpx.AsyncClient(timeout=30) as client:
-                res = await client.get(
-                    "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
-                    headers=headers,
-                    params={"limit": "250"} # نراقب أفضل 250 عملة
-                )
-                
-                if res.status_code == 200:
-                    coins = res.json()["data"]
-                    
-                    async with pool.acquire() as conn:
-                        for c in coins:
-                            sym = c["symbol"]
-                            price_change_24h = c["quote"]["USD"]["percent_change_24h"]
-                            price_change_7d = c["quote"]["USD"]["percent_change_7d"]
-                            vol_change_24h = c["quote"]["USD"].get("volume_change_24h", 0)
-
-                            # 🧠 خوارزمية اكتشاف التجميع والتصريف (Smart Logic)
-                            phase = "حيادي (Neutral)"
-                            if price_change_7d < -5 and vol_change_24h > 20 and price_change_24h > 0:
-                                phase = "تجميع حيتان (Accumulation) - السعر هبط سابقاً لكن الفوليوم انفجر الآن للشراء"
-                            elif price_change_7d > 10 and vol_change_24h > 20 and price_change_24h < 0:
-                                phase = "تصريف حيتان (Distribution) - السعر صعد سابقاً والحيتان يبيعون الآن"
-                            elif price_change_24h > 5 and vol_change_24h > 30:
-                                phase = "موجة صعود قوية (Strong Bullish Momentum)"
-                            elif price_change_24h < -5 and vol_change_24h > 30:
-                                phase = "انهيار وبيع هلع (Panic Selling)"
-
-                            # تخزين البيانات في ذاكرة البوت
-                            await conn.execute("""
-                                INSERT INTO market_memory (symbol, market_phase, volume_change, last_updated)
-                                VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
-                                ON CONFLICT (symbol) DO UPDATE 
-                                SET market_phase = $2, volume_change = $3, last_updated = CURRENT_TIMESTAMP
-                            """, sym, phase, str(round(vol_change_24h, 1)) + "%")
-                    print("✅ تمت أرشفة بيانات السوق بنجاح في الذاكرة.")
-        except Exception as e:
-            print(f"Market Monitor Error: {e}")
-            
-        # ينام لمدة 4 ساعات ثم يعيد فحص السوق
-        await asyncio.sleep(14400) 
-
   # 6 ساعات # انتطار الدورة القادمة
 async def daily_channel_post():
     # معرف القناة (تأكد من كتابة يوزر قناتك هنا)
@@ -1085,7 +1014,7 @@ async def get_candles_gate(symbol: str, interval: str, limit: int = 250):
         return None
 
 # --- حساب المؤشرات ---
-def compute_pro_indicators(candles):
+def compute_indicators(candles):
     df = pd.DataFrame(candles)
     df = df.iloc[:, :6] 
     df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
@@ -1093,30 +1022,35 @@ def compute_pro_indicators(candles):
     for col in ["close", "high", "low", "open", "volume"]:
         df[col] = pd.to_numeric(df[col], errors='coerce')
 
-    # 1. الاتجاه (Trend): متوسط 200 و 50
-    df["EMA_200"] = ta.trend.ema_indicator(df["close"], window=200)
-    df["EMA_50"] = ta.trend.ema_indicator(df["close"], window=50)
-    ema_val = df["EMA_200"].iloc[-1] if not pd.isna(df["EMA_200"].iloc[-1]) else df["EMA_50"].iloc[-1]
-    if pd.isna(ema_val): ema_val = df["close"].iloc[-1]
+    delta = df["close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -1 * delta.clip(upper=0)
+    
+    avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    
+    rs = avg_gain / avg_loss
+    rsi_val = 100 - (100 / (1 + rs))
+    last_rsi = rsi_val.iloc[-1]
 
-    # 2. الزخم (Momentum): RSI
-    df["RSI_14"] = ta.momentum.rsi(df["close"], window=14)
-    rsi_val = df["RSI_14"].iloc[-1] if not pd.isna(df["RSI_14"].iloc[-1]) else 50.0
+    ema12 = df["close"].ewm(span=12, adjust=False).mean()
+    ema26 = df["close"].ewm(span=26, adjust=False).mean()
+    macd_val = ema12 - ema26
+    signal = macd_val.ewm(span=9, adjust=False).mean()
+    last_macd_diff = macd_val.iloc[-1] - signal.iloc[-1]
 
-    # 3. السيولة الحقيقية (Volume): OBV
-    df["OBV"] = ta.volume.on_balance_volume(df["close"], df["volume"])
-    obv_rising = df["OBV"].iloc[-1] > df["OBV"].iloc[-5] if len(df) > 5 else True
+    sma20 = df["close"].rolling(20).mean()
+    std20 = df["close"].rolling(20).std(ddof=0) 
+    upper_band = sma20 + 2*std20
+    lower_band = sma20 - 2*std20
+    last_bb = (df["close"].iloc[-1], lower_band.iloc[-1], upper_band.iloc[-1])
 
-    # 4. التقلب (Volatility): ATR (لحساب ستوب لوس دقيق جداً)
-    df["ATR"] = ta.volatility.average_true_range(df["high"], df["low"], df["close"], window=14)
-    atr_val = df["ATR"].iloc[-1] if not pd.isna(df["ATR"].iloc[-1]) else (df["close"].iloc[-1] * 0.02)
+    last_vol = df["volume"].iloc[-1]
+    recent = df.tail(20)
+    high_price = recent["high"].max()
+    low_price = recent["low"].min()
 
-    high_price = df["high"].max()
-    low_price = df["low"].min()
-    price = df["close"].iloc[-1]
-
-    return rsi_val, ema_val, obv_rising, atr_val, price, high_price, low_price
-
+    return last_rsi, last_macd_diff, last_bb, last_vol, high_price, low_price
 
 # --- دالة التحليل المعدلة ---
 @dp.callback_query(F.data.startswith("tf_"))
@@ -1160,131 +1094,95 @@ async def run_analysis(cb: types.CallbackQuery):
         candles = await get_candles_gate(f"{clean_sym}_USDT", gate_interval, limit=250)
 
     if candles:
-        last_rsi, ema_val, obv_rising, atr_val, current_price, high, low = compute_pro_indicators(candles)
+        last_rsi, last_macd, last_bb, last_vol, high, low = compute_indicators(candles)
     else:
-        last_rsi, ema_val, obv_rising, atr_val, current_price, high, low = 50.0, price, True, price*0.02, price, price*1.05, price*0.95
-
-    # -----------------------------------------
-    # 🧮 خوارزمية القوة المدمجة (دقة البنوك)
-    # -----------------------------------------
-    raw_score = 50.0
-
-    # 1. وزن الاتجاه (EMA)
-    if current_price > ema_val: raw_score += 15
-    else: raw_score -= 15
-
-    # 2. وزن السيولة الحقيقية (OBV) - هذا يكشف الحيتان!
-    if obv_rising: raw_score += 15
-    else: raw_score -= 15
-
-    # 3. وزن الزخم (RSI)
-    if last_rsi:
-        if 45 <= last_rsi <= 65: raw_score += 10 # صحي جداً
-        elif 35 <= last_rsi < 45: raw_score -= 10 
-        elif last_rsi > 70: raw_score -= 15 # تشبع شرائي (خطر الانعكاس)
-        elif last_rsi < 30: raw_score += 15 # تشبع بيعي (فرصة صعود)
-
-    # 4. وزن ذاكرة الحيتان الخلفية (إذا كنت مفعلها)
-    market_memory_phase = getattr(user_session_data.get(uid), 'market_phase', 'حيادي')
-    if "تجميع" in market_memory_phase or "صعود" in market_memory_phase: raw_score += 20
-    elif "تصريف" in market_memory_phase or "انهيار" in market_memory_phase: raw_score -= 20
-
-    # تحديد الاتجاه والنسبة المئوية
-    if raw_score >= 50:
-        final_trend = "صاعد 🟢"
-        strength_percent = 30 + ((raw_score - 50) / 50) * 65
-    else:
-        final_trend = "هابط 🔴"
-        strength_percent = 30 + ((50 - raw_score) / 50) * 65
-
-    trend_strength = max(30, min(int(strength_percent), 95))
-
-    # تنسيق المتغيرات للطباعة
-    price_fmt = format_price(current_price)
+        last_rsi, last_macd, last_bb, last_vol, high, low = 50.0, 0.0, (price, price*0.95, price*1.05), 0.0, price*1.05, price*0.95
+        
+    price_fmt = format_price(price)
     low_fmt = format_price(low)
     high_fmt = format_price(high)
-    safe_rsi = f"{last_rsi:.2f}"
+    bb0_fmt = format_price(last_bb[0])
+    bb1_fmt = format_price(last_bb[1])
+    bb2_fmt = format_price(last_bb[2])
+    macd_fmt = format_price(last_macd) if last_macd is not None else "0.0"
+    safe_rsi = f"{last_rsi:.2f}" if last_rsi is not None else "N/A"
     vol24_fmt = format_price(volume_24h)
-    
-    # 🤫 نعطي الذكاء الاصطناعي الـ ATR عشان يحدد ستوب لوس ما ينضرب بسهولة!
-    hidden_context = f"""
-[ALGORITHMIC STRICT DATA - DO NOT CHANGE]:
-Mandatory Trend: {final_trend}
-Trend Strength: {trend_strength}%
-Volatility (ATR): {format_price(atr_val)}
-
-⚠️ Strict rules for SL and TP:
-- STOP LOSS MUST be placed safely using the ATR value (e.g., Price - (1.5 * ATR) for Bullish). Do not use arbitrary percentages!
-- If Trend is Bullish: Targets ABOVE price. If Bearish: Targets BELOW price.
-"""
 
     if lang == "ar":
         prompt = f"""
-{hidden_context}
-أنت محلل فني خبير في شركة "NaiF CHarT". حلل عملة {clean_sym}.
+أنت محلل فني خبير في شركة "NaiF CHarT". حلل عملة {clean_sym} بناءً على البيانات التالية:
+السعر الحالي: {price_fmt}$ | الإطار: {tf} | RSI: {safe_rsi} | MACD: {macd_fmt} ({"صاعد" if (last_macd or 0)>0 else "هابط"})
+البولينجر: السعر {bb0_fmt} (نطاق {bb1_fmt} - {bb2_fmt}) | الفوليوم: {vol24_fmt}
 
-بيانات السوق اللحظية: السعر: {price_fmt}$ | الإطار: {tf} | الفوليوم العالمي: {vol24_fmt}
-مؤشر RSI: {safe_rsi} 
-
+⚠️ الالتزام التام بهذا التنسيق (استخدم وسوم HTML فقط):
 ⚠️ قواعد صارمة:
-- بناءً على "الاتجاه الإجباري" المذكور في البيانات السرية، احسب الأهداف ووقف الخسارة بدقة.
-- إذا كان الاتجاه الإجباري صاعد: الأهداف أعلى السعر. إذا كان هابط: الأهداف أقل من السعر.
+
+إذا كان الاتجاه "صاعد":
+- يجب أن تكون TP1 و TP2 و TP3 أعلى من السعر الحالي
+
+إذا كان الاتجاه "هابط":
+- يجب أن تكون TP1 و TP2 و TP3 أقل من السعر الحالي
 
 📊 <b>التحليل لـ {clean_sym}</b> | {tf} | {price_fmt}$
-الاتجاه: {final_trend}
-🔥 <b>قوة الاتجاه:</b> {trend_strength}%
+الاتجاه: (اكتب صاعد أو هابط)
 
 📉 <b>الدعم والمقاومة</b>
-دعم أقرب: {low_fmt}$
-مقاومة أقرب: {high_fmt}$
+الدعم الأقرب: {low_fmt} دولار
+المقاومة الأقرب: {high_fmt} دولار
 
 🎯 <b>الأهداف السعرية</b>
-الهدف الأول (TP1): (رقم دقيق)
-الهدف الثاني (TP2): (رقم دقيق)
-الهدف الثالث (TP3): (رقم دقيق)
+TP1: (ضع رقم منطقي)
+TP2: (ضع رقم منطقي)
+TP3: (ضع رقم منطقي)
 
-🛑 <b>إيقاف الخسارة</b>
-وقف الخسارة (SL): (رقم دقيق بناءً على قيمة الـ ATR)
+🛑 <b>وقف الخسارة</b>
+Stop Loss: (ضع رقم منطقي)
 
 📈 <b>تحليل المؤشرات</b>
-• مؤشر (RSI): {safe_rsi} (اشرح باختصار شديد سطر واحد)
-• مؤشر (EMA): (اشرح موقع السعر من المتوسط باختصار)
-• السيولة (OBV): (اشرح هل السيولة تدخل أم تخرج باختصار)
+- RSI: {safe_rsi} (اكتب القيمةواشرح باختصار شديد سطر واحد)
+- MACD: {macd_fmt} (اكتب القيمة واشرح باختصار شديد سطر واحد)
+- Bollinger Bands: (اشرح باختصار شديد سطر واحد)
+- Volume: {vol24_fmt} (اكتب القيمة واشرح باختصار شديد سطر واحد)
+
+**ملاحظة: لا تكتب مقدمات ولا جرايد، خليك محدد ومختصر ومرتب.**
 """
     else:
         prompt = f"""
-{hidden_context}
-You are an expert Technical Analyst at "NaiF CHarT". Analyze {clean_sym}.
+You are an expert Technical Analyst at "NaiF CHarT". Analyze {clean_sym} based on:
+Price: {price_fmt}$ | Timeframe: {tf} | RSI: {safe_rsi} | MACD: {macd_fmt} ({"Bullish" if (last_macd or 0)>0 else "Bearish"})
+Bollinger: {bb0_fmt} (Range {bb1_fmt}-{bb2_fmt}) | Volume: {vol24_fmt}
 
-Market Data: Price: {price_fmt}$ | Timeframe: {tf} | Global Volume: {vol24_fmt}
-RSI: {safe_rsi}
+⚠️ Strictly follow this HTML format:
+Strict rule:
 
-⚠️ Strict rules:
-- Calculate TP and SL strictly based on the "Mandatory Trend" in the secret data.
-- If Trend is Bullish: Targets ABOVE price. If Bearish: Targets BELOW price.
+If Trend = Bullish
+TP targets MUST be above current price.
+
+If Trend = Bearish
+TP targets MUST be below current price.
 
 📊 <b>Analysis: {clean_sym}</b> | {tf} | {price_fmt}$
-Trend: {final_trend}
-🔥 <b>Trend Strength:</b> {trend_strength}%
+Trend: (Bullish/Bearish)
 
-📉 <b>Support & Resistance</b>
-Nearest Support: <code>{low_fmt}</code>$
-Nearest Resistance: <code>{high_fmt}</code>$
+<b>📉 Support & Resistance</b>
+Nearest Support: <code>{low_fmt}</code> $Nearest Resistance: <code>{high_fmt}</code>$
 
-🎯 <b>Price Targets</b>
+<b>🎯 Price Targets</b>
 TP1: <code>(Price)</code>
 TP2: <code>(Price)</code>
 TP3: <code>(Price)</code>
 
-🛑 <b>Stop Loss</b>
-Stop Loss: <code>(Price based on ATR)</code>
+<b>🛑 Stop Loss</b>
+Stop Loss: <code>(Price)</code>
 
-📈 <b>Indicator Analysis</b>
-• RSI: {safe_rsi} (One short sentence)
-• EMA: (Briefly explain price position relative to EMA)
-• Volume (OBV): (Briefly explain if real volume is flowing in or out)
+<b>📈 Indicator Analysis</b>
+• RSI: {safe_rsi} (value and One short sentence)
+• MACD: {macd_fmt} (value and One short sentence)
+• Bollinger Bands: (One short sentence)
+• Volume: {vol24_fmt} (value and One short sentence)
+
+<b>Note: No intro/outro, strictly follow the headers above.</b>
 """
-
 
     res = await ask_groq(prompt, lang=lang)
     await cb.message.answer(res, parse_mode=ParseMode.HTML)
@@ -1510,15 +1408,7 @@ async def on_startup(app):
         await conn.execute("ALTER TABLE paid_users ADD COLUMN IF NOT EXISTS expiry_date TIMESTAMP")
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS invited_by BIGINT")
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS ref_count INTEGER DEFAULT 0")
-        # جدول ذاكرة السوق
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS market_memory (
-                symbol TEXT PRIMARY KEY,
-                market_phase TEXT,
-                volume_change TEXT,
-                last_updated TIMESTAMP
-            )
-        """)
+
         # 3. تفعيل حسابات الأدمن بشكل دائم
         initial_paid_users = {1317225334, 5527572646}
         for uid in initial_paid_users:
@@ -1526,7 +1416,6 @@ async def on_startup(app):
 
     #asyncio.create_task(ai_opportunity_radar(pool))
     asyncio.create_task(daily_channel_post())
-    asyncio.create_task(background_market_monitor(pool))
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
 
