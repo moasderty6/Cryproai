@@ -1141,20 +1141,36 @@ async def run_analysis(cb: types.CallbackQuery):
         gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
         candles = await get_candles_gate(f"{clean_sym}_USDT", gate_interval, limit=250)
 
-    if candles:
-        last_rsi, last_macd, last_bb, last_vol, high, low = compute_indicators(candles)
+if candles:
+    last_rsi, last_macd, last_bb, last_vol, high, low = compute_indicators(candles)
+
     # ===== تحويل البيانات =====
     df = pd.DataFrame(candles)
     df = df.iloc[:, :6]
     df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+
     for col in ["close", "high", "low", "open", "volume"]:
         df[col] = pd.to_numeric(df[col], errors='coerce')
-        # ===== SMART FEATURES =====
+
+    # ===== SMART FEATURES =====
     volume_delta = compute_volume_delta(df)
     candle_score = detect_candle_strength(df)
     volatility_score = detect_volatility(df)
     momentum_score = compute_momentum(df)
     fake_breakout_score = detect_fake_breakout(df)
+
+else:
+    last_rsi, last_macd, last_bb, last_vol, high, low = (
+        50.0, 0.0, (price, price*0.95, price*1.05),
+        0.0, price*1.05, price*0.95
+    )
+
+    # 🔥 هون تحط القيم الافتراضية
+    volume_delta = 0
+    candle_score = 0
+    volatility_score = 0
+    momentum_score = 0
+    fake_breakout_score = 0
      # ===== SMART SCORING ENGINE =====
     smart_score = 0
 
@@ -1208,9 +1224,7 @@ async def run_analysis(cb: types.CallbackQuery):
         trend_strength = "متوسط 💪" if lang == "ar" else "Moderate 💪"
     else:
         trend_strength = "ضعيف ⚠️" if lang == "ar" else "Weak ⚠️"
-    else:
-        last_rsi, last_macd, last_bb, last_vol, high, low = 50.0, 0.0, (price, price*0.95, price*1.05), 0.0, price*1.05, price*0.95
-        
+    
     price_fmt = format_price(price)
     low_fmt = format_price(low)
     high_fmt = format_price(high)
