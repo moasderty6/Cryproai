@@ -10,7 +10,7 @@ import random
 import time
 import base64
 import pandas as pd
-import pandas_ta as ta
+import ta
 import uuid
 from aiohttp import web
 from dotenv import load_dotenv
@@ -1093,24 +1093,23 @@ def compute_pro_indicators(candles):
     for col in ["close", "high", "low", "open", "volume"]:
         df[col] = pd.to_numeric(df[col], errors='coerce')
 
-    # 1. الاتجاه (Trend): متوسط 200 (وإذا العملة جديدة نستخدم 50)
-    df.ta.ema(length=200, append=True)
-    df.ta.ema(length=50, append=True)
-    ema_col = "EMA_200" if "EMA_200" in df.columns and not pd.isna(df["EMA_200"].iloc[-1]) else "EMA_50"
-    ema_val = df[ema_col].iloc[-1] if ema_col in df.columns else df["close"].iloc[-1]
+    # 1. الاتجاه (Trend): متوسط 200 و 50
+    df["EMA_200"] = ta.trend.ema_indicator(df["close"], window=200)
+    df["EMA_50"] = ta.trend.ema_indicator(df["close"], window=50)
+    ema_val = df["EMA_200"].iloc[-1] if not pd.isna(df["EMA_200"].iloc[-1]) else df["EMA_50"].iloc[-1]
+    if pd.isna(ema_val): ema_val = df["close"].iloc[-1]
 
     # 2. الزخم (Momentum): RSI
-    df.ta.rsi(length=14, append=True)
-    rsi_val = df["RSI_14"].iloc[-1] if "RSI_14" in df.columns else 50.0
+    df["RSI_14"] = ta.momentum.rsi(df["close"], window=14)
+    rsi_val = df["RSI_14"].iloc[-1] if not pd.isna(df["RSI_14"].iloc[-1]) else 50.0
 
     # 3. السيولة الحقيقية (Volume): OBV
-    df.ta.obv(append=True)
-    # هل السيولة بتزيد خلال آخر 5 شموع؟ (إذا السعر طلع والسيولة نزلت = فخ)
+    df["OBV"] = ta.volume.on_balance_volume(df["close"], df["volume"])
     obv_rising = df["OBV"].iloc[-1] > df["OBV"].iloc[-5] if len(df) > 5 else True
 
     # 4. التقلب (Volatility): ATR (لحساب ستوب لوس دقيق جداً)
-    df.ta.atr(length=14, append=True)
-    atr_val = df["ATRr_14"].iloc[-1] if "ATRr_14" in df.columns else (df["close"].iloc[-1] * 0.02)
+    df["ATR"] = ta.volatility.average_true_range(df["high"], df["low"], df["close"], window=14)
+    atr_val = df["ATR"].iloc[-1] if not pd.isna(df["ATR"].iloc[-1]) else (df["close"].iloc[-1] * 0.02)
 
     high_price = df["high"].max()
     low_price = df["low"].min()
