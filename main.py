@@ -11,6 +11,8 @@ import time
 import base64
 import pandas as pd
 import uuid
+import numpy as np
+
 from aiohttp import web
 from dotenv import load_dotenv
 
@@ -199,8 +201,7 @@ async def ai_opportunity_radar(pool):
                 if abs(change24) < 0.4: continue
 
                 price = c["quote"]["USD"]["price"]
-
-                # 📊 جلب بيانات 1H كفريم أساسي (نفس نظامك القديم)
+                
                 candles = await get_candles_gate(f"{symbol}_USDT", "1h", limit=120)
                 if not candles: continue
 
@@ -210,11 +211,11 @@ async def ai_opportunity_radar(pool):
                 for col in ["close","high","low","open","volume"]:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
 
-                last_rsi, last_macd_diff, last_bb, last_vol, high, low = compute_indicators(candles)
+                # حساب المؤشرات القديمة (نحتاجها للـ RSI والماكدي)
+                last_rsi, last_macd_diff, last_bb, last_vol, _, _ = compute_indicators(candles)
 
-                ema50 = df["close"].ewm(span=50).mean()
-                ema200 = df["close"].ewm(span=200).mean()
-                trend_up = df["close"].iloc[-1] > ema200.iloc[-1]
+                # 🔥 التعديل الجبار: استدعاء دالة التحليل الرياضي للرادار
+                trend_dir, trend_str, adx_val, _, _, _, _, _, _ = calculate_smart_trend_and_targets(df, price)
 
                 avg_vol = df["volume"].rolling(20).mean()
                 volume_spike = df["volume"].iloc[-1] > (avg_vol.iloc[-1] * 2.5)
@@ -224,36 +225,41 @@ async def ai_opportunity_radar(pool):
                 recent_high = df["high"].rolling(20).max().iloc[-2]
                 breakout = price > recent_high
 
-                fake_move = (high - low) / price > 0.35
+                fake_move = (df["high"].iloc[-1] - df["low"].iloc[-1]) / price > 0.35
                 if fake_move: continue
 
                 # -----------------
-                # 🎯 1H BASE SCORING
+                # 🎯 1H BASE SCORING (النظام المحدث)
                 # -----------------
                 base_score = 0
-                if 40 <= last_rsi <= 55: base_score += 15
-                elif 35 <= last_rsi < 40: base_score += 10
+                
+                # 1. فلتر الاتجاه وقوته (أهم شرط)
+                if trend_dir == "Bullish":
+                    base_score += 20  # مكافأة للترند الصاعد
+                elif trend_dir == "Bearish":
+                    base_score -= 30  # عقوبة قاسية للترند الهابط (تجنب السكاكين الساقطة)
+                    
+                if adx_val >= 25:
+                    base_score += 15  # ترند قوي وحقيقي
+                elif adx_val < 20:
+                    base_score -= 20  # السوق عرضي وممل (تجنب الاختراقات الكاذبة)
+
+                # 2. فلتر المؤشرات الكلاسيكية
+                if 40 <= last_rsi <= 65: base_score += 10
+                elif last_rsi > 75: base_score -= 10 # تشبع شرائي خطير
                 
                 if last_macd_diff > 0:
-                    base_score += 15
-                    if last_macd_diff > 0.002: base_score += 5
+                    base_score += 10
                 
-                if trend_up: base_score += 15
-                
+                # 3. فلتر السيولة والاختراق
                 if volume_spike:
                     base_score += 20
-                    if df["volume"].iloc[-1] > (avg_vol.iloc[-1] * 3): base_score += 5
+                    if df["volume"].iloc[-1] > (avg_vol.iloc[-1] * 3): base_score += 10
+                else:
+                    base_score -= 15 # لا ندخل بدون فوليوم
                 
                 if squeeze: base_score += 10
                 if breakout: base_score += 15
-                if marketcap < 150_000_000: base_score += 5
-
-                if not volume_spike: base_score -= 15
-                if last_rsi < 35: base_score -= 10
-                if not trend_up: base_score -= 15
-
-                body = abs(df["close"].iloc[-1] - df["open"].iloc[-1])
-                if body < (price * 0.003): base_score -= 5
 
                 # ----------------------------------------------------
                 # 🚀 SUPER RADAR: Multi-Timeframe & Orderbook Funnel
@@ -1014,6 +1020,118 @@ async def get_candles_gate(symbol: str, interval: str, limit: int = 250):
         return None
 
 # --- حساب المؤشرات ---
+# ===== SMART INDICATORS =====
+
+def compute_volume_delta(df):
+    buy_vol = df[df["close"] > df["open"]]["volume"].sum()
+    sell_vol = df[df["close"] < df["open"]]["volume"].sum()
+    return buy_vol - sell_vol
+
+def detect_candle_strength(df):
+    last = df.iloc[-1]
+
+    body = abs(last["close"] - last["open"])
+    upper_wick = last["high"] - max(last["open"], last["close"])
+    lower_wick = min(last["open"], last["close"]) - last["low"]
+
+    score = 0
+
+    if lower_wick > body * 2:
+        score += 10  # تجميع
+
+    if upper_wick > body * 2:
+        score -= 10  # تصريف
+
+    return score
+
+def detect_volatility(df):
+    atr = (df["high"] - df["low"]).rolling(14).mean()
+    current_atr = atr.iloc[-1]
+    avg_atr = atr.mean()
+
+    if current_atr < avg_atr * 0.7:
+        return 10
+    return 0
+
+def compute_momentum(df):
+    momentum = df["close"].diff()
+    acceleration = momentum.diff()
+
+    if acceleration.iloc[-1] > 0:
+        return 10
+    return -5
+
+def detect_fake_breakout(df):
+    recent_high = df["high"].rolling(20).max().iloc[-2]
+    last = df.iloc[-1]
+
+    if last["high"] > recent_high and last["close"] < recent_high:
+        return -20
+    return 0
+import numpy as np # تأكد من إضافتها في الأعلى
+
+def calculate_smart_trend_and_targets(df, current_price):
+    # 1. حساب الـ ATR (لقياس التذبذب ووضع الأهداف ووقف الخسارة)
+    df['prev_close'] = df['close'].shift(1)
+    df['tr0'] = abs(df['high'] - df['low'])
+    df['tr1'] = abs(df['high'] - df['prev_close'])
+    df['tr2'] = abs(df['low'] - df['prev_close'])
+    df['tr'] = df[['tr0', 'tr1', 'tr2']].max(axis=1)
+    atr = df['tr'].rolling(14).mean().iloc[-1]
+
+    # 2. حساب الاتجاه (Trend) باستخدام EMA 20 و 50
+    ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
+    ema50 = df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
+    
+    if current_price > ema20 and ema20 > ema50:
+        trend_direction = "Bullish" # صاعد
+    elif current_price < ema20 and ema20 < ema50:
+        trend_direction = "Bearish" # هابط
+    else:
+        trend_direction = "Neutral" # عرضي / متذبذب
+
+    # 3. حساب الـ ADX (لقياس قوة الاتجاه)
+    df['up_move'] = df['high'] - df['high'].shift(1)
+    df['down_move'] = df['low'].shift(1) - df['low']
+    
+    df['+dm'] = np.where((df['up_move'] > df['down_move']) & (df['up_move'] > 0), df['up_move'], 0.0)
+    df['-dm'] = np.where((df['down_move'] > df['up_move']) & (df['down_move'] > 0), df['down_move'], 0.0)
+    
+    atr_series = df['tr'].rolling(14).mean()
+    plus_di = 100 * (df['+dm'].rolling(14).mean() / atr_series)
+    minus_di = 100 * (df['-dm'].rolling(14).mean() / atr_series)
+    
+    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+    adx = dx.rolling(14).mean().iloc[-1]
+
+    # تصنيف قوة الاتجاه بناءً على قيمة ADX
+    if adx >= 40:
+        trend_strength = "قوي"
+    elif adx >= 25:
+        trend_strength = "جيد"
+    elif adx >= 20:
+        trend_strength = "متوسط"
+    else:
+        trend_strength = "ضعيف / عرضي"
+
+    # 4. حساب الأهداف (TP) ووقف الخسارة (SL) رياضياً بناءً على الـ ATR
+    if trend_direction == "Bullish" or trend_direction == "Neutral":
+        sl = current_price - (atr * 1.5)
+        tp1 = current_price + (atr * 1.2)
+        tp2 = current_price + (atr * 2.5)
+        tp3 = current_price + (atr * 4.0)
+    else: # Bearish
+        sl = current_price + (atr * 1.5)
+        tp1 = current_price - (atr * 1.2)
+        tp2 = current_price - (atr * 2.5)
+        tp3 = current_price - (atr * 4.0)
+
+    # 5. حساب الدعم والمقاومة التاريخية القريبة
+    support = df['low'].rolling(20).min().iloc[-1]
+    resistance = df['high'].rolling(20).max().iloc[-1]
+
+    return trend_direction, trend_strength, adx, sl, tp1, tp2, tp3, support, resistance
+
 def compute_indicators(candles):
     df = pd.DataFrame(candles)
     df = df.iloc[:, :6] 
@@ -1053,6 +1171,7 @@ def compute_indicators(candles):
     return last_rsi, last_macd_diff, last_bb, last_vol, high_price, low_price
 
 # --- دالة التحليل المعدلة ---
+# --- دالة التحليل المعدلة ---
 @dp.callback_query(F.data.startswith("tf_"))
 async def run_analysis(cb: types.CallbackQuery):
     uid, pool = cb.from_user.id, dp['db_pool']
@@ -1077,7 +1196,7 @@ async def run_analysis(cb: types.CallbackQuery):
         await cb.message.edit_text("🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing...")
     except Exception as e:
         if "message is not modified" in str(e):
-            pass  # تجاهل الخطأ لأن الرسالة تغيرت بالفعل
+            pass  
         else:
             print(f"Edit msg error in analysis: {e}")
 
@@ -1093,95 +1212,98 @@ async def run_analysis(cb: types.CallbackQuery):
         gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
         candles = await get_candles_gate(f"{clean_sym}_USDT", gate_interval, limit=250)
 
+    # ✅ بداية الإصلاح: إدخال الكود داخل الدالة بالمسافات الصحيحة
+        # (داخل دالة run_analysis بعد تحويل df من الشموع)
     if candles:
-        last_rsi, last_macd, last_bb, last_vol, high, low = compute_indicators(candles)
-    else:
-        last_rsi, last_macd, last_bb, last_vol, high, low = 50.0, 0.0, (price, price*0.95, price*1.05), 0.0, price*1.05, price*0.95
+        last_rsi, last_macd, last_bb, last_vol, _, _ = compute_indicators(candles) 
         
-    price_fmt = format_price(price)
-    low_fmt = format_price(low)
-    high_fmt = format_price(high)
-    bb0_fmt = format_price(last_bb[0])
-    bb1_fmt = format_price(last_bb[1])
-    bb2_fmt = format_price(last_bb[2])
+        # 1. ===== تحويل البيانات وإنشاء df (هذا الجزء الذي كان مفقوداً) =====
+        import pandas as pd # تأكد أن هذه في أعلى الملف
+        df = pd.DataFrame(candles)
+        df = df.iloc[:, :6]
+        df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+
+        for col in ["close", "high", "low", "open", "volume"]:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        # 2. ===== استدعاء دالة الاتجاه والأهداف الرياضية =====
+        trend_dir, trend_str, adx_val, calc_sl, calc_tp1, calc_tp2, calc_tp3, calc_sup, calc_res = calculate_smart_trend_and_targets(df, price)
+        
+        # 3. ===== ترجمة الاتجاه =====
+        if lang == "ar":
+            real_trend = "صاعد" if trend_dir == "Bullish" else "هابط" if trend_dir == "Bearish" else "عرضي"
+            trend_strength = trend_str
+        else:
+            real_trend = trend_dir
+            trend_strength_en = {"قوي": "Strong", "جيد": "Good", "متوسط": "Moderate", "ضعيف / عرضي": "Weak/Ranging"}
+            trend_strength = trend_strength_en.get(trend_str, trend_str)
+
+    else:
+        # قيم افتراضية في حال فشل جلب الشموع من المنصة
+        real_trend, trend_strength = ("غير معروف", "غير معروف")
+        calc_sl, calc_tp1, calc_tp2, calc_tp3, calc_sup, calc_res = (price*0.9, price*1.05, price*1.1, price*1.15, price*0.95, price*1.05)
+        adx_val = 0.0 # حتى لا يحدث خطأ في البرومبت
+
+
     macd_fmt = format_price(last_macd) if last_macd is not None else "0.0"
     safe_rsi = f"{last_rsi:.2f}" if last_rsi is not None else "N/A"
-    vol24_fmt = format_price(volume_24h)
+
 
     if lang == "ar":
         prompt = f"""
-أنت محلل فني خبير في شركة "NaiF CHarT". حلل عملة {clean_sym} بناءً على البيانات التالية:
-السعر الحالي: {price_fmt}$ | الإطار: {tf} | RSI: {safe_rsi} | MACD: {macd_fmt} ({"صاعد" if (last_macd or 0)>0 else "هابط"})
-البولينجر: السعر {bb0_fmt} (نطاق {bb1_fmt} - {bb2_fmt}) | الفوليوم: {vol24_fmt}
+أنت محلل فني خبير في شركة "NaiF CHarT". قم بصياغة هذا التحليل لعملة {clean_sym} بشكل احترافي ومختصر.
+البيانات محسوبة رياضياً وجاهزة، ⚠️ يمنع منعاً باتاً تغيير أرقام الأهداف أو الوقف ⚠️، فقط قم بترتيبها في القالب المطلوب واكتب تعليقاً فنياً دقيقاً في سطر واحد لكل مؤشر.
 
-⚠️ الالتزام التام بهذا التنسيق (استخدم وسوم HTML فقط):
-⚠️ قواعد صارمة:
+⚠️ التزم بهذا القالب بحذافيره (استخدم HTML فقط):
 
-إذا كان الاتجاه "صاعد":
-- يجب أن تكون TP1 و TP2 و TP3 أعلى من السعر الحالي
-
-إذا كان الاتجاه "هابط":
-- يجب أن تكون TP1 و TP2 و TP3 أقل من السعر الحالي
-
-📊 <b>التحليل لـ {clean_sym}</b> | {tf} | {price_fmt}$
-الاتجاه: (اكتب صاعد أو هابط)
+📊 <b>التحليل لـ {clean_sym}</b> | {tf} | {format_price(price)}$
+الاتجاه: {real_trend} ({trend_strength})
 
 📉 <b>الدعم والمقاومة</b>
-الدعم الأقرب: {low_fmt} دولار
-المقاومة الأقرب: {high_fmt} دولار
+الدعم الأقرب: <code>{format_price(calc_sup)}</code>$
+المقاومة الأقرب: <code>{format_price(calc_res)}</code>$
 
-🎯 <b>الأهداف السعرية</b>
-TP1: (ضع رقم منطقي)
-TP2: (ضع رقم منطقي)
-TP3: (ضع رقم منطقي)
+🎯 <b>الأهداف السعرية (TP)</b>
+TP1: <code>{format_price(calc_tp1)}</code>
+TP2: <code>{format_price(calc_tp2)}</code>
+TP3: <code>{format_price(calc_tp3)}</code>
 
-🛑 <b>وقف الخسارة</b>
-Stop Loss: (ضع رقم منطقي)
+🛑 <b>وقف الخسارة (SL)</b>
+Stop Loss: <code>{format_price(calc_sl)}</code>
 
 📈 <b>تحليل المؤشرات</b>
-- RSI: {safe_rsi} (اكتب القيمةواشرح باختصار شديد سطر واحد)
-- MACD: {macd_fmt} (اكتب القيمة واشرح باختصار شديد سطر واحد)
-- Bollinger Bands: (اشرح باختصار شديد سطر واحد)
-- Volume: {vol24_fmt} (اكتب القيمة واشرح باختصار شديد سطر واحد)
-
-**ملاحظة: لا تكتب مقدمات ولا جرايد، خليك محدد ومختصر ومرتب.**
+• RSI ({safe_rsi}): (اكتب سطر واحد يوضح التشبع أو الحياد)
+• MACD ({macd_fmt}): (اكتب سطر واحد يوضح الزخم)
+• ADX ({adx_val:.1f}): (اكتب سطر واحد يوضح قوة الترند)
+• Volume: (اكتب سطر واحد يوضح حالة السيولة بناءً على القيمة {format_price(volume_24h)})
 """
     else:
         prompt = f"""
-You are an expert Technical Analyst at "NaiF CHarT". Analyze {clean_sym} based on:
-Price: {price_fmt}$ | Timeframe: {tf} | RSI: {safe_rsi} | MACD: {macd_fmt} ({"Bullish" if (last_macd or 0)>0 else "Bearish"})
-Bollinger: {bb0_fmt} (Range {bb1_fmt}-{bb2_fmt}) | Volume: {vol24_fmt}
+You are an expert Technical Analyst at "NaiF CHarT". Format this analysis for {clean_sym} professionally and concisely.
+The data is calculated mathematically and is completely ready. ⚠️ STRICT RULE: DO NOT change the TP or SL numbers ⚠️. Just arrange them in the required template and write a precise technical comment in one short line for each indicator.
 
-⚠️ Strictly follow this HTML format:
-Strict rule:
+⚠️ Strictly follow this template (Use HTML only):
 
-If Trend = Bullish
-TP targets MUST be above current price.
+📊 <b>Analysis: {clean_sym}</b> | {tf} | {format_price(price)}$
+Trend: {real_trend} ({trend_strength})
 
-If Trend = Bearish
-TP targets MUST be below current price.
+📉 <b>Support & Resistance</b>
+Nearest Support: <code>{format_price(calc_sup)}</code>$
+Nearest Resistance: <code>{format_price(calc_res)}</code>$
 
-📊 <b>Analysis: {clean_sym}</b> | {tf} | {price_fmt}$
-Trend: (Bullish/Bearish)
+🎯 <b>Price Targets (TP)</b>
+TP1: <code>{format_price(calc_tp1)}</code>
+TP2: <code>{format_price(calc_tp2)}</code>
+TP3: <code>{format_price(calc_tp3)}</code>
 
-<b>📉 Support & Resistance</b>
-Nearest Support: <code>{low_fmt}</code> $Nearest Resistance: <code>{high_fmt}</code>$
+🛑 <b>Stop Loss (SL)</b>
+Stop Loss: <code>{format_price(calc_sl)}</code>
 
-<b>🎯 Price Targets</b>
-TP1: <code>(Price)</code>
-TP2: <code>(Price)</code>
-TP3: <code>(Price)</code>
-
-<b>🛑 Stop Loss</b>
-Stop Loss: <code>(Price)</code>
-
-<b>📈 Indicator Analysis</b>
-• RSI: {safe_rsi} (value and One short sentence)
-• MACD: {macd_fmt} (value and One short sentence)
-• Bollinger Bands: (One short sentence)
-• Volume: {vol24_fmt} (value and One short sentence)
-
-<b>Note: No intro/outro, strictly follow the headers above.</b>
+📈 <b>Indicator Analysis</b>
+• RSI ({safe_rsi}): (Write one line explaining overbought/oversold or neutrality)
+• MACD ({macd_fmt}): (Write one line explaining momentum)
+• ADX ({adx_val:.1f}): (Write one line explaining trend strength)
+• Volume: (Write one line explaining liquidity based on {format_price(volume_24h)})
 """
 
     res = await ask_groq(prompt, lang=lang)
@@ -1189,33 +1311,24 @@ Stop Loss: <code>(Price)</code>
     
     if not (await is_user_paid(pool, uid)):
         async with pool.acquire() as conn:
-            # إضافة المستخدم لجدول التجربة المجانية ومعرفة هل هو إدخال جديد
             res = await conn.execute("INSERT INTO trial_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
             
-            # إذا كان المستخدم يستهلك التجربة لأول مرة
-                        # إذا كان المستخدم يستهلك التجربة لأول مرة
             if "INSERT 0 1" in res:
-                # نبحث هل هناك شخص قام بدعوته؟
                 inviter = await conn.fetchrow("SELECT invited_by FROM users_info WHERE user_id = $1", uid)
                 if inviter and inviter['invited_by']:
                     inviter_id = inviter['invited_by']
                     
-                    # زيادة نقاط المستدعي
                     await conn.execute("UPDATE users_info SET ref_count = COALESCE(ref_count, 0) + 1 WHERE user_id = $1", inviter_id)
                     current_count = await conn.fetchval("SELECT ref_count FROM users_info WHERE user_id = $1", inviter_id)
                     
-                    # 🌐 جلب لغة المستدعي لتحديد لغة الرسالة
                     inviter_lang_row = await conn.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", inviter_id)
                     inv_lang = inviter_lang_row['lang'] if inviter_lang_row and inviter_lang_row['lang'] else "ar"
                     
                     try:
-                        # إذا لم يصل للـ 10، نرسل له تنبيه تشجيعي
                         if current_count < 10:
                             msg_ar = f"🎁 <b>نقطة جديدة!</b>\nصديقك استخدم التجربة المجانية.\nرصيدك الحالي: {current_count}/10 نقاط."
                             msg_en = f"🎁 <b>New Point!</b>\nYour friend used the free trial.\nCurrent balance: {current_count}/10 points."
                             await bot.send_message(inviter_id, msg_ar if inv_lang == "ar" else msg_en, parse_mode=ParseMode.HTML)
-                        
-                        # إذا وصل لـ 10، نفعل الشهر المجاني ونصفر العداد
                         else:
                             await extend_user_subscription(pool, inviter_id)
                             await conn.execute("UPDATE users_info SET ref_count = 0 WHERE user_id = $1", inviter_id)
@@ -1226,9 +1339,7 @@ Stop Loss: <code>(Price)</code>
                     except Exception as e:
                         print(f"Ref notification error: {e}")
 
-
         await cb.message.answer("⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ شهرياً." if lang=="ar" else "⚠️ Your free trial has ended. For full access, please subscribe for a Monthly fee of 10 USDT or 500 ⭐.", reply_markup=get_payment_kb(lang))
-
 # --- الدفع الكريبتو ---
 @dp.callback_query(F.data == "pay_crypto")
 async def crypto_pay(cb: types.CallbackQuery):
