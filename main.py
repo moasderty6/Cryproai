@@ -1357,7 +1357,7 @@ TP3: <code>{format_price(calc_tp3)}</code>
 🛑 <b>وقف الخسارة (SL)</b>
 Stop Loss: <code>{format_price(calc_sl)}</code>
 
-📈 <b>تحليل المؤشرات وحالة السوق</b>
+📈 <b>تحليل المؤشرات</b>
 • Liquidity: {market_action} (اكتب سطر يعلق على هذه الحالة)
 • RSI ({safe_rsi}): (اكتب سطر واحد يوضح التشبع أو الحياد)
 • MACD ({macd_fmt}): (اكتب سطر واحد يوضح الزخم)
@@ -1385,7 +1385,7 @@ TP3: <code>{format_price(calc_tp3)}</code>
 🛑 <b>Stop Loss (SL)</b>
 Stop Loss: <code>{format_price(calc_sl)}</code>
 
-📈 <b>Indicator & Market Action Analysis</b>
+📈 <b>Indicator Analysis</b>
 • Liquidity: {market_action} (Write one line commenting on this action)
 • RSI ({safe_rsi}): (Write one line explaining overbought/oversold or neutrality)
 • MACD ({macd_fmt}): (Write one line explaining momentum)
