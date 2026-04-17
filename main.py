@@ -1101,6 +1101,7 @@ def compute_indicators(candles):
     return last_rsi, last_macd_diff, last_bb, last_vol, high_price, low_price
 
 # --- دالة التحليل المعدلة ---
+# --- دالة التحليل المعدلة ---
 @dp.callback_query(F.data.startswith("tf_"))
 async def run_analysis(cb: types.CallbackQuery):
     uid, pool = cb.from_user.id, dp['db_pool']
@@ -1125,7 +1126,7 @@ async def run_analysis(cb: types.CallbackQuery):
         await cb.message.edit_text("🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing...")
     except Exception as e:
         if "message is not modified" in str(e):
-            pass  # تجاهل الخطأ لأن الرسالة تغيرت بالفعل
+            pass  
         else:
             print(f"Edit msg error in analysis: {e}")
 
@@ -1141,72 +1142,68 @@ async def run_analysis(cb: types.CallbackQuery):
         gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
         candles = await get_candles_gate(f"{clean_sym}_USDT", gate_interval, limit=250)
 
-if candles:
-    last_rsi, last_macd, last_bb, last_vol, high, low = compute_indicators(candles)
+    # ✅ بداية الإصلاح: إدخال الكود داخل الدالة بالمسافات الصحيحة
+    if candles:
+        last_rsi, last_macd, last_bb, last_vol, high, low = compute_indicators(candles)
 
-    # ===== تحويل البيانات =====
-    df = pd.DataFrame(candles)
-    df = df.iloc[:, :6]
-    df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+        # ===== تحويل البيانات =====
+        df = pd.DataFrame(candles)
+        df = df.iloc[:, :6]
+        df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
 
-    for col in ["close", "high", "low", "open", "volume"]:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
+        for col in ["close", "high", "low", "open", "volume"]:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
 
-    # ===== SMART FEATURES =====
-    volume_delta = compute_volume_delta(df)
-    candle_score = detect_candle_strength(df)
-    volatility_score = detect_volatility(df)
-    momentum_score = compute_momentum(df)
-    fake_breakout_score = detect_fake_breakout(df)
+        # ===== SMART FEATURES =====
+        volume_delta = compute_volume_delta(df)
+        candle_score = detect_candle_strength(df)
+        volatility_score = detect_volatility(df)
+        momentum_score = compute_momentum(df)
+        fake_breakout_score = detect_fake_breakout(df)
 
-else:
-    last_rsi, last_macd, last_bb, last_vol, high, low = (
-        50.0, 0.0, (price, price*0.95, price*1.05),
-        0.0, price*1.05, price*0.95
-    )
+    else:
+        last_rsi, last_macd, last_bb, last_vol, high, low = (
+            50.0, 0.0, (price, price*0.95, price*1.05),
+            0.0, price*1.05, price*0.95
+        )
 
-    # 🔥 هون تحط القيم الافتراضية
-    volume_delta = 0
-    candle_score = 0
-    volatility_score = 0
-    momentum_score = 0
-    fake_breakout_score = 0
-     # ===== SMART SCORING ENGINE =====
+        volume_delta = 0
+        candle_score = 0
+        volatility_score = 0
+        momentum_score = 0
+        fake_breakout_score = 0
+        
+    # ===== SMART SCORING ENGINE =====
     smart_score = 0
 
-# RSI
+    # RSI
     if last_rsi < 30:
         smart_score += 15
     elif last_rsi > 70:
         smart_score -= 15
 
-# MACD
+    # MACD
     if last_macd > 0:
         smart_score += 10
     else:
         smart_score -= 10
 
-# Volume Delta
+    # Volume Delta
     if volume_delta > 0:
         smart_score += 15
     else:
         smart_score -= 15
 
-# Candle
+    # Candle & Indicators
     smart_score += candle_score
-
-# Volatility
     smart_score += volatility_score
-
-# Momentum
     smart_score += momentum_score
-
-# Fake breakout
     smart_score += fake_breakout_score
+    
     # ===== FINAL TREND DECISION =====
     bias = smart_score
 
-# فلترة ذكية لمنع الإشارات الضعيفة
+    # فلترة ذكية لمنع الإشارات الضعيفة
     if -10 < bias < 10:
         bias = 10 if bias >= 0 else -10
 
@@ -1215,7 +1212,7 @@ else:
     else:
         real_trend = "هابط" if lang == "ar" else "Bearish"
 
-# قوة الاتجاه
+    # قوة الاتجاه
     strength = abs(bias)
 
     if strength >= 60:
@@ -1266,7 +1263,7 @@ TP3: (ضع رقم منطقي)
 Stop Loss: (ضع رقم منطقي)
 
 📈 <b>تحليل المؤشرات</b>
-- RSI: {safe_rsi} (اكتب القيمةواشرح باختصار شديد سطر واحد)
+- RSI: {safe_rsi} (اكتب القيمة واشرح باختصار شديد سطر واحد)
 - MACD: {macd_fmt} (اكتب القيمة واشرح باختصار شديد سطر واحد)
 - Bollinger Bands: (اشرح باختصار شديد سطر واحد)
 - Volume: {vol24_fmt} (اكتب القيمة واشرح باختصار شديد سطر واحد)
@@ -1316,33 +1313,24 @@ Stop Loss: <code>(Price)</code>
     
     if not (await is_user_paid(pool, uid)):
         async with pool.acquire() as conn:
-            # إضافة المستخدم لجدول التجربة المجانية ومعرفة هل هو إدخال جديد
             res = await conn.execute("INSERT INTO trial_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
             
-            # إذا كان المستخدم يستهلك التجربة لأول مرة
-                        # إذا كان المستخدم يستهلك التجربة لأول مرة
             if "INSERT 0 1" in res:
-                # نبحث هل هناك شخص قام بدعوته؟
                 inviter = await conn.fetchrow("SELECT invited_by FROM users_info WHERE user_id = $1", uid)
                 if inviter and inviter['invited_by']:
                     inviter_id = inviter['invited_by']
                     
-                    # زيادة نقاط المستدعي
                     await conn.execute("UPDATE users_info SET ref_count = COALESCE(ref_count, 0) + 1 WHERE user_id = $1", inviter_id)
                     current_count = await conn.fetchval("SELECT ref_count FROM users_info WHERE user_id = $1", inviter_id)
                     
-                    # 🌐 جلب لغة المستدعي لتحديد لغة الرسالة
                     inviter_lang_row = await conn.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", inviter_id)
                     inv_lang = inviter_lang_row['lang'] if inviter_lang_row and inviter_lang_row['lang'] else "ar"
                     
                     try:
-                        # إذا لم يصل للـ 10، نرسل له تنبيه تشجيعي
                         if current_count < 10:
                             msg_ar = f"🎁 <b>نقطة جديدة!</b>\nصديقك استخدم التجربة المجانية.\nرصيدك الحالي: {current_count}/10 نقاط."
                             msg_en = f"🎁 <b>New Point!</b>\nYour friend used the free trial.\nCurrent balance: {current_count}/10 points."
                             await bot.send_message(inviter_id, msg_ar if inv_lang == "ar" else msg_en, parse_mode=ParseMode.HTML)
-                        
-                        # إذا وصل لـ 10، نفعل الشهر المجاني ونصفر العداد
                         else:
                             await extend_user_subscription(pool, inviter_id)
                             await conn.execute("UPDATE users_info SET ref_count = 0 WHERE user_id = $1", inviter_id)
@@ -1353,9 +1341,7 @@ Stop Loss: <code>(Price)</code>
                     except Exception as e:
                         print(f"Ref notification error: {e}")
 
-
         await cb.message.answer("⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ شهرياً." if lang=="ar" else "⚠️ Your free trial has ended. For full access, please subscribe for a Monthly fee of 10 USDT or 500 ⭐.", reply_markup=get_payment_kb(lang))
-
 # --- الدفع الكريبتو ---
 @dp.callback_query(F.data == "pay_crypto")
 async def crypto_pay(cb: types.CallbackQuery):
