@@ -1149,18 +1149,18 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
     distance_pct = abs(current_price - ema50) / ema50 * 100
     
     # 🔥 3. كشف نوايا الحيتان بناءً على دمج الاتجاه مع الفوليوم التراكمي
-    market_action = "حركة طبيعية ⚖️" 
+    market_action = "حركة طبيعية" 
     
     if trend_direction == "Bearish" and distance_pct < 4 and db_vol_change > 60:
-        market_action = "تجميع حيتان مخفي 🔥 (Accumulation)"
+        market_action = "تجميع حيتان مخفي (Accumulation)"
     elif trend_direction == "Bullish" and distance_pct > 6 and db_vol_change > 100:
-        market_action = "خطر تصريف قمم ⚠️ (Distribution)"
+        market_action = "خطر تصريف قمم (Distribution)"
     elif trend_direction == "Bullish" and db_vol_change < 20:
-        market_action = "اختراق كاذب أو ضعيف 🚨 (Fakeout)"
+        market_action = "اختراق كاذب أو ضعيف (Fakeout)"
     elif trend_direction == "Bullish" and db_vol_change >= 40:
-        market_action = "اختراق حقيقي مدعوم بسيولة ✅"
+        market_action = "اختراق حقيقي مدعوم بسيولة"
     elif trend_direction == "Bearish" and db_vol_change > 60:
-        market_action = "بيع هلع أو هبوط قوي 🩸 (Panic Sell)"
+        market_action = "بيع هلع أو هبوط قوي (Panic Sell)"
 
     # تحديد قوة الاتجاه
     if "Fakeout" not in market_action:
@@ -1177,7 +1177,7 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
             trend_strength = "ضعيف"
             adx_dummy = 12.0
     else:
-        trend_strength = "ضعيف ومخادع"
+        trend_strength = "ضعيف"
         adx_dummy = 15.0
 
     # 4. حساب الأهداف
@@ -1358,7 +1358,7 @@ TP3: <code>{format_price(calc_tp3)}</code>
 Stop Loss: <code>{format_price(calc_sl)}</code>
 
 📈 <b>تحليل المؤشرات وحالة السوق</b>
-• السيولة الخفية: {market_action} (اكتب سطر يعلق على هذه الحالة)
+• Liquidity: {market_action} (اكتب سطر يعلق على هذه الحالة)
 • RSI ({safe_rsi}): (اكتب سطر واحد يوضح التشبع أو الحياد)
 • MACD ({macd_fmt}): (اكتب سطر واحد يوضح الزخم)
 • ADX ({adx_val:.1f}): (اكتب سطر واحد يوضح قوة الترند)
@@ -1386,7 +1386,7 @@ TP3: <code>{format_price(calc_tp3)}</code>
 Stop Loss: <code>{format_price(calc_sl)}</code>
 
 📈 <b>Indicator & Market Action Analysis</b>
-• Hidden Liquidity: {market_action} (Write one line commenting on this action)
+• Liquidity: {market_action} (Write one line commenting on this action)
 • RSI ({safe_rsi}): (Write one line explaining overbought/oversold or neutrality)
 • MACD ({macd_fmt}): (Write one line explaining momentum)
 • ADX ({adx_val:.1f}): (Write one line explaining trend strength)
