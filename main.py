@@ -1014,6 +1014,50 @@ async def get_candles_gate(symbol: str, interval: str, limit: int = 250):
         return None
 
 # --- حساب المؤشرات ---
+def detect_fake_breakout(df):
+    recent_high = df["high"].rolling(20).max().iloc[-2]
+    last = df.iloc[-1]
+
+    if last["high"] > recent_high and last["close"] < recent_high:
+        return -20  # فخ
+    return 0
+def compute_momentum(df):
+    momentum = df["close"].diff()
+    acceleration = momentum.diff()
+
+    if acceleration.iloc[-1] > 0:
+        return 10
+    return -5
+def detect_volatility(df):
+    atr = (df["high"] - df["low"]).rolling(14).mean()
+    current_atr = atr.iloc[-1]
+    avg_atr = atr.mean()
+
+    if current_atr < avg_atr * 0.7:
+        return 10  # هدوء = احتمال انفجار
+    return 0
+def detect_candle_strength(df):
+    last = df.iloc[-1]
+
+    body = abs(last["close"] - last["open"])
+    upper_wick = last["high"] - max(last["open"], last["close"])
+    lower_wick = min(last["open"], last["close"]) - last["low"]
+
+    signal = 0
+
+    # تجميع ذكي (شراء من تحت)
+    if lower_wick > body * 2:
+        signal += 10
+
+    # تصريف (بيع من فوق)
+    if upper_wick > body * 2:
+        signal -= 10
+
+    return signal
+def compute_volume_delta(df):
+    buy_vol = df[df["close"] > df["open"]]["volume"].sum()
+    sell_vol = df[df["close"] < df["open"]]["volume"].sum()
+    return buy_vol - sell_vol
 def compute_indicators(candles):
     df = pd.DataFrame(candles)
     df = df.iloc[:, :6] 
@@ -1097,7 +1141,50 @@ async def run_analysis(cb: types.CallbackQuery):
         last_rsi, last_macd, last_bb, last_vol, high, low = compute_indicators(candles)
     else:
         last_rsi, last_macd, last_bb, last_vol, high, low = 50.0, 0.0, (price, price*0.95, price*1.05), 0.0, price*1.05, price*0.95
-        
+    df = pd.DataFrame(candles)
+    df = df.iloc[:, :6]
+    df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+
+    for col in ["close", "high", "low", "open", "volume"]:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+# 🔥 المؤشرات الذكية الجديدة
+    volume_delta = compute_volume_delta(df)
+    candle_score = detect_candle_strength(df)
+    volatility_score = detect_volatility(df)
+    momentum_score = compute_momentum(df)
+    fake_breakout_score = detect_fake_breakout(df)
+    smart_score = 0
+
+# RSI
+    if last_rsi < 30:
+        smart_score += 15
+    elif last_rsi > 70:
+        smart_score -= 15
+
+# MACD
+    if last_macd > 0:
+        smart_score += 10
+    else:
+        smart_score -= 10
+
+# Volume Delta
+    if volume_delta > 0:
+        smart_score += 15
+    else:
+        smart_score -= 15
+
+# Candle Intelligence
+    smart_score += candle_score
+
+# Volatility
+    smart_score += volatility_score
+
+# Momentum
+    smart_score += momentum_score
+
+# Fake Breakout
+    smart_score += fake_breakout_score
     price_fmt = format_price(price)
     low_fmt = format_price(low)
     high_fmt = format_price(high)
@@ -1107,9 +1194,16 @@ async def run_analysis(cb: types.CallbackQuery):
     macd_fmt = format_price(last_macd) if last_macd is not None else "0.0"
     safe_rsi = f"{last_rsi:.2f}" if last_rsi is not None else "N/A"
     vol24_fmt = format_price(volume_24h)
-
+    if smart_score >= 20:
+        real_trend = "صاعد" if lang == "ar" else "Bullish"
+    elif smart_score <= -20:
+        real_trend = "هابط" if lang == "ar" else "Bearish"
+    else:
+        real_trend = "متذبذب" if lang == "ar" else "Sideways"
+    confidence = min(max(int((smart_score + 100) / 2), 0), 100)
     if lang == "ar":
         prompt = f"""
+الاتجاه المتوقع (محسوب خوارزميًا): {real_trend}
 أنت محلل فني خبير في شركة "NaiF CHarT". حلل عملة {clean_sym} بناءً على البيانات التالية:
 السعر الحالي: {price_fmt}$ | الإطار: {tf} | RSI: {safe_rsi} | MACD: {macd_fmt} ({"صاعد" if (last_macd or 0)>0 else "هابط"})
 البولينجر: السعر {bb0_fmt} (نطاق {bb1_fmt} - {bb2_fmt}) | الفوليوم: {vol24_fmt}
@@ -1125,6 +1219,7 @@ async def run_analysis(cb: types.CallbackQuery):
 
 📊 <b>التحليل لـ {clean_sym}</b> | {tf} | {price_fmt}$
 الاتجاه: (اكتب صاعد أو هابط)
+درجة الثقة: {confidence}%
 
 📉 <b>الدعم والمقاومة</b>
 الدعم الأقرب: {low_fmt} دولار
@@ -1148,6 +1243,7 @@ Stop Loss: (ضع رقم منطقي)
 """
     else:
         prompt = f"""
+Calculated Trend (algorithmic): {real_trend}
 You are an expert Technical Analyst at "NaiF CHarT". Analyze {clean_sym} based on:
 Price: {price_fmt}$ | Timeframe: {tf} | RSI: {safe_rsi} | MACD: {macd_fmt} ({"Bullish" if (last_macd or 0)>0 else "Bearish"})
 Bollinger: {bb0_fmt} (Range {bb1_fmt}-{bb2_fmt}) | Volume: {vol24_fmt}
@@ -1163,7 +1259,7 @@ TP targets MUST be below current price.
 
 📊 <b>Analysis: {clean_sym}</b> | {tf} | {price_fmt}$
 Trend: (Bullish/Bearish)
-
+confidence: {confidence}%
 <b>📉 Support & Resistance</b>
 Nearest Support: <code>{low_fmt}</code> $Nearest Resistance: <code>{high_fmt}</code>$
 
