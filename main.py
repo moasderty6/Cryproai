@@ -1211,12 +1211,21 @@ async def run_analysis(cb: types.CallbackQuery):
     # ✅ بداية الإصلاح: إدخال الكود داخل الدالة بالمسافات الصحيحة
         # (داخل دالة run_analysis بعد تحويل df من الشموع)
     if candles:
-        last_rsi, last_macd, last_bb, last_vol, _, _ = compute_indicators(candles) # ألغينا الـ high/low القديمة
+        last_rsi, last_macd, last_bb, last_vol, _, _ = compute_indicators(candles) 
         
-        # استدعاء دالة الاتجاه والأهداف الرياضية
+        # 1. ===== تحويل البيانات وإنشاء df (هذا الجزء الذي كان مفقوداً) =====
+        import pandas as pd # تأكد أن هذه في أعلى الملف
+        df = pd.DataFrame(candles)
+        df = df.iloc[:, :6]
+        df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+
+        for col in ["close", "high", "low", "open", "volume"]:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        # 2. ===== استدعاء دالة الاتجاه والأهداف الرياضية =====
         trend_dir, trend_str, adx_val, calc_sl, calc_tp1, calc_tp2, calc_tp3, calc_sup, calc_res = calculate_smart_trend_and_targets(df, price)
         
-        # ترجمة الاتجاه
+        # 3. ===== ترجمة الاتجاه =====
         if lang == "ar":
             real_trend = "صاعد 🟢" if trend_dir == "Bullish" else "هابط 🔴" if trend_dir == "Bearish" else "عرضي ⚪"
             trend_strength = trend_str
@@ -1226,9 +1235,11 @@ async def run_analysis(cb: types.CallbackQuery):
             trend_strength = trend_strength_en.get(trend_str, trend_str)
 
     else:
-        # قيم افتراضية في حال فشل جلب الشموع
+        # قيم افتراضية في حال فشل جلب الشموع من المنصة
         real_trend, trend_strength = ("غير معروف", "غير معروف")
         calc_sl, calc_tp1, calc_tp2, calc_tp3, calc_sup, calc_res = (price*0.9, price*1.05, price*1.1, price*1.15, price*0.95, price*1.05)
+        adx_val = 0.0 # حتى لا يحدث خطأ في البرومبت
+
 
     price_fmt = format_price(price)
     low_fmt = format_price(low)
