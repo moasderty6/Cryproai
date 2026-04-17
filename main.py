@@ -10,6 +10,7 @@ import random
 import time
 import base64
 import pandas as pd
+import pandas_ta as ta
 import uuid
 from aiohttp import web
 from dotenv import load_dotenv
@@ -1062,7 +1063,7 @@ async def get_candles_gate(symbol: str, interval: str, limit: int = 250):
         return None
 
 # --- حساب المؤشرات ---
-def compute_indicators(candles):
+def compute_pro_indicators(candles):
     df = pd.DataFrame(candles)
     df = df.iloc[:, :6] 
     df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
@@ -1070,35 +1071,31 @@ def compute_indicators(candles):
     for col in ["close", "high", "low", "open", "volume"]:
         df[col] = pd.to_numeric(df[col], errors='coerce')
 
-    delta = df["close"].diff()
-    gain = delta.clip(lower=0)
-    loss = -1 * delta.clip(upper=0)
-    
-    avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-    
-    rs = avg_gain / avg_loss
-    rsi_val = 100 - (100 / (1 + rs))
-    last_rsi = rsi_val.iloc[-1]
+    # 1. الاتجاه (Trend): متوسط 200 (وإذا العملة جديدة نستخدم 50)
+    df.ta.ema(length=200, append=True)
+    df.ta.ema(length=50, append=True)
+    ema_col = "EMA_200" if "EMA_200" in df.columns and not pd.isna(df["EMA_200"].iloc[-1]) else "EMA_50"
+    ema_val = df[ema_col].iloc[-1] if ema_col in df.columns else df["close"].iloc[-1]
 
-    ema12 = df["close"].ewm(span=12, adjust=False).mean()
-    ema26 = df["close"].ewm(span=26, adjust=False).mean()
-    macd_val = ema12 - ema26
-    signal = macd_val.ewm(span=9, adjust=False).mean()
-    last_macd_diff = macd_val.iloc[-1] - signal.iloc[-1]
+    # 2. الزخم (Momentum): RSI
+    df.ta.rsi(length=14, append=True)
+    rsi_val = df["RSI_14"].iloc[-1] if "RSI_14" in df.columns else 50.0
 
-    sma20 = df["close"].rolling(20).mean()
-    std20 = df["close"].rolling(20).std(ddof=0) 
-    upper_band = sma20 + 2*std20
-    lower_band = sma20 - 2*std20
-    last_bb = (df["close"].iloc[-1], lower_band.iloc[-1], upper_band.iloc[-1])
+    # 3. السيولة الحقيقية (Volume): OBV
+    df.ta.obv(append=True)
+    # هل السيولة بتزيد خلال آخر 5 شموع؟ (إذا السعر طلع والسيولة نزلت = فخ)
+    obv_rising = df["OBV"].iloc[-1] > df["OBV"].iloc[-5] if len(df) > 5 else True
 
-    last_vol = df["volume"].iloc[-1]
-    recent = df.tail(20)
-    high_price = recent["high"].max()
-    low_price = recent["low"].min()
+    # 4. التقلب (Volatility): ATR (لحساب ستوب لوس دقيق جداً)
+    df.ta.atr(length=14, append=True)
+    atr_val = df["ATRr_14"].iloc[-1] if "ATRr_14" in df.columns else (df["close"].iloc[-1] * 0.02)
 
-    return last_rsi, last_macd_diff, last_bb, last_vol, high_price, low_price
+    high_price = df["high"].max()
+    low_price = df["low"].min()
+    price = df["close"].iloc[-1]
+
+    return rsi_val, ema_val, obv_rising, atr_val, price, high_price, low_price
+
 
 # --- دالة التحليل المعدلة ---
 @dp.callback_query(F.data.startswith("tf_"))
@@ -1142,38 +1139,64 @@ async def run_analysis(cb: types.CallbackQuery):
         candles = await get_candles_gate(f"{clean_sym}_USDT", gate_interval, limit=250)
 
     if candles:
-        last_rsi, last_macd, last_bb, last_vol, high, low = compute_indicators(candles)
+        last_rsi, ema_val, obv_rising, atr_val, current_price, high, low = compute_pro_indicators(candles)
     else:
-        last_rsi, last_macd, last_bb, last_vol, high, low = 50.0, 0.0, (price, price*0.95, price*1.05), 0.0, price*1.05, price*0.95
-        
-    price_fmt = format_price(price)
+        last_rsi, ema_val, obv_rising, atr_val, current_price, high, low = 50.0, price, True, price*0.02, price, price*1.05, price*0.95
+
+    # -----------------------------------------
+    # 🧮 خوارزمية القوة المدمجة (دقة البنوك)
+    # -----------------------------------------
+    raw_score = 50.0
+
+    # 1. وزن الاتجاه (EMA)
+    if current_price > ema_val: raw_score += 15
+    else: raw_score -= 15
+
+    # 2. وزن السيولة الحقيقية (OBV) - هذا يكشف الحيتان!
+    if obv_rising: raw_score += 15
+    else: raw_score -= 15
+
+    # 3. وزن الزخم (RSI)
+    if last_rsi:
+        if 45 <= last_rsi <= 65: raw_score += 10 # صحي جداً
+        elif 35 <= last_rsi < 45: raw_score -= 10 
+        elif last_rsi > 70: raw_score -= 15 # تشبع شرائي (خطر الانعكاس)
+        elif last_rsi < 30: raw_score += 15 # تشبع بيعي (فرصة صعود)
+
+    # 4. وزن ذاكرة الحيتان الخلفية (إذا كنت مفعلها)
+    market_memory_phase = getattr(user_session_data.get(uid), 'market_phase', 'حيادي')
+    if "تجميع" in market_memory_phase or "صعود" in market_memory_phase: raw_score += 20
+    elif "تصريف" in market_memory_phase or "انهيار" in market_memory_phase: raw_score -= 20
+
+    # تحديد الاتجاه والنسبة المئوية
+    if raw_score >= 50:
+        final_trend = "صاعد 🟢"
+        strength_percent = 30 + ((raw_score - 50) / 50) * 65
+    else:
+        final_trend = "هابط 🔴"
+        strength_percent = 30 + ((50 - raw_score) / 50) * 65
+
+    trend_strength = max(30, min(int(strength_percent), 95))
+
+    # تنسيق المتغيرات للطباعة
+    price_fmt = format_price(current_price)
     low_fmt = format_price(low)
     high_fmt = format_price(high)
-    bb0_fmt = format_price(last_bb[0])
-    bb1_fmt = format_price(last_bb[1])
-    bb2_fmt = format_price(last_bb[2])
-    macd_fmt = format_price(last_macd) if last_macd is not None else "0.0"
-    safe_rsi = f"{last_rsi:.2f}" if last_rsi is not None else "N/A"
+    safe_rsi = f"{last_rsi:.2f}"
     vol24_fmt = format_price(volume_24h)
-    # 🕵️‍♂️ استخراج ذاكرة السوق السرية لهذه العملة
-    market_memory_phase = "غير متوفرة"
-    market_vol_change = "غير متوفر"
-    try:
-        async with pool.acquire() as conn:
-            mem = await conn.fetchrow("SELECT market_phase, volume_change FROM market_memory WHERE symbol = $1", clean_sym)
-            if mem:
-                market_memory_phase = mem['market_phase']
-                market_vol_change = mem['volume_change']
-    except:
-        pass
-
-    # تجهيز الداتا السرية للذكاء الاصطناعي (لن يراها المستخدم)
+    
+    # 🤫 نعطي الذكاء الاصطناعي الـ ATR عشان يحدد ستوب لوس ما ينضرب بسهولة!
     hidden_context = f"""
-[SECRET BACKGROUND DATA - DO NOT SHOW TO USER]
-Market Phase (Background Monitor): {market_memory_phase}
-Volume Change vs Yesterday: {market_vol_change}
-INSTRUCTION: Base your TP and SL targets on this background data. If phase is 'Distribution', targets must be tight and SL must be close. If 'Accumulation', TP targets can be higher.
+[ALGORITHMIC STRICT DATA - DO NOT CHANGE]:
+Mandatory Trend: {final_trend}
+Trend Strength: {trend_strength}%
+Volatility (ATR): {format_price(atr_val)}
+
+⚠️ Strict rules for SL and TP:
+- STOP LOSS MUST be placed safely using the ATR value (e.g., Price - (1.5 * ATR) for Bullish). Do not use arbitrary percentages!
+- If Trend is Bullish: Targets ABOVE price. If Bearish: Targets BELOW price.
 """
+
 
     if lang == "ar":
         prompt = f"""
