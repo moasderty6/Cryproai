@@ -201,8 +201,7 @@ async def ai_opportunity_radar(pool):
                 if abs(change24) < 0.4: continue
 
                 price = c["quote"]["USD"]["price"]
-
-                # 📊 جلب بيانات 1H كفريم أساسي (نفس نظامك القديم)
+                
                 candles = await get_candles_gate(f"{symbol}_USDT", "1h", limit=120)
                 if not candles: continue
 
@@ -212,11 +211,11 @@ async def ai_opportunity_radar(pool):
                 for col in ["close","high","low","open","volume"]:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
 
-                last_rsi, last_macd_diff, last_bb, last_vol, high, low = compute_indicators(candles)
+                # حساب المؤشرات القديمة (نحتاجها للـ RSI والماكدي)
+                last_rsi, last_macd_diff, last_bb, last_vol, _, _ = compute_indicators(candles)
 
-                ema50 = df["close"].ewm(span=50).mean()
-                ema200 = df["close"].ewm(span=200).mean()
-                trend_up = df["close"].iloc[-1] > ema200.iloc[-1]
+                # 🔥 التعديل الجبار: استدعاء دالة التحليل الرياضي للرادار
+                trend_dir, trend_str, adx_val, _, _, _, _, _, _ = calculate_smart_trend_and_targets(df, price)
 
                 avg_vol = df["volume"].rolling(20).mean()
                 volume_spike = df["volume"].iloc[-1] > (avg_vol.iloc[-1] * 2.5)
@@ -226,36 +225,41 @@ async def ai_opportunity_radar(pool):
                 recent_high = df["high"].rolling(20).max().iloc[-2]
                 breakout = price > recent_high
 
-                fake_move = (high - low) / price > 0.35
+                fake_move = (df["high"].iloc[-1] - df["low"].iloc[-1]) / price > 0.35
                 if fake_move: continue
 
                 # -----------------
-                # 🎯 1H BASE SCORING
+                # 🎯 1H BASE SCORING (النظام المحدث)
                 # -----------------
                 base_score = 0
-                if 40 <= last_rsi <= 55: base_score += 15
-                elif 35 <= last_rsi < 40: base_score += 10
+                
+                # 1. فلتر الاتجاه وقوته (أهم شرط)
+                if trend_dir == "Bullish":
+                    base_score += 20  # مكافأة للترند الصاعد
+                elif trend_dir == "Bearish":
+                    base_score -= 30  # عقوبة قاسية للترند الهابط (تجنب السكاكين الساقطة)
+                    
+                if adx_val >= 25:
+                    base_score += 15  # ترند قوي وحقيقي
+                elif adx_val < 20:
+                    base_score -= 20  # السوق عرضي وممل (تجنب الاختراقات الكاذبة)
+
+                # 2. فلتر المؤشرات الكلاسيكية
+                if 40 <= last_rsi <= 65: base_score += 10
+                elif last_rsi > 75: base_score -= 10 # تشبع شرائي خطير
                 
                 if last_macd_diff > 0:
-                    base_score += 15
-                    if last_macd_diff > 0.002: base_score += 5
+                    base_score += 10
                 
-                if trend_up: base_score += 15
-                
+                # 3. فلتر السيولة والاختراق
                 if volume_spike:
                     base_score += 20
-                    if df["volume"].iloc[-1] > (avg_vol.iloc[-1] * 3): base_score += 5
+                    if df["volume"].iloc[-1] > (avg_vol.iloc[-1] * 3): base_score += 10
+                else:
+                    base_score -= 15 # لا ندخل بدون فوليوم
                 
                 if squeeze: base_score += 10
                 if breakout: base_score += 15
-                if marketcap < 150_000_000: base_score += 5
-
-                if not volume_spike: base_score -= 15
-                if last_rsi < 35: base_score -= 10
-                if not trend_up: base_score -= 15
-
-                body = abs(df["close"].iloc[-1] - df["open"].iloc[-1])
-                if body < (price * 0.003): base_score -= 5
 
                 # ----------------------------------------------------
                 # 🚀 SUPER RADAR: Multi-Timeframe & Orderbook Funnel
