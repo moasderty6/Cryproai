@@ -520,13 +520,18 @@ async def approve_radar_signal(cb: types.CallbackQuery):
     pool = dp['db_pool']
     
     # 🛡️ استعلام واحد يجلب الجميع مع حالة اشتراكهم لعدم تدمير قاعدة البيانات
+        # 🛡️ استعلام مخصص لجلب "مستخدمي التجربة فقط" (الذين لم يشتركوا VIP)
     async with pool.acquire() as conn:
-        users = await pool.fetch("""
-    SELECT u.user_id
-    FROM users_info u
-    JOIN trial_users t ON u.user_id = t.user_id
-    WHERE u.user_id NOT IN (SELECT user_id FROM paid_users)
-    """)
+        users = await conn.fetch("""
+            SELECT u.user_id, u.lang, 
+                   false as is_paid 
+            FROM users_info u
+            JOIN trial_users t ON u.user_id = t.user_id
+            WHERE u.user_id NOT IN (
+                SELECT user_id FROM paid_users WHERE expiry_date > CURRENT_TIMESTAMP
+            )
+        """)
+
 
     for row in users:
         uid = row["user_id"]
