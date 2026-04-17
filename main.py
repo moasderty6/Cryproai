@@ -1227,7 +1227,7 @@ async def run_analysis(cb: types.CallbackQuery):
         
         # 3. ===== ترجمة الاتجاه =====
         if lang == "ar":
-            real_trend = "صاعد 🟢" if trend_dir == "Bullish" else "هابط 🔴" if trend_dir == "Bearish" else "عرضي ⚪"
+            real_trend = "صاعد " if trend_dir == "Bullish" else "هابط" if trend_dir == "Bearish" else "عرضي"
             trend_strength = trend_str
         else:
             real_trend = trend_dir
