@@ -1083,67 +1083,63 @@ def calculate_smart_trend_and_targets(df, current_price):
     if pd.isna(atr) or atr == 0:
         atr = current_price * 0.02 
 
-    # حماية من تضخم الـ ATR (يجب ألا يتجاوز التذبذب 10% من السعر لمنع الأهداف الخيالية)
+    # حماية من تضخم الـ ATR (يجب ألا يتجاوز التذبذب 10% من السعر)
     max_atr = current_price * 0.10
     atr = min(atr, max_atr)
 
-    # 2. تحديد الاتجاه باستخدام متوسطات 20, 50, 200 لتصفية التذبذب الكاذب
+    # 2. تحديد الاتجاه (إما صاعد أو هابط فقط)
     ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
     ema50 = df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
-    ema200 = df['close'].ewm(span=200, adjust=False).mean().iloc[-1] 
 
-    if current_price > ema20 and ema20 > ema50 and current_price > ema200:
+    # الفيصل القاطع: لا يوجد عرضي بعد اليوم
+    if ema20 >= ema50:
         trend_direction = "Bullish"
-    elif current_price < ema20 and ema20 < ema50 and current_price < ema200:
-        trend_direction = "Bearish"
     else:
-        trend_direction = "Neutral"
+        trend_direction = "Bearish"
 
-    # 3. قوة الاتجاه (بناءً على ابتعاد السعر عن متوسط 50 كبديل أسرع وأدق للـ ADX)
+    # 3. قوة الاتجاه (بناءً على ابتعاد السعر عن متوسط 50)
     distance_pct = abs(current_price - ema50) / ema50 * 100
     
     if distance_pct >= 8:
-        trend_strength = "قوي جداً"
+        trend_strength = "قوي"
         adx_dummy = 45.0
     elif distance_pct >= 4:
-        trend_strength = "قوي"
+        trend_strength = "جيد"
         adx_dummy = 30.0
     elif distance_pct >= 1.5:
         trend_strength = "متوسط"
         adx_dummy = 20.0
     else:
-        trend_strength = "ضعيف / عرضي"
+        trend_strength = "ضعيف" # تم إلغاء كلمة عرضي من هنا أيضاً
         adx_dummy = 12.0
 
-    # حد أدنى للسعر لمنع القيم السالبة (رقم صغير جداً للعملات الصفرية)
+    # حد أدنى للسعر لمنع القيم السالبة
     min_allowed_price = current_price * 0.000001 
 
-    # 4. حساب الأهداف (Long & Short) مع جدار الحماية الرياضي
+    # 4. حساب الأهداف (Long & Short)
     if trend_direction == "Bearish":
-        # سوق هابط (Short): وقف الخسارة فوق، والأهداف تحت
+        # سوق هابط (Short)
         sl = current_price + (atr * 1.5)
         tp1 = current_price - (atr * 1.5)
         tp2 = current_price - (atr * 2.5)
         tp3 = current_price - (atr * 3.5)
         
-        # جدار حماية صفقات الـ Short:
-        sl = max(current_price * 1.005, sl) # الوقف إجباري أعلى من السعر بـ 0.5% على الأقل
-        tp1 = min(current_price * 0.995, max(min_allowed_price, tp1)) # الهدف مستحيل يكون سالب، وإجباري تحت السعر
-        tp2 = min(tp1 * 0.995, max(min_allowed_price, tp2)) # الهدف الثاني إجباري تحت الأول
-        tp3 = min(tp2 * 0.995, max(min_allowed_price, tp3)) # الهدف الثالث إجباري تحت الثاني
+        sl = max(current_price * 1.005, sl) 
+        tp1 = min(current_price * 0.995, max(min_allowed_price, tp1)) 
+        tp2 = min(tp1 * 0.995, max(min_allowed_price, tp2)) 
+        tp3 = min(tp2 * 0.995, max(min_allowed_price, tp3)) 
 
     else:
-        # سوق صاعد أو عرضي (Long): وقف الخسارة تحت، والأهداف فوق
+        # سوق صاعد (Long)
         sl = current_price - (atr * 1.5)
         tp1 = current_price + (atr * 1.5)
         tp2 = current_price + (atr * 2.5)
         tp3 = current_price + (atr * 3.5)
         
-        # جدار حماية صفقات الـ Long:
-        sl = max(min_allowed_price, sl) # الوقف مستحيل يكون سالب
-        tp1 = max(current_price * 1.005, tp1) # الهدف إجباري أعلى من السعر بـ 0.5% على الأقل
-        tp2 = max(tp1 * 1.005, tp2) # الهدف الثاني أعلى من الأول
-        tp3 = max(tp2 * 1.005, tp3) # الهدف الثالث أعلى من الثاني
+        sl = max(min_allowed_price, sl) 
+        tp1 = max(current_price * 1.005, tp1) 
+        tp2 = max(tp1 * 1.005, tp2) 
+        tp3 = max(tp2 * 1.005, tp3) 
 
     support = df['low'].rolling(20).min().iloc[-1]
     resistance = df['high'].rolling(20).max().iloc[-1]
