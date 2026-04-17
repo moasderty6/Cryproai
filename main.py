@@ -163,7 +163,29 @@ async def get_orderbook_pressure(client, symbol):
         pass
     return 1.0
 
-
+# دالة مخصصة للرادار فقط
+def compute_indicators(candles):
+    df = pd.DataFrame(candles)
+    df = df.iloc[:, :6] 
+    df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+    for col in ["close", "high", "low", "open", "volume"]: df[col] = pd.to_numeric(df[col], errors='coerce')
+    delta = df["close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -1 * delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    last_rsi = (100 - (100 / (1 + rs))).iloc[-1]
+    ema12 = df["close"].ewm(span=12, adjust=False).mean()
+    ema26 = df["close"].ewm(span=26, adjust=False).mean()
+    macd_val = ema12 - ema26
+    signal = macd_val.ewm(span=9, adjust=False).mean()
+    last_macd_diff = macd_val.iloc[-1] - signal.iloc[-1]
+    sma20 = df["close"].rolling(20).mean()
+    std20 = df["close"].rolling(20).std(ddof=0) 
+    last_bb = (df["close"].iloc[-1], (sma20 - 2*std20).iloc[-1], (sma20 + 2*std20).iloc[-1])
+    recent = df.tail(20)
+    return last_rsi, last_macd_diff, last_bb, df["volume"].iloc[-1], recent["high"].max(), recent["low"].min()
 # --- الرادار الخارق المعدل ---
 async def ai_opportunity_radar(pool):
     try:
@@ -1197,84 +1219,73 @@ Volatility (ATR): {format_price(atr_val)}
 - If Trend is Bullish: Targets ABOVE price. If Bearish: Targets BELOW price.
 """
 
-
     if lang == "ar":
         prompt = f"""
 {hidden_context}
-أنت محلل فني خبير في شركة "NaiF CHarT". حلل عملة {clean_sym} بناءً على البيانات التالية:
-السعر الحالي: {price_fmt}$ | الإطار: {tf} | RSI: {safe_rsi} | MACD: {macd_fmt} ({"صاعد" if (last_macd or 0)>0 else "هابط"})
-البولينجر: السعر {bb0_fmt} (نطاق {bb1_fmt} - {bb2_fmt}) | الفوليوم: {vol24_fmt}
+أنت محلل فني خبير في شركة "NaiF CHarT". حلل عملة {clean_sym}.
 
-⚠️ الالتزام التام بهذا التنسيق (استخدم وسوم HTML فقط):
+بيانات السوق اللحظية: السعر: {price_fmt}$ | الإطار: {tf} | الفوليوم العالمي: {vol24_fmt}
+مؤشر RSI: {safe_rsi} 
+
 ⚠️ قواعد صارمة:
-
-إذا كان الاتجاه "صاعد":
-- يجب أن تكون TP1 و TP2 و TP3 أعلى من السعر الحالي
-
-إذا كان الاتجاه "هابط":
-- يجب أن تكون TP1 و TP2 و TP3 أقل من السعر الحالي
+- بناءً على "الاتجاه الإجباري" المذكور في البيانات السرية، احسب الأهداف ووقف الخسارة بدقة.
+- إذا كان الاتجاه الإجباري صاعد: الأهداف أعلى السعر. إذا كان هابط: الأهداف أقل من السعر.
 
 📊 <b>التحليل لـ {clean_sym}</b> | {tf} | {price_fmt}$
-الاتجاه: (اكتب صاعد أو هابط)
+الاتجاه: {final_trend}
+🔥 <b>قوة الاتجاه:</b> {trend_strength}%
 
 📉 <b>الدعم والمقاومة</b>
-الدعم الأقرب: {low_fmt} دولار
-المقاومة الأقرب: {high_fmt} دولار
+دعم أقرب: {low_fmt}$
+مقاومة أقرب: {high_fmt}$
 
 🎯 <b>الأهداف السعرية</b>
-TP1: (ضع رقم منطقي)
-TP2: (ضع رقم منطقي)
-TP3: (ضع رقم منطقي)
+الهدف الأول (TP1): (رقم دقيق)
+الهدف الثاني (TP2): (رقم دقيق)
+الهدف الثالث (TP3): (رقم دقيق)
 
-🛑 <b>وقف الخسارة</b>
-Stop Loss: (ضع رقم منطقي)
+🛑 <b>إيقاف الخسارة</b>
+وقف الخسارة (SL): (رقم دقيق بناءً على قيمة الـ ATR)
 
 📈 <b>تحليل المؤشرات</b>
-- RSI: {safe_rsi} (اكتب القيمةواشرح باختصار شديد سطر واحد)
-- MACD: {macd_fmt} (اكتب القيمة واشرح باختصار شديد سطر واحد)
-- Bollinger Bands: (اشرح باختصار شديد سطر واحد)
-- Volume: {vol24_fmt} (اكتب القيمة واشرح باختصار شديد سطر واحد)
-
-**ملاحظة: لا تكتب مقدمات ولا جرايد، خليك محدد ومختصر ومرتب.**
+• مؤشر (RSI): {safe_rsi} (اشرح باختصار شديد سطر واحد)
+• مؤشر (EMA): (اشرح موقع السعر من المتوسط باختصار)
+• السيولة (OBV): (اشرح هل السيولة تدخل أم تخرج باختصار)
 """
     else:
         prompt = f"""
 {hidden_context}
-You are an expert Technical Analyst at "NaiF CHarT". Analyze {clean_sym} based on:
-Price: {price_fmt}$ | Timeframe: {tf} | RSI: {safe_rsi} | MACD: {macd_fmt} ({"Bullish" if (last_macd or 0)>0 else "Bearish"})
-Bollinger: {bb0_fmt} (Range {bb1_fmt}-{bb2_fmt}) | Volume: {vol24_fmt}
+You are an expert Technical Analyst at "NaiF CHarT". Analyze {clean_sym}.
 
-⚠️ Strictly follow this HTML format:
-Strict rule:
+Market Data: Price: {price_fmt}$ | Timeframe: {tf} | Global Volume: {vol24_fmt}
+RSI: {safe_rsi}
 
-If Trend = Bullish
-TP targets MUST be above current price.
-
-If Trend = Bearish
-TP targets MUST be below current price.
+⚠️ Strict rules:
+- Calculate TP and SL strictly based on the "Mandatory Trend" in the secret data.
+- If Trend is Bullish: Targets ABOVE price. If Bearish: Targets BELOW price.
 
 📊 <b>Analysis: {clean_sym}</b> | {tf} | {price_fmt}$
-Trend: (Bullish/Bearish)
+Trend: {final_trend}
+🔥 <b>Trend Strength:</b> {trend_strength}%
 
-<b>📉 Support & Resistance</b>
-Nearest Support: <code>{low_fmt}</code> $Nearest Resistance: <code>{high_fmt}</code>$
+📉 <b>Support & Resistance</b>
+Nearest Support: <code>{low_fmt}</code>$
+Nearest Resistance: <code>{high_fmt}</code>$
 
-<b>🎯 Price Targets</b>
+🎯 <b>Price Targets</b>
 TP1: <code>(Price)</code>
 TP2: <code>(Price)</code>
 TP3: <code>(Price)</code>
 
-<b>🛑 Stop Loss</b>
-Stop Loss: <code>(Price)</code>
+🛑 <b>Stop Loss</b>
+Stop Loss: <code>(Price based on ATR)</code>
 
-<b>📈 Indicator Analysis</b>
-• RSI: {safe_rsi} (value and One short sentence)
-• MACD: {macd_fmt} (value and One short sentence)
-• Bollinger Bands: (One short sentence)
-• Volume: {vol24_fmt} (value and One short sentence)
-
-<b>Note: No intro/outro, strictly follow the headers above.</b>
+📈 <b>Indicator Analysis</b>
+• RSI: {safe_rsi} (One short sentence)
+• EMA: (Briefly explain price position relative to EMA)
+• Volume (OBV): (Briefly explain if real volume is flowing in or out)
 """
+
 
     res = await ask_groq(prompt, lang=lang)
     await cb.message.answer(res, parse_mode=ParseMode.HTML)
@@ -1516,6 +1527,7 @@ async def on_startup(app):
 
     #asyncio.create_task(ai_opportunity_radar(pool))
     asyncio.create_task(daily_channel_post())
+    asyncio.create_task(background_market_monitor(pool))
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
 
