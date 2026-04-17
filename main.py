@@ -164,6 +164,45 @@ async def get_orderbook_pressure(client, symbol):
         pass
     return 1.0
 
+async def update_market_memory_loop(pool):
+    """مهمة خلفية لتحديث ذاكرة السوق لكل العملات بشكل دوري"""
+    # ننتظر 10 ثواني بعد تشغيل البوت عشان نتأكد إن الداتا بيز اتصلت
+    await asyncio.sleep(10) 
+    
+    while True:
+        try:
+            print("🔄 جاري سحب وتحديث ذاكرة الفوليوم (Market Memory) من CMC...")
+            headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
+            async with httpx.AsyncClient(timeout=30) as client:
+                res = await client.get(
+                    "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
+                    headers=headers,
+                    params={"limit": "250"} # جلب أهم 250 عملة
+                )
+                
+                if res.status_code == 200:
+                    coins = res.json()["data"]
+                    
+                    async with pool.acquire() as conn:
+                        for c in coins:
+                            symbol = c["symbol"]
+                            # جلب نسبة التغير
+                            vol_change = float(c["quote"]["USD"].get("volume_change_24h", 0))
+                            
+                            # تخزينها في قاعدة البيانات
+                            await conn.execute("""
+                                INSERT INTO market_memory (symbol, volume_change, last_updated)
+                                VALUES ($1, $2, CURRENT_TIMESTAMP)
+                                ON CONFLICT (symbol) DO UPDATE 
+                                SET volume_change = EXCLUDED.volume_change, last_updated = CURRENT_TIMESTAMP
+                            """, symbol, f"{vol_change:.1f}%")
+                            
+                    print("✅ تم تعبئة ذاكرة السوق بنجاح! البوت الآن يمتلك نظرة شاملة.")
+        except Exception as e:
+            print(f"Market Memory Loop Error: {e}")
+        
+        # ينام ويحدث البيانات كل 4 ساعات (14400 ثانية)
+        await asyncio.sleep(14400)
 
 # --- الرادار الخارق المعدل ---
 async def ai_opportunity_radar(pool):
@@ -1583,6 +1622,7 @@ async def on_startup(app):
 
     #asyncio.create_task(ai_opportunity_radar(pool))
     asyncio.create_task(daily_channel_post())
+    asyncio.create_task(update_market_memory_loop(pool)) # 🔥 تشغيل ذاكرة السوق
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
 
