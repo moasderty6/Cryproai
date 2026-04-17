@@ -1106,13 +1106,13 @@ def calculate_smart_trend_and_targets(df, current_price):
 
     # تصنيف قوة الاتجاه بناءً على قيمة ADX
     if adx >= 40:
-        trend_strength = "قوي جداً 🔥"
+        trend_strength = "قوي"
     elif adx >= 25:
-        trend_strength = "قوي 💪"
+        trend_strength = "جيد"
     elif adx >= 20:
-        trend_strength = "متوسط ⚖️"
+        trend_strength = "متوسط"
     else:
-        trend_strength = "ضعيف / عرضي ⚠️"
+        trend_strength = "ضعيف / عرضي"
 
     # 4. حساب الأهداف (TP) ووقف الخسارة (SL) رياضياً بناءً على الـ ATR
     if trend_direction == "Bullish" or trend_direction == "Neutral":
@@ -1235,7 +1235,7 @@ async def run_analysis(cb: types.CallbackQuery):
             trend_strength = trend_str
         else:
             real_trend = trend_dir
-            trend_strength_en = {"قوي جداً 🔥": "Very Strong 🔥", "قوي 💪": "Strong 💪", "متوسط ⚖️": "Moderate ⚖️", "ضعيف / عرضي ⚠️": "Weak/Ranging ⚠️"}
+            trend_strength_en = {"قوي": "Strong", "جيد": "Good", "متوسط": "Moderate", "ضعيف / عرضي": "Weak/Ranging"}
             trend_strength = trend_strength_en.get(trend_str, trend_str)
 
     else:
@@ -1257,7 +1257,7 @@ async def run_analysis(cb: types.CallbackQuery):
 ⚠️ التزم بهذا القالب بحذافيره (استخدم HTML فقط):
 
 📊 <b>التحليل لـ {clean_sym}</b> | {tf} | {format_price(price)}$
-الاتجاه: {real_trend}
+الاتجاه: {real_trend} ({trend_strength})
 
 📉 <b>الدعم والمقاومة</b>
 الدعم الأقرب: <code>{format_price(calc_sup)}</code>$
@@ -1285,7 +1285,7 @@ The data is calculated mathematically and is completely ready. ⚠️ STRICT RUL
 ⚠️ Strictly follow this template (Use HTML only):
 
 📊 <b>Analysis: {clean_sym}</b> | {tf} | {format_price(price)}$
-Trend: {real_trend}
+Trend: {real_trend} ({trend_strength})
 
 📉 <b>Support & Resistance</b>
 Nearest Support: <code>{format_price(calc_sup)}</code>$
