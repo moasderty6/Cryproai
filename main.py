@@ -1071,7 +1071,7 @@ def detect_fake_breakout(df):
 import numpy as np # تأكد من إضافتها في الأعلى
 
 def calculate_smart_trend_and_targets(df, current_price):
-    # 1. حساب الـ ATR (لقياس التذبذب ووضع الأهداف ووقف الخسارة)
+    # 1. حساب الـ ATR لقياس التذبذب الحقيقي
     df['prev_close'] = df['close'].shift(1)
     df['tr0'] = abs(df['high'] - df['low'])
     df['tr1'] = abs(df['high'] - df['prev_close'])
@@ -1079,58 +1079,77 @@ def calculate_smart_trend_and_targets(df, current_price):
     df['tr'] = df[['tr0', 'tr1', 'tr2']].max(axis=1)
     atr = df['tr'].rolling(14).mean().iloc[-1]
 
-    # 2. حساب الاتجاه (Trend) باستخدام EMA 20 و 50
+    # تأمين قيمة الـ ATR في حال كانت مفقودة أو صفرية
+    if pd.isna(atr) or atr == 0:
+        atr = current_price * 0.02 
+
+    # حماية من تضخم الـ ATR (يجب ألا يتجاوز التذبذب 10% من السعر لمنع الأهداف الخيالية)
+    max_atr = current_price * 0.10
+    atr = min(atr, max_atr)
+
+    # 2. تحديد الاتجاه باستخدام متوسطات 20, 50, 200 لتصفية التذبذب الكاذب
     ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
     ema50 = df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
-    
-    if current_price > ema20 and ema20 > ema50:
-        trend_direction = "Bullish" # صاعد
-    elif current_price < ema20 and ema20 < ema50:
-        trend_direction = "Bearish" # هابط
+    ema200 = df['close'].ewm(span=200, adjust=False).mean().iloc[-1] 
+
+    if current_price > ema20 and ema20 > ema50 and current_price > ema200:
+        trend_direction = "Bullish"
+    elif current_price < ema20 and ema20 < ema50 and current_price < ema200:
+        trend_direction = "Bearish"
     else:
-        trend_direction = "Neutral" # عرضي / متذبذب
+        trend_direction = "Neutral"
 
-    # 3. حساب الـ ADX (لقياس قوة الاتجاه)
-    df['up_move'] = df['high'] - df['high'].shift(1)
-    df['down_move'] = df['low'].shift(1) - df['low']
+    # 3. قوة الاتجاه (بناءً على ابتعاد السعر عن متوسط 50 كبديل أسرع وأدق للـ ADX)
+    distance_pct = abs(current_price - ema50) / ema50 * 100
     
-    df['+dm'] = np.where((df['up_move'] > df['down_move']) & (df['up_move'] > 0), df['up_move'], 0.0)
-    df['-dm'] = np.where((df['down_move'] > df['up_move']) & (df['down_move'] > 0), df['down_move'], 0.0)
-    
-    atr_series = df['tr'].rolling(14).mean()
-    plus_di = 100 * (df['+dm'].rolling(14).mean() / atr_series)
-    minus_di = 100 * (df['-dm'].rolling(14).mean() / atr_series)
-    
-    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
-    adx = dx.rolling(14).mean().iloc[-1]
-
-    # تصنيف قوة الاتجاه بناءً على قيمة ADX
-    if adx >= 40:
+    if distance_pct >= 8:
+        trend_strength = "قوي جداً"
+        adx_dummy = 45.0
+    elif distance_pct >= 4:
         trend_strength = "قوي"
-    elif adx >= 25:
-        trend_strength = "جيد"
-    elif adx >= 20:
+        adx_dummy = 30.0
+    elif distance_pct >= 1.5:
         trend_strength = "متوسط"
+        adx_dummy = 20.0
     else:
         trend_strength = "ضعيف / عرضي"
+        adx_dummy = 12.0
 
-    # 4. حساب الأهداف (TP) ووقف الخسارة (SL) رياضياً بناءً على الـ ATR
-    if trend_direction == "Bullish" or trend_direction == "Neutral":
-        sl = current_price - (atr * 1.5)
-        tp1 = current_price + (atr * 1.2)
-        tp2 = current_price + (atr * 2.5)
-        tp3 = current_price + (atr * 4.0)
-    else: # Bearish
+    # حد أدنى للسعر لمنع القيم السالبة (رقم صغير جداً للعملات الصفرية)
+    min_allowed_price = current_price * 0.000001 
+
+    # 4. حساب الأهداف (Long & Short) مع جدار الحماية الرياضي
+    if trend_direction == "Bearish":
+        # سوق هابط (Short): وقف الخسارة فوق، والأهداف تحت
         sl = current_price + (atr * 1.5)
-        tp1 = current_price - (atr * 1.2)
+        tp1 = current_price - (atr * 1.5)
         tp2 = current_price - (atr * 2.5)
-        tp3 = current_price - (atr * 4.0)
+        tp3 = current_price - (atr * 3.5)
+        
+        # جدار حماية صفقات الـ Short:
+        sl = max(current_price * 1.005, sl) # الوقف إجباري أعلى من السعر بـ 0.5% على الأقل
+        tp1 = min(current_price * 0.995, max(min_allowed_price, tp1)) # الهدف مستحيل يكون سالب، وإجباري تحت السعر
+        tp2 = min(tp1 * 0.995, max(min_allowed_price, tp2)) # الهدف الثاني إجباري تحت الأول
+        tp3 = min(tp2 * 0.995, max(min_allowed_price, tp3)) # الهدف الثالث إجباري تحت الثاني
 
-    # 5. حساب الدعم والمقاومة التاريخية القريبة
+    else:
+        # سوق صاعد أو عرضي (Long): وقف الخسارة تحت، والأهداف فوق
+        sl = current_price - (atr * 1.5)
+        tp1 = current_price + (atr * 1.5)
+        tp2 = current_price + (atr * 2.5)
+        tp3 = current_price + (atr * 3.5)
+        
+        # جدار حماية صفقات الـ Long:
+        sl = max(min_allowed_price, sl) # الوقف مستحيل يكون سالب
+        tp1 = max(current_price * 1.005, tp1) # الهدف إجباري أعلى من السعر بـ 0.5% على الأقل
+        tp2 = max(tp1 * 1.005, tp2) # الهدف الثاني أعلى من الأول
+        tp3 = max(tp2 * 1.005, tp3) # الهدف الثالث أعلى من الثاني
+
     support = df['low'].rolling(20).min().iloc[-1]
     resistance = df['high'].rolling(20).max().iloc[-1]
 
-    return trend_direction, trend_strength, adx, sl, tp1, tp2, tp3, support, resistance
+    return trend_direction, trend_strength, adx_dummy, sl, tp1, tp2, tp3, support, resistance
+
 
 def compute_indicators(candles):
     df = pd.DataFrame(candles)
