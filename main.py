@@ -493,44 +493,6 @@ Write a 3-line professional analysis integrating these metrics.
         print(f"Radar Error: {e}")
         await bot.send_message(ADMIN_USER_ID, f"⚠️ حدث خطأ في الرادار: {e}")
 
-
-
-                insight_ar = await ask_groq(prompt_ar, lang="ar")
-                insight_en = await ask_groq(prompt_en, lang="en")
-
-                signal_id = str(uuid.uuid4())[:8] 
-                radar_pending_approvals[signal_id] = {
-                    "symbol": symbol, "price": price, "signal": signal, "score": best_score,
-                    "insight_ar": insight_ar, "insight_en": insight_en
-                }
-
-                admin_kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="✅ موافقة ونشر للمشتركين", callback_data=f"rad_app_{signal_id}")],
-                    [InlineKeyboardButton(text="❌ إلغاء وتجاهل", callback_data=f"rad_rej_{signal_id}")]
-                ])
-
-                admin_text = (
-                    f"⚠️ <b>تنبيه أدمن: مسح السوق مكتمل 🔥</b>\n"
-                    f"🏆 <b>أفضل عملة:</b> #{symbol}\n"
-                    f"💵 السعر: ${format_price(price)}\n"
-                    f"⚡ الإشارة: {signal}\n"
-                    f"📊 السكور: <b>{best_score}/100</b>\n\n"
-                    f"📝 <b>التحليل:</b>\n{insight_ar}\n"
-                    f"هل تريد الموافقة على نشرها؟"
-                )
-
-                try:
-                    await bot.send_message(ADMIN_USER_ID, admin_text, reply_markup=admin_kb, parse_mode=ParseMode.HTML)
-                    print(f"✅ تم اصطياد {symbol} بسكور {best_score}!")
-                    await asyncio.sleep(1200) # استراحة بعد إرسال التوصية
-                except Exception as e:
-                    print(f"Failed to send to admin: {e}")
-
-        except Exception as e:
-            print(f"Radar Error: {e}")
-            await asyncio.sleep(60)
-
-
         # تم تصحيح وقت الانتظار ليكون 6 ساعات بالضبط (6 * 60 * 60)
   # 6 ساعات # انتطار الدورة القادمة
 async def daily_channel_post():
