@@ -33,6 +33,9 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CMC_KEY = os.getenv("CMC_API_KEY")
+BINANCE_API_KEY = "rvApoDI6XRYcki1r2QTnPUBs3QwESzrpTVKohgjbK1zxSzlvrFPxAbZKr94xA2Lx"
+BINANCE_BASE = "https://api.binance.com/api/v3"
+BINANCE_HEADERS = {"X-MBX-APIKEY": BINANCE_API_KEY}
 GATE_API_KEY = "a3f6a57b42f6106011e6890049e57b2e"
 GATE_API_SECRET = "1ac18e0a690ce782f6854137908a6b16eb910cf02f5b95fa3c43b670758f79bc"
 GATE_BASE = "https://api.gateio.ws/api/v4/spot/candlesticks"
@@ -137,32 +140,33 @@ def get_payment_kb(lang):
 # --- رادار الفرص الذكي ---
 # --- دوال الرادار المساعدة (ضعها فوق دالة الرادار) ---
 async def get_btc_trend(client):
-    """جلب حالة البيتكوين لمعرفة ترند السوق العام"""
+    """جلب حالة البيتكوين لمعرفة ترند السوق العام من Binance"""
     try:
-        res = await client.get("https://api.gateio.ws/api/v4/spot/candlesticks", params={
-            "currency_pair": "BTC_USDT", "interval": "1d", "limit": 25
-        })
+        res = await client.get(f"{BINANCE_BASE}/klines", params={
+            "symbol": "BTCUSDT", "interval": "1d", "limit": 25
+        }, headers=BINANCE_HEADERS)
         if res.status_code == 200:
             data = res.json()
-            close_prices = [float(c[2]) for c in data]
+            # في بايننس الإغلاق هو المؤشر رقم 4
+            close_prices = [float(c[4]) for c in data]
             sma20 = sum(close_prices[-20:]) / 20
-            # هل البيتكوين فوق متوسط 20 يوم؟
             return close_prices[-1] > sma20
     except:
         pass
     return True # افتراضي في حال فشل الـ API
 
 async def get_orderbook_pressure(client, symbol):
-    """حساب ضغط الشراء من دفتر الأوامر (حيتان مخفية)"""
+    """حساب ضغط الشراء من دفتر الأوامر في Binance"""
     try:
-        res = await client.get("https://api.gateio.ws/api/v4/spot/order_book", params={
-            "currency_pair": f"{symbol}_USDT", "limit": 50
-        })
+        clean_symbol = symbol.replace("_", "")
+        res = await client.get(f"{BINANCE_BASE}/depth", params={
+            "symbol": f"{clean_symbol}USDT", "limit": 50
+        }, headers=BINANCE_HEADERS)
         if res.status_code == 200:
             data = res.json()
             bids = sum([float(b[1]) for b in data.get("bids", [])]) 
             asks = sum([float(a[1]) for a in data.get("asks", [])]) 
-            if asks == 0: return 999.0 # لمنع القسمة على صفر
+            if asks == 0: return 999.0 
             return bids / asks
     except:
         pass
@@ -218,7 +222,7 @@ async def analyze_radar_coin(c, client, is_btc_bullish, sem):
             symbol = c["symbol"]
             price = c["quote"]["USD"]["price"]
             
-            candles = await get_candles_gate(f"{symbol}_USDT", "1h", limit=500)
+            candles = await get_candles_binance(f"{symbol}USDT", "1h", limit=500)
             if not candles: return None
 
             df = pd.DataFrame(candles)
@@ -287,7 +291,7 @@ async def analyze_radar_coin(c, client, is_btc_bullish, sem):
                 else: score -= 5.5 
 
                 # استبدال Orderbook بـ Volume Delta من الشموع الصغرى (أدق ولا يمكن تزييفه)
-                candles_15m = await get_candles_gate(f"{symbol}_USDT", "15m", limit=30)
+                candles_15m = await get_candles_binance(f"{symbol}USDT", "15m", limit=30)
                 if candles_15m:
                     df_15m = pd.DataFrame(candles_15m).iloc[:, :6]
                     df_15m.columns = ["timestamp", "volume", "close", "high", "low", "open"]
@@ -1063,16 +1067,38 @@ def gate_sign(params: dict):
     return {}
 
 # --- جلب الشموع ---
-async def get_candles_gate(symbol: str, interval: str, limit: int = 500):
+async def get_candles_binance(symbol: str, interval: str, limit: int = 500):
+    """جلب الشموع من بايننس وترتيبها لتتطابق مع خوارزميات المؤشرات لديك"""
+    # بايننس لا تستخدم (_) في الرموز، يجب أن يكون BTCUSDT
+    clean_symbol = symbol.replace("_", "") 
+    
     async with httpx.AsyncClient() as client:
-        res = await client.get(GATE_BASE, params={
-            "currency_pair": symbol,
-            "interval": interval,
-            "limit": limit
-        })
-        if res.status_code == 200:
-            return res.json()
+        try:
+            res = await client.get(
+                f"{BINANCE_BASE}/klines",
+                params={"symbol": clean_symbol, "interval": interval, "limit": limit},
+                headers=BINANCE_HEADERS,
+                timeout=10
+            )
+            if res.status_code == 200:
+                data = res.json()
+                formatted_candles = []
+                for c in data:
+                    # تحويل صيغة بايننس إلى الصيغة التي يفهمها البوت
+                    formatted_candles.append([
+                        str(int(c[0] / 1000)), # timestamp (ثواني)
+                        c[5],                  # volume
+                        c[4],                  # close
+                        c[2],                  # high
+                        c[3],                  # low
+                        c[1]                   # open
+                    ])
+                return formatted_candles
+        except Exception as e:
+            print(f"Error fetching Binance candles for {clean_symbol}: {e}")
+            
         return None
+
 
 # --- حساب المؤشرات ---
 # ===== SMART INDICATORS =====
@@ -1298,8 +1324,10 @@ async def run_analysis(cb: types.CallbackQuery):
         gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
         candles = await get_candles_dex(network, pool_address, gate_interval, limit=500)
     else:
+        # بايننس تستخدم نفس مسميات الفريمات تقريباً
         gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
-        candles = await get_candles_gate(f"{clean_sym}_USDT", gate_interval, limit=500)
+        candles = await get_candles_binance(f"{clean_sym}USDT", gate_interval, limit=500)
+
 
     # ✅ بداية الإصلاح: إدخال الكود داخل الدالة بالمسافات الصحيحة
         # (داخل دالة run_analysis بعد تحويل df من الشموع)
