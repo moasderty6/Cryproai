@@ -342,21 +342,6 @@ async def ai_opportunity_radar(pool):
                     if current_adx > 50:
                         score -= (current_adx - 50) * 1.5
                     
- 
-                    # 4. الانضغاط السعري والتجميع
-                    if squeeze_pct < 0.10:
-                        squeeze_bonus = (0.10 - squeeze_pct) * 200 
-                        score += min(squeeze_bonus, 18.0)
-                        
-                    if silent_accumulation:
-                        vol_ratio = avg_vol_5 / avg_vol_20
-                        score += min(vol_ratio * 5, 15.0)
-                        if current_adx < 20:
-                            score += 15.0 # السوق نائم والحيتان تجمع! فرصة ذهبية
-
-                    # 5. عقاب الشراء في القمة (FOMO)
-                    if current_adx > 50:
-                        score -= (current_adx - 50) * 1.5
 
                     # فلترة متقدمة
                     if score >= 45: 
@@ -377,12 +362,24 @@ async def ai_opportunity_radar(pool):
                             score += min((buy_pressure - 1) * 10, 18.0)
 
                     # تقييد السكور
+                                        # تقييد السكور
                     score = round(max(0.0, min(score, 100.0)), 1)
+                    
+                    # حساب نسبة الفوليوم لتخزينها
+                    current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
 
                     if score > best_score:
                         best_score = score
                         best_coin = c
-                        best_meta = {"symbol": symbol, "price": price}
+                        best_meta = {
+                            "symbol": symbol, 
+                            "price": price,
+                            "rsi": round(last_rsi, 2) if not pd.isna(last_rsi) else 50.0,
+                            "adx": round(current_adx, 2),
+                            "macd": round(last_macd_diff, 4) if not pd.isna(last_macd_diff) else 0.0,
+                            "vol_ratio": round(current_vol_ratio, 2)
+                        }
+
 
 
                 # ====================================================
