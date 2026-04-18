@@ -54,6 +54,8 @@ bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTM
 dp = Dispatcher(storage=MemoryStorage())
 user_session_data = {}
 radar_pending_approvals = {}
+# ذاكرة لتسجيل العملات التي تم إرسالها اليوم لمنع تكرارها
+daily_signaled_coins = {}
 # --- وظائف قاعدة البيانات ---
 async def extend_user_subscription(db, user_id: int):
     # db هنا ممكن تكون pool أو conn، الاثنين فيهم execute
@@ -339,15 +341,37 @@ async def ai_opportunity_radar(pool):
                 results = await asyncio.gather(*tasks)
                 
                 # تصفية النتائج الفارغة وترتيبها حسب السكور
+                                import datetime # تأكد من عمل import datetime في أعلى الملف إذا لم تكن موجودة
+
+                # تصفية النتائج الفارغة وترتيبها حسب السكور
                 valid_signals = [r for r in results if r is not None]
                 valid_signals.sort(key=lambda x: x['score'], reverse=True)
 
-                if not valid_signals:
-                    print(f"😴 مسح مكتمل: لا يوجد فرص قوية (تتخطى 70). إعادة المحاولة...")
-                    await asyncio.sleep(60); continue
+                # --- 🟢 نظام الذاكرة لمنع تكرار العملة في نفس اليوم ---
+                today_date = datetime.date.today()
+                
+                # 1. تنظيف الذاكرة من عملات الأمس (حتى تتاح مرة أخرى في اليوم الجديد)
+                old_coins = [coin for coin, date_signaled in daily_signaled_coins.items() if date_signaled != today_date]
+                for coin in old_coins:
+                    del daily_signaled_coins[coin]
 
-                # نأخذ أفضل فرصة للتحليل (أو يمكنك تعديلها لترسل أول 3 فرص للأدمن)
-                best_meta = valid_signals[0]
+                # 2. فلترة القائمة واستبعاد العملات التي تم إرسالها اليوم
+                fresh_signals = [s for s in valid_signals if s['symbol'] not in daily_signaled_coins]
+
+                if not fresh_signals:
+                    print(f"😴 مسح مكتمل: الفرص القوية تم إرسالها مسبقاً اليوم أو لا يوجد فرص جديدة. إعادة المحاولة...")
+                    await asyncio.sleep(60)
+                    continue
+
+                # 3. نأخذ أفضل فرصة "جديدة" لم يتم إرسالها اليوم
+                best_meta = fresh_signals[0]
+                best_score = best_meta['score']
+                symbol = best_meta['symbol']
+                price = best_meta['price']
+
+                # 4. تسجيل العملة في ذاكرة اليوم حتى لا تتكرر في المسحات القادمة
+                daily_signaled_coins[symbol] = today_date
+                # ---------------------------------------------------
                 best_score = best_meta['score']
                 symbol = best_meta['symbol']
                 price = best_meta['price']
