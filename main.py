@@ -208,254 +208,175 @@ async def update_market_memory_loop(pool):
 
 import random
 
+async def analyze_radar_coin(c, client, is_btc_bullish, sem):
+    """دالة فرعية تفحص كل عملة بشكل متزامن"""
+    async with sem:  # تقييد الطلبات المتزامنة لحماية الـ API
+        try:
+            symbol = c["symbol"]
+            price = c["quote"]["USD"]["price"]
+            
+            candles = await get_candles_gate(f"{symbol}_USDT", "1h", limit=500)
+            if not candles: return None
+
+            df = pd.DataFrame(candles)
+            df = df.iloc[:, :6]
+            df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+            for col in ["close","high","low","open","volume"]:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+            last_rsi, last_macd_diff, last_bb, last_vol, high, low = compute_indicators(candles)
+
+            ema20_val = df["close"].ewm(span=20).mean().iloc[-1]
+            ema50_val = df["close"].ewm(span=50).mean().iloc[-1]
+            ema200_val = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else ema50_val
+            
+            # Anchored VWAP للرادار
+            df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
+            df['date'] = df['datetime'].dt.date
+            df['typical_vol'] = ((df['high'] + df['low'] + df['close']) / 3) * df['volume']
+            vwap_val = (df.groupby('date')['typical_vol'].cumsum() / df.groupby('date')['volume'].cumsum()).iloc[-1]
+
+            avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
+            avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
+            
+            silent_accumulation = (avg_vol_5 > avg_vol_20 * 1.2)
+            range_20 = df["high"].rolling(20).max() - df["low"].rolling(20).min()
+            squeeze_pct = range_20.iloc[-1] / price
+            
+            fake_move = (high - low) / price > 0.35
+            if fake_move: return None
+
+            try:
+                adx_ind = ta.trend.ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14, fillna=True)
+                current_adx = float(adx_ind.adx().iloc[-1])
+            except:
+                current_adx = 0.0
+
+            # --- Scoring System ---
+            score = 0.0
+            
+            if 35 <= last_rsi <= 65: score += 20 - abs(50 - last_rsi) * 0.5 
+            if last_macd_diff > 0: score += 10 + min(last_macd_diff * 100, 10.0)
+                
+            micro_bull = ema20_val > ema50_val
+            macro_bull = price > ema200_val
+            vwap_bull = price > vwap_val
+
+            if micro_bull and macro_bull and vwap_bull:
+                score += 20.0
+                if current_adx >= 25: score += min((current_adx - 20) * 0.8, 15.0)
+            elif micro_bull and not vwap_bull:
+                score -= 15.0 
+            elif not micro_bull and vwap_bull and current_adx < 25:
+                score += 12.0 
+
+            if squeeze_pct < 0.10: score += min((0.10 - squeeze_pct) * 200, 18.0)
+                
+            if silent_accumulation:
+                vol_ratio = avg_vol_5 / avg_vol_20
+                score += min(vol_ratio * 5, 15.0)
+                if current_adx < 20 and vwap_bull: score += 20.0 
+
+            if current_adx > 50: score -= (current_adx - 50) * 1.5
+
+            if score >= 45: 
+                if is_btc_bullish: score += 8.5
+                else: score -= 5.5 
+
+                # استبدال Orderbook بـ Volume Delta من الشموع الصغرى (أدق ولا يمكن تزييفه)
+                candles_15m = await get_candles_gate(f"{symbol}_USDT", "15m", limit=30)
+                if candles_15m:
+                    df_15m = pd.DataFrame(candles_15m).iloc[:, :6]
+                    df_15m.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+                    for col in ["close","open","volume"]: df_15m[col] = pd.to_numeric(df_15m[col])
+                    buy_vol = df_15m[df_15m["close"] > df_15m["open"]]["volume"].sum()
+                    sell_vol = df_15m[df_15m["close"] < df_15m["open"]]["volume"].sum()
+                    
+                    if sell_vol > 0 and (buy_vol / sell_vol) > 1.2:
+                        score += min(((buy_vol / sell_vol) - 1) * 10, 18.0)
+
+            score = round(max(0.0, min(score, 100.0)), 1)
+            current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
+
+            if score >= 70.0:  # نحتفظ فقط بالفرص الجدية
+                return {
+                    "symbol": symbol, "price": price, "score": score,
+                    "rsi": round(last_rsi, 2), "adx": round(current_adx, 2),
+                    "macd": round(last_macd_diff, 4), "vol_ratio": round(current_vol_ratio, 2)
+                }
+            return None
+        except Exception as e:
+            return None
+
+
 async def ai_opportunity_radar(pool):
-    print("🚀 تم تشغيل الرادار الشامل (مسح كامل للسوق)...")
+    print("🚀 تم تشغيل الرادار الشامل (مسح كامل ومتزامن للسوق)...")
     await asyncio.sleep(5)
+    
+    # الـ Semaphore سيسمح بـ 15 اتصال في نفس الوقت، مما يقلص وقت المسح لثوانٍ
+    sem = asyncio.Semaphore(15)
     
     while True:
         try:
-            print("🔍 جاري بدء دورة مسح جديدة لـ 250 عملة...")
+            print("🔍 جاري بدء دورة مسح متزامنة لـ 250 عملة...")
             headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
-            STABLE_COINS = {"USDT","USDC","BUSD","DAI","TUSD","FDUSD","USDP","GUSD","USDD","LUSD"}
+            STABLE_COINS = {"USDT","USDC","BUSD","DAI","TUSD","FDUSD"}
 
             async with httpx.AsyncClient(timeout=30) as client:
                 is_btc_bullish = await get_btc_trend(client)
-
                 res = await client.get(
                     "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
-                    headers=headers,
-                    params={"limit": "250"}
+                    headers=headers, params={"limit": "250"}
                 )
                 
                 if res.status_code != 200:
-                    await asyncio.sleep(30)
-                    continue
+                    await asyncio.sleep(30); continue
                     
-                coins = res.json()["data"]
+                coins = [c for c in res.json()["data"] if c["symbol"] not in STABLE_COINS and c["quote"]["USD"]["volume_24h"] >= 5_000_000 and abs(c["quote"]["USD"]["percent_change_24h"]) >= 0.4]
 
-                # متغيرات لحفظ أفضل عملة بعد انتهاء المسح بالكامل
-                best_coin = None
-                best_score = 0.0
-                best_meta = None
-
-                # ⚠️ المسح الكامل يبدأ هنا
-                for c in coins:
-                    symbol = c["symbol"]
-                    if symbol in STABLE_COINS: continue
-
-                    volume = c["quote"]["USD"]["volume_24h"]
-                    marketcap = c["quote"]["USD"]["market_cap"]
-                    change24 = c["quote"]["USD"]["percent_change_24h"]
-
-                    if volume < 5_000_000 or marketcap < 10_000_000: continue
-                    if abs(change24) < 0.4: continue
-
-                    price = c["quote"]["USD"]["price"]
-
-                    # 🛡️ حماية السيرفر: انتظار عشوائي متذبذب بين كل عملة وأخرى
-                    await asyncio.sleep(random.uniform(1.8, 3.5))
-
-                    candles = await get_candles_gate(f"{symbol}_USDT", "1h", limit=120)
-                    if not candles: continue
-
-                    df = pd.DataFrame(candles)
-                    df = df.iloc[:, :6]
-                    df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
-                    for col in ["close","high","low","open","volume"]:
-                        df[col] = pd.to_numeric(df[col], errors='coerce')
-
-                                        # ... (الكود السابق داخل حلقة for c in coins:) ...
-                    last_rsi, last_macd_diff, last_bb, last_vol, high, low = compute_indicators(candles)
-
-                    # 🌟 1. تجهيز مؤشرات التوافق (Alignment)
-                    ema20_val = df["close"].ewm(span=20).mean().iloc[-1]
-                    ema50_val = df["close"].ewm(span=50).mean().iloc[-1]
-                    ema200_val = df["close"].ewm(span=200).mean().iloc[-1]
-                    
-                    # 🌟 2. حساب VWAP للرادار لمعرفة تمركز السيولة
-                    df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
-                    df['vwap'] = (df['typical_price'] * df['volume']).cumsum() / df['volume'].cumsum()
-                    vwap_val = df['vwap'].iloc[-1]
-
-                    avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
-                    avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
-                    
-                    silent_accumulation = (avg_vol_5 > avg_vol_20 * 1.2)
-                    range_20 = df["high"].rolling(20).max() - df["low"].rolling(20).min()
-                    squeeze_pct = range_20.iloc[-1] / price
-                    
-                    fake_move = (high - low) / price > 0.35
-                    if fake_move: continue
-
-                    # 🌟 حساب ADX الحقيقي للرادار
-                    try:
-                        adx_ind = ta.trend.ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14, fillna=True)
-                        current_adx = float(adx_ind.adx().iloc[-1])
-                    except:
-                        current_adx = 0.0
-
-                    # ----------------------------------------------------
-                    # 🎯 الحساب الديناميكي الدقيق للسكور (Dynamic Scoring)
-                    # ----------------------------------------------------
-                    score = 0.0
-                    
-                    # 1. نقاط الـ RSI 
-                    if 35 <= last_rsi <= 65:
-                        score += 20 - abs(50 - last_rsi) * 0.5 
-                    
-                    # 2. نقاط الماكد
-                    if last_macd_diff > 0:
-                        score += 10 + min(last_macd_diff * 100, 10.0)
-                        
-                    # 🚀 3. فلتر التوافق والسيولة (سر الرادار الجديد)
-                    micro_bull = ema20_val > ema50_val
-                    macro_bull = price > ema200_val
-                    vwap_bull = price > vwap_val
-
-                    # حالة التوافق الكامل (Alignment): ترند صاعد والسيولة حقيقية
-                    if micro_bull and macro_bull and vwap_bull:
-                        score += 20.0
-                        if current_adx >= 25:
-                            score += min((current_adx - 20) * 0.8, 15.0) # ترند قوي ومدعوم!
-                    
-                    # كشف الفخ (Bull Trap): تقاطع صاعد لكن السعر تحت VWAP (لا توجد سيولة)
-                    elif micro_bull and not vwap_bull:
-                        score -= 15.0 # اخصم نقاط بقسوة، هذا اختراق كاذب
-                    
-                    # كشف التجميع الخفي: السعر عرضي (لا يوجد ترند واضح) لكنه متمركز فوق VWAP 
-                    elif not micro_bull and vwap_bull and current_adx < 25:
-                        score += 12.0 # الحيتان تجمع بهدوء قبل التقاطع!
-
-                    # 4. الانضغاط السعري والتجميع
-                    if squeeze_pct < 0.10:
-                        squeeze_bonus = (0.10 - squeeze_pct) * 200 
-                        score += min(squeeze_bonus, 18.0)
-                        
-                    if silent_accumulation:
-                        vol_ratio = avg_vol_5 / avg_vol_20
-                        score += min(vol_ratio * 5, 15.0)
-                        # دمج قوي: تجميع صامت + السعر فوق VWAP + ADX ميت = فرصة العمر قبل الانفجار
-                        if current_adx < 20 and vwap_bull:
-                            score += 20.0 
-
-                    # 5. عقاب الشراء في القمة (FOMO)
-                    if current_adx > 50:
-                        score -= (current_adx - 50) * 1.5
-                    
-
-                    # فلترة متقدمة
-                    if score >= 45: 
-                        if is_btc_bullish: score += 8.5
-                        else: score -= 5.5 
-
-                        candles_15m = await get_candles_gate(f"{symbol}_USDT", "15m", limit=30)
-                        if candles_15m:
-                            df_15m = pd.DataFrame(candles_15m).iloc[:, :6]
-                            df_15m.columns = ["timestamp", "volume", "close", "high", "low", "open"]
-                            for col in ["close","volume","open"]: df_15m[col] = pd.to_numeric(df_15m[col], errors='coerce')
-                            
-                            vol_15m_avg = df_15m["volume"].rolling(10).mean().iloc[-1]
-                            if df_15m["volume"].iloc[-1] > (vol_15m_avg * 1.5): score += 9.2
-
-                        buy_pressure = await get_orderbook_pressure(client, symbol)
-                        if buy_pressure > 1.2:
-                            score += min((buy_pressure - 1) * 10, 18.0)
-
-                    # تقييد السكور
-                                        # تقييد السكور
-                    score = round(max(0.0, min(score, 100.0)), 1)
-                    
-                    # حساب نسبة الفوليوم لتخزينها
-                    current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
-
-                    if score > best_score:
-                        best_score = score
-                        best_coin = c
-                        best_meta = {
-                            "symbol": symbol, 
-                            "price": price,
-                            "rsi": round(last_rsi, 2) if not pd.isna(last_rsi) else 50.0,
-                            "adx": round(current_adx, 2),
-                            "macd": round(last_macd_diff, 4) if not pd.isna(last_macd_diff) else 0.0,
-                            "vol_ratio": round(current_vol_ratio, 2)
-                        }
-
-
-
-                # ====================================================
-                # 🏆 تم انتهاء المسح بالكامل. الآن نقيم أفضل عملة وجدناها
-                # ====================================================
+                # ⚡ التشغيل المتزامن (Concurrency) لجميع العملات
+                tasks = [analyze_radar_coin(c, client, is_btc_bullish, sem) for c in coins]
+                results = await asyncio.gather(*tasks)
                 
-                if not best_coin or best_score < 60.0:
-                    print(f"😴 مسح مكتمل: أعلى سكور كان {best_score}. لا يوجد فرص قوية. إعادة المحاولة...")
-                    await asyncio.sleep(60) # راحة دقيقة ثم نعيد المسح
-                    continue
+                # تصفية النتائج الفارغة وترتيبها حسب السكور
+                valid_signals = [r for r in results if r is not None]
+                valid_signals.sort(key=lambda x: x['score'], reverse=True)
 
-                # 🔥 قائمة الإشارات الـ 10 الاحترافية بناءً على السكور الدقيق
-                if best_score >= 96.0:
-                    signal = "🌌 HYPER ACCUMULATION (Institutional Buy)"
-                elif best_score >= 92.0:
-                    signal = "🌋 IMMINENT PARABOLIC BREAKOUT"
-                elif best_score >= 88.0:
-                    signal = "🐋 WHALE WALLET ACTIVATION"
-                elif best_score >= 84.0:
-                    signal = "🚀 STRONG BULLISH MOMENTUM"
-                elif best_score >= 80.0:
-                    signal = "📈 GOLDEN CROSS COMPRESSION"
-                elif best_score >= 76.0:
-                    signal = "⚡ SMART MONEY FOOTPRINT"
-                elif best_score >= 72.0:
-                    signal = "🎯 HIGH PROBABILITY SETUP"
-                elif best_score >= 68.0:
-                    signal = "🔍 SILENT ACCUMULATION PHASE"
-                elif best_score >= 64.0:
-                    signal = "⏳ EARLY REVERSAL DETECTED"
-                else: # من 60 إلى 63.9
-                    signal = "🛡️ SUPPORT TESTING / BASE BUILDING"
+                if not valid_signals:
+                    print(f"😴 مسح مكتمل: لا يوجد فرص قوية (تتخطى 70). إعادة المحاولة...")
+                    await asyncio.sleep(60); continue
 
-                symbol = best_meta["symbol"]
-                price = best_meta["price"]
-                b_rsi = best_meta["rsi"]
-                b_adx = best_meta["adx"]
-                b_macd = best_meta["macd"]
-                b_vol = best_meta["vol_ratio"]
+                # نأخذ أفضل فرصة للتحليل (أو يمكنك تعديلها لترسل أول 3 فرص للأدمن)
+                best_meta = valid_signals[0]
+                best_score = best_meta['score']
+                symbol = best_meta['symbol']
+                price = best_meta['price']
 
-                # 🔥 البرومبت العربي الاحترافي
+                # تحديد قوة الإشارة
+                if best_score >= 90.0: signal = "🌌 HYPER ACCUMULATION (Institutional Buy)"
+                elif best_score >= 80.0: signal = "🐋 WHALE WALLET ACTIVATION"
+                elif best_score >= 75.0: signal = "⚡ SMART MONEY FOOTPRINT"
+                else: signal = "🎯 HIGH PROBABILITY SETUP"
+
+                # البرومبت كما هو في كودك...
                 prompt_ar = f"""
-أنت كبير المحللين الفنيين في "NaiF CHarT". رادار الذكاء الاصطناعي التقط فرصة تجميع وانفجار لعملة {symbol} بسكور {best_score}/100.
-اكتب تحليلاً احترافياً (من 3 إلى 4 أسطر كحد أقصى) بأسلوب حازم ومؤسساتي، ويجب أن تدمج هذه الأرقام في سياق تحليلك لتبدو خبيراً:
-- الإشارة: {signal}
-- مؤشر ADX للزخم: {b_adx} (القاعدة: إذا كان تحت 20 اشرح أن هذا يدل على تجميع صامت وهدوء يسبق الانفجار، وإذا كان فوق 25 أكد أنه ترند صاعد نشط وقوي).
-- مؤشر RSI: {b_rsi} (علق على استقرار المؤشر).
-- تضخم الفوليوم: السيولة أعلى بـ {b_vol} ضعف من المتوسط الطبيعي.
-لا تكتب أي مقدمات أو ترحيب، ابدأ التحليل الفني المباشر فوراً.
+أنت كبير المحللين الفنيين. رادار الذكاء الاصطناعي التقط فرصة لعملة {symbol} بسكور {best_score}/100.
+الإشارة: {signal} | ADX: {best_meta['adx']} | RSI: {best_meta['rsi']} | سيولة أعلى بـ {best_meta['vol_ratio']} ضعف.
+اكتب تحليلاً احترافياً (3 أسطر) يدمج هذه الأرقام مباشرة.
 """
-
-
-                # 🔥 البرومبت الإنجليزي الاحترافي
                 prompt_en = f"""
-You are the Lead Technical Analyst at "NaiF CHarT". The AI radar just caught a setup for {symbol} with a score of {best_score}/100.
-Write a highly professional analysis (max 3-4 lines) in an authoritative tone. You MUST seamlessly integrate these actual metrics into your analysis:
-- Phase: {signal}
-- ADX Metric: {b_adx} (Rule: If under 20, explain this indicates silent accumulation and the calm before a breakout. If over 25, confirm it is an active and strong trend).
-- RSI Metric: {b_rsi} (Comment on its neutrality or momentum).
-- Volume Surge: Liquidity is {b_vol}x higher than average.
-No introductions, jump straight into the technical analysis.
+You are Lead Technical Analyst. AI radar caught {symbol} with score {best_score}/100.
+Signal: {signal} | ADX: {best_meta['adx']} | RSI: {best_meta['rsi']} | Liquidity {best_meta['vol_ratio']}x higher.
+Write a 3-line professional analysis integrating these metrics.
 """
-
 
                 insight_ar = await ask_groq(prompt_ar, lang="ar")
                 insight_en = await ask_groq(prompt_en, lang="en")
 
-
                 signal_id = str(uuid.uuid4())[:8] 
                 radar_pending_approvals[signal_id] = {
-                    "symbol": symbol,
-                    "price": price,
-                    "signal": signal,
-                    "score": best_score,
-                    "insight_ar": insight_ar,
-                    "insight_en": insight_en
+                    "symbol": symbol, "price": price, "signal": signal, "score": best_score,
+                    "insight_ar": insight_ar, "insight_en": insight_en
                 }
 
                 admin_kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -465,27 +386,25 @@ No introductions, jump straight into the technical analysis.
 
                 admin_text = (
                     f"⚠️ <b>تنبيه أدمن: مسح السوق مكتمل 🔥</b>\n"
-                    f"━━━━━━━━━━━━━━\n"
                     f"🏆 <b>أفضل عملة:</b> #{symbol}\n"
                     f"💵 السعر: ${format_price(price)}\n"
                     f"⚡ الإشارة: {signal}\n"
                     f"📊 السكور: <b>{best_score}/100</b>\n\n"
-                    f"📝 <b>التحليل (عربي):</b>\n{insight_ar}\n\n"
-                    f"📝 <b>التحليل (إنجليزي):</b>\n{insight_en}\n"
-                    f"━━━━━━━━━━━━━━\n"
+                    f"📝 <b>التحليل:</b>\n{insight_ar}\n"
                     f"هل تريد الموافقة على نشرها؟"
                 )
 
                 try:
                     await bot.send_message(ADMIN_USER_ID, admin_text, reply_markup=admin_kb, parse_mode=ParseMode.HTML)
-                    print(f"✅ تم اصطياد أفضل عملة ({symbol} بسكور {best_score})! استراحة 3 دقائق قبل الدورة القادمة...")
-                    await asyncio.sleep(1200) # راحة للمنطق قبل بدء مسح جديد
+                    print(f"✅ تم اصطياد {symbol} بسكور {best_score}!")
+                    await asyncio.sleep(1200) # استراحة بعد إرسال التوصية
                 except Exception as e:
-                    print(f"Failed to send approval to admin: {e}")
+                    print(f"Failed to send to admin: {e}")
 
         except Exception as e:
             print(f"Radar Error: {e}")
             await asyncio.sleep(60)
+
 
         # تم تصحيح وقت الانتظار ليكون 6 ساعات بالضبط (6 * 60 * 60)
   # 6 ساعات # انتطار الدورة القادمة
@@ -957,7 +876,7 @@ async def search_dex_coin(symbol: str):
         print(f"DexScreener Error: {e}")
     return None
 
-async def get_candles_dex(network: str, pool_address: str, interval: str, limit: int = 120):
+async def get_candles_dex(network: str, pool_address: str, interval: str, limit: int = 500):
     """تجلب الشموع من GeckoTerminal وتعيد ترتيبها لتطابق تنسيق Gate.io"""
     if interval == "1d" or interval == "1w":
         timeframe = "day"
@@ -1115,7 +1034,7 @@ def gate_sign(params: dict):
     return {}
 
 # --- جلب الشموع ---
-async def get_candles_gate(symbol: str, interval: str, limit: int = 250):
+async def get_candles_gate(symbol: str, interval: str, limit: int = 500):
     async with httpx.AsyncClient() as client:
         res = await client.get(GATE_BASE, params={
             "currency_pair": symbol,
@@ -1177,7 +1096,6 @@ def detect_fake_breakout(df):
     return 0
 
 def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
-    # 1. حساب الـ ATR (للوقف والأهداف كما هو)
     df['prev_close'] = df['close'].shift(1)
     df['tr0'] = abs(df['high'] - df['low'])
     df['tr1'] = abs(df['high'] - df['prev_close'])
@@ -1189,17 +1107,26 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
         atr = current_price * 0.02 
     atr = min(atr, current_price * 0.10)
 
-    # ---------------------------------------------------------
-    # 🌟 2. حساب مؤشرات "الثالوث الذكي"
-    # ---------------------------------------------------------
+    # 🌟 2. حساب المؤشرات الهيكلية (بدون أخطاء رياضية)
     ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
     ema50 = df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
-    ema200 = df['close'].ewm(span=200, adjust=False).mean().iloc[-1] 
     
-    # حساب VWAP 
-    df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
-    df['vwap'] = (df['typical_price'] * df['volume']).cumsum() / df['volume'].cumsum()
-    vwap = df['vwap'].iloc[-1]
+    # تأمين حساب EMA200 (إذا لم يكن هناك بيانات كافية، نعتبر الترند الماكرو محايد)
+    if len(df) >= 200:
+        ema200 = df['close'].ewm(span=200, adjust=False).mean().iloc[-1] 
+        macro_bull = current_price > ema200
+    else:
+        macro_bull = current_price > ema50 # بديل مؤقت في حال نقص البيانات
+
+    # 🌟 حساب Anchored VWAP (مربوط ببداية اليوم - المؤسساتي الحقيقي)
+    df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
+    df['date'] = df['datetime'].dt.date
+    df['typical_volume'] = ((df['high'] + df['low'] + df['close']) / 3) * df['volume']
+    df['cum_vol'] = df.groupby('date')['volume'].cumsum()
+    df['cum_pv'] = df.groupby('date')['typical_volume'].cumsum()
+    df['anchored_vwap'] = df['cum_pv'] / df['cum_vol']
+    vwap_val = df['anchored_vwap'].iloc[-1]
+    vwap_bull = current_price > vwap_val
 
     # حساب ADX الحقيقي
     try:
@@ -1208,23 +1135,17 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
     except:
         real_adx_value = 0.0
 
-    # ---------------------------------------------------------
-    # 🧠 3. مصفوفة الدمج الفني (بنفس الكلمات الأصلية بدقة)
-    # ---------------------------------------------------------
     micro_bull = ema20 > ema50
-    macro_bull = current_price > ema200
-    vwap_bull = current_price > vwap
-
     trend_direction = "Bullish" if micro_bull else "Bearish"
 
     if real_adx_value < 20:
         trend_strength = "ضعيف"
-        market_action = "صراع سيولة وتجميع حول VWAP في نطاق عرضي"
+        market_action = "صراع سيولة وتجميع حول VWAP اليومي في نطاق عرضي"
     else: 
         if micro_bull:
             if macro_bull and vwap_bull:
                 trend_strength = "قوي" if real_adx_value >= 40 else ("قوي" if real_adx_value >= 25 else "جيد")
-                market_action = "دخول سيولة مؤسسية حقيقية (السعر مدعوم فوق VWAP)"
+                market_action = "دخول سيولة مؤسسية حقيقية (السعر مدعوم فوق VWAP الجلسة)"
             elif not macro_bull and vwap_bull:
                 trend_strength = "متوسط"
                 market_action = "سيولة شرائية لحظية تعاكس الاتجاه العام الهابط (ارتداد)"
@@ -1237,7 +1158,7 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
         else: # Bearish
             if not macro_bull and not vwap_bull:
                 trend_strength = "قوي" if real_adx_value >= 40 else ("قوي" if real_adx_value >= 25 else "جيد")
-                market_action = "تصريف مؤسسي قوي (السعر تحت VWAP)"
+                market_action = "تصريف مؤسسي قوي (السعر تحت VWAP الجلسة)"
             elif macro_bull and not vwap_bull:
                 trend_strength = "متوسط"
                 market_action = "جني أرباح طبيعي وتصحيح ضمن ترند صاعد عام"
@@ -1253,9 +1174,7 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
     elif db_vol_change < 15:
         market_action += " + فوليوم ميت 📉"
 
-    # ---------------------------------------------------------
-    # 🎯 4. حساب الأهداف والوقف 
-    # ---------------------------------------------------------
+    # حساب الأهداف بناءً على ATR
     min_allowed_price = current_price * 0.000001 
     if trend_direction == "Bearish":
         sl = max(current_price * 1.005, current_price + (atr * 1.5)) 
@@ -1268,11 +1187,11 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
         tp2 = max(tp1 * 1.005, current_price + (atr * 2.5)) 
         tp3 = max(tp2 * 1.005, current_price + (atr * 3.5)) 
 
-    support = df['low'].rolling(20).min().iloc[-1]
-    resistance = df['high'].rolling(20).max().iloc[-1]
+    # 🎯 دعم ومقاومة هيكلية (Swing High/Low لآخر 50 شمعة وليس 20)
+    support = df['low'].rolling(50).min().iloc[-1]
+    resistance = df['high'].rolling(50).max().iloc[-1]
 
     return trend_direction, trend_strength, market_action, real_adx_value, sl, tp1, tp2, tp3, support, resistance
-
 def compute_indicators(candles):
     df = pd.DataFrame(candles)
     df = df.iloc[:, :6] 
@@ -1348,10 +1267,10 @@ async def run_analysis(cb: types.CallbackQuery):
         network = data.get('network')
         pool_address = data.get('pool_address')
         gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
-        candles = await get_candles_dex(network, pool_address, gate_interval, limit=120)
+        candles = await get_candles_dex(network, pool_address, gate_interval, limit=500)
     else:
         gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
-        candles = await get_candles_gate(f"{clean_sym}_USDT", gate_interval, limit=250)
+        candles = await get_candles_gate(f"{clean_sym}_USDT", gate_interval, limit=500)
 
     # ✅ بداية الإصلاح: إدخال الكود داخل الدالة بالمسافات الصحيحة
         # (داخل دالة run_analysis بعد تحويل df من الشموع)
