@@ -423,24 +423,26 @@ async def ai_opportunity_radar(pool):
                 # 🔥 البرومبت العربي الاحترافي
                 prompt_ar = f"""
 أنت كبير المحللين الفنيين في "NaiF CHarT". رادار الذكاء الاصطناعي التقط فرصة تجميع وانفجار لعملة {symbol} بسكور {best_score}/100.
-اكتب تحليلاً احترافياً (من 3 إلى 4 أسطر كحد أقصى) تتوقع فيه صعود العملة وتؤكد على قوة الاتجاه، ويجب أن تذكر هذه الأرقام في سياق تحليلك لتبدو خبيراً:
+اكتب تحليلاً احترافياً (من 3 إلى 4 أسطر كحد أقصى) بأسلوب حازم ومؤسساتي، ويجب أن تدمج هذه الأرقام في سياق تحليلك لتبدو خبيراً:
 - الإشارة: {signal}
-- قوة الترند (ADX): {b_adx} (علق على هذا الرقم)
-- مؤشر الزخم (RSI): {b_rsi} (علق على هذا الرقم)
+- مؤشر ADX للزخم: {b_adx} (القاعدة: إذا كان تحت 20 اشرح أن هذا يدل على تجميع صامت وهدوء يسبق الانفجار، وإذا كان فوق 25 أكد أنه ترند صاعد نشط وقوي).
+- مؤشر RSI: {b_rsi} (علق على استقرار المؤشر).
 - تضخم الفوليوم: السيولة أعلى بـ {b_vol} ضعف من المتوسط الطبيعي.
-اكتب بأسلوب حازم ومؤسساتي، لا تكتب أي مقدمات أو ترحيب، ابدأ التحليل الفني المباشر فوراً.
+لا تكتب أي مقدمات أو ترحيب، ابدأ التحليل الفني المباشر فوراً.
 """
+
 
                 # 🔥 البرومبت الإنجليزي الاحترافي
                 prompt_en = f"""
-You are the Lead Technical Analyst at "NaiF CHarT". The AI radar just caught an imminent breakout setup for {symbol} with a score of {best_score}/100.
-Write a highly professional analysis (max 3-4 lines) predicting an upward movement and confirming the trend strength. You MUST seamlessly integrate these actual metrics into your analysis to sound data-driven:
+You are the Lead Technical Analyst at "NaiF CHarT". The AI radar just caught a setup for {symbol} with a score of {best_score}/100.
+Write a highly professional analysis (max 3-4 lines) in an authoritative tone. You MUST seamlessly integrate these actual metrics into your analysis:
 - Phase: {signal}
-- Trend Strength (ADX): {b_adx}
-- Momentum (RSI): {b_rsi}
+- ADX Metric: {b_adx} (Rule: If under 20, explain this indicates silent accumulation and the calm before a breakout. If over 25, confirm it is an active and strong trend).
+- RSI Metric: {b_rsi} (Comment on its neutrality or momentum).
 - Volume Surge: Liquidity is {b_vol}x higher than average.
-Write in an institutional, authoritative tone. No introductions, jump straight into the technical analysis.
+No introductions, jump straight into the technical analysis.
 """
+
 
                 insight_ar = await ask_groq(prompt_ar, lang="ar")
                 insight_en = await ask_groq(prompt_en, lang="en")
