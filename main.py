@@ -208,16 +208,17 @@ async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
     total_asks_usd = 0.0
 
     # ----- الطباعة في اللوغ -----
-    print(f"\n📊 --- تفاصيل الأوردر بوك لعملة {symbol} ---")
+        # ----- الطباعة في اللوغ -----
+    print(f"\n📊 --- تفاصيل الأوردر بوك لعملة {symbol} ---", flush=True)
     for exchange, bids, asks in results:
         total_bids_usd += bids
         total_asks_usd += asks
         # طباعة المنصات التي تحتوي على بيانات فقط لتجنب الإزعاج
         if bids > 0 or asks > 0:
-            print(f"🔹 {exchange.upper():<8}: Bids = ${bids:,.0f} | Asks = ${asks:,.0f}")
+            print(f"🔹 {exchange.upper():<8}: Bids = ${bids:,.0f} | Asks = ${asks:,.0f}", flush=True)
             
-    print(f"🌍 الإجمالي: Bids = ${total_bids_usd:,.0f} | Asks = ${total_asks_usd:,.0f}")
-    print("------------------------------------------\n")
+    print(f"🌍 الإجمالي: Bids = ${total_bids_usd:,.0f} | Asks = ${total_asks_usd:,.0f}", flush=True)
+    print("------------------------------------------\n", flush=True)
 
     if total_asks_usd == 0:
         return 999.0 if total_bids_usd > 0 else 1.0 
