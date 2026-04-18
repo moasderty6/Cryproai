@@ -9,6 +9,7 @@ import httpx
 import random
 import time
 import base64
+import pandas_ta as ta
 import pandas as pd
 import uuid
 import numpy as np
@@ -1128,17 +1129,35 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
     # 2. تحديد الاتجاه
     ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
     ema50 = df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
-
-    if ema20 >= ema50:
-        trend_direction = "Bullish"
-    else:
-        trend_direction = "Bearish"
+    trend_direction = "Bullish" if ema20 >= ema50 else "Bearish"
 
     distance_pct = abs(current_price - ema50) / ema50 * 100
     
-    # 🔥 3. كشف نوايا الحيتان بناءً على دمج الاتجاه مع الفوليوم التراكمي
+    # 🌟 3. الحل هنا: حساب الـ ADX الحقيقي باستخدام pandas_ta
+    try:
+        # تقوم pandas_ta بإنشاء 3 أعمدة: ADX_14, DMP_14, DMN_14
+        adx_df = df.ta.adx(length=14)
+        
+        # نأخذ القيمة الأخيرة من عمود ADX_14 ونحولها إلى رقم حقيقي
+        # نستخدم fillna(0) كحماية في حال كانت الشموع غير كافية
+        real_adx_value = float(adx_df['ADX_14'].fillna(0).iloc[-1])
+    except Exception as e:
+        print(f"ADX Calculation Error: {e}")
+        real_adx_value = 0.0 # قيمة احتياطية في حال فشل المكتبة
+
+    # 4. تحديد قوة الاتجاه الحقيقية بناءً على ADX الفعلي (وليس بناءً على مسافة السعر)
+    # في التحليل الفني: ADX فوق 25 يعني ترند قوي، تحت 20 يعني تذبذب عرضي
+    if real_adx_value >= 40:
+        trend_strength = "قوي"
+    elif real_adx_value >= 25:
+        trend_strength = "جيد"
+    elif real_adx_value >= 20:
+        trend_strength = "متوسط"
+    else:
+        trend_strength = "ضعيف"
+
+    # 5. كشف نوايا الحيتان (بدون تغيير على كودك السابق)
     market_action = "حركة طبيعية" 
-    
     if trend_direction == "Bearish" and distance_pct < 4 and db_vol_change > 60:
         market_action = "تجميع حيتان مخفي (Accumulation)"
     elif trend_direction == "Bullish" and distance_pct > 6 and db_vol_change > 100:
@@ -1150,54 +1169,28 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
     elif trend_direction == "Bearish" and db_vol_change > 60:
         market_action = "بيع هلع أو هبوط قوي (Panic Sell)"
 
-    # تحديد قوة الاتجاه
-    if "Fakeout" not in market_action:
-        if distance_pct >= 8:
-            trend_strength = "قوي"
-            adx_dummy = 45.0
-        elif distance_pct >= 4:
-            trend_strength = "جيد"
-            adx_dummy = 30.0
-        elif distance_pct >= 1.5:
-            trend_strength = "متوسط"
-            adx_dummy = 20.0
-        else:
-            trend_strength = "ضعيف"
-            adx_dummy = 12.0
-    else:
-        trend_strength = "ضعيف"
-        adx_dummy = 15.0
+    # إذا كان هناك اختراق كاذب، نعدل وصف قوة الاتجاه
+    if "Fakeout" in market_action:
+        trend_strength = "ضعيف ومخادع"
 
-    # 4. حساب الأهداف
+    # 6. حساب الأهداف والوقف (نفس كودك الممتاز الذي يعتمد على ATR)
     min_allowed_price = current_price * 0.000001 
-
     if trend_direction == "Bearish":
-        sl = current_price + (atr * 1.5)
-        tp1 = current_price - (atr * 1.5)
-        tp2 = current_price - (atr * 2.5)
-        tp3 = current_price - (atr * 3.5)
-        
-        sl = max(current_price * 1.005, sl) 
-        tp1 = min(current_price * 0.995, max(min_allowed_price, tp1)) 
-        tp2 = min(tp1 * 0.995, max(min_allowed_price, tp2)) 
-        tp3 = min(tp2 * 0.995, max(min_allowed_price, tp3)) 
+        sl = max(current_price * 1.005, current_price + (atr * 1.5)) 
+        tp1 = min(current_price * 0.995, max(min_allowed_price, current_price - (atr * 1.5))) 
+        tp2 = min(tp1 * 0.995, max(min_allowed_price, current_price - (atr * 2.5))) 
+        tp3 = min(tp2 * 0.995, max(min_allowed_price, current_price - (atr * 3.5))) 
     else:
-        sl = current_price - (atr * 1.5)
-        tp1 = current_price + (atr * 1.5)
-        tp2 = current_price + (atr * 2.5)
-        tp3 = current_price + (atr * 3.5)
-        
-        sl = max(min_allowed_price, sl) 
-        tp1 = max(current_price * 1.005, tp1) 
-        tp2 = max(tp1 * 1.005, tp2) 
-        tp3 = max(tp2 * 1.005, tp3) 
+        sl = max(min_allowed_price, current_price - (atr * 1.5)) 
+        tp1 = max(current_price * 1.005, current_price + (atr * 1.5)) 
+        tp2 = max(tp1 * 1.005, current_price + (atr * 2.5)) 
+        tp3 = max(tp2 * 1.005, current_price + (atr * 3.5)) 
 
     support = df['low'].rolling(20).min().iloc[-1]
     resistance = df['high'].rolling(20).max().iloc[-1]
 
-    return trend_direction, trend_strength, market_action, adx_dummy, sl, tp1, tp2, tp3, support, resistance
-
-
+    # إرجاع المتغيرات مع قيمة الـ ADX الحقيقية
+    return trend_direction, trend_strength, market_action, real_adx_value, sl, tp1, tp2, tp3, support, resistance
 
 def compute_indicators(candles):
     df = pd.DataFrame(candles)
