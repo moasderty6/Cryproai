@@ -974,7 +974,7 @@ async def handle_symbol(m: types.Message):
     
     status_msg = await m.answer("⏳ جاري جلب السعر..." if lang=="ar" else "⏳ Fetching price...")
 
-        try:
+    try:
         async with httpx.AsyncClient() as client:
             # بايننس تستخدم الرمز متصل بدون شرطة سفلية، مثلاً BTCUSDT
             pair = f"{sym}USDT" 
