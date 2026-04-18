@@ -231,7 +231,7 @@ async def analyze_radar_coin(c, client, is_btc_bullish, sem):
             ema200_val = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else ema50_val
             
             # Anchored VWAP للرادار
-            df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
+            df['datetime'] = pd.to_datetime(pd.to_numeric(df['timestamp']), unit='s')
             df['date'] = df['datetime'].dt.date
             df['typical_vol'] = ((df['high'] + df['low'] + df['close']) / 3) * df['volume']
             vwap_val = (df.groupby('date')['typical_vol'].cumsum() / df.groupby('date')['volume'].cumsum()).iloc[-1]
@@ -1119,7 +1119,7 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
         macro_bull = current_price > ema50 # بديل مؤقت في حال نقص البيانات
 
     # 🌟 حساب Anchored VWAP (مربوط ببداية اليوم - المؤسساتي الحقيقي)
-    df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
+    df['datetime'] = pd.to_datetime(pd.to_numeric(df['timestamp']), unit='s')
     df['date'] = df['datetime'].dt.date
     df['typical_volume'] = ((df['high'] + df['low'] + df['close']) / 3) * df['volume']
     df['cum_vol'] = df.groupby('date')['volume'].cumsum()
