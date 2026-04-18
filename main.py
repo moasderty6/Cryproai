@@ -360,13 +360,13 @@ async def ai_opportunity_radar(pool):
                     continue
 
                 if best_score >= 90:
-                    signal = "💣 PRE-PUMP ACCUMULATION (تجميع صامت قبل الانفجار)"
+                    signal = "💣 SMART MONEY"
                 elif best_score >= 80:
-                    signal = "🚀 READY TO BREAKOUT (جاهز للاختراق)"
+                    signal = "🚀 STRONG BREAKOUT"
                 elif best_score >= 70:
-                    signal = "🎯 SMART MONEY ENTRY (دخول أموال ذكية)"
+                    signal = "🎯 HIGH PROBABILITY"
                 else:
-                    signal = "⚡ EARLY SETUP (تجهيز مبكر)"
+                    signal = "⚡ EARLY SETUP"
 
                 symbol = best_meta["symbol"]
                 price = best_meta["price"]
