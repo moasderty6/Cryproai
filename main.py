@@ -255,32 +255,46 @@ async def analyze_radar_coin(c, client, is_btc_bullish, sem):
             except:
                 current_adx = 0.0
 
-            # --- Scoring System ---
+                        # --- Pro Scoring System ---
             score = 0.0
             
-            if 35 <= last_rsi <= 65: score += 20 - abs(50 - last_rsi) * 0.5 
+            # 1. RSI Momentum (تعديل اصطياد الزخم والقيعان)
+            if 60 < last_rsi < 75: 
+                score += 15.0 # زخم صاعد قوي بدأ للتو
+            elif last_rsi <= 30: 
+                score += 15.0 # تشبع بيعي قوي (فرصة صعود ارتدادي)
+            elif last_rsi >= 75:
+                score -= 10.0 # خطر التعليق في القمة
+                
+            # 2. MACD (من كودك الأصلي)
             if last_macd_diff > 0: score += 10 + min(last_macd_diff * 100, 10.0)
                 
+            # 3. Trend & VWAP (من كودك الأصلي)
             micro_bull = ema20_val > ema50_val
             macro_bull = price > ema200_val
             vwap_bull = price > vwap_val
 
             if micro_bull and macro_bull and vwap_bull:
                 score += 20.0
-                if current_adx >= 25: score += min((current_adx - 20) * 0.8, 15.0)
             elif micro_bull and not vwap_bull:
                 score -= 15.0 
             elif not micro_bull and vwap_bull and current_adx < 25:
                 score += 12.0 
 
+            # 4. ADX Filter (تعديل قوة الترند)
+            if current_adx >= 25: 
+                score += min((current_adx - 20) * 0.8, 15.0)
+            elif current_adx < 20:
+                score -= 5.0 # السوق عرضي ميت
+
+            # 5. Volatility & Accumulation (من كودك الأصلي)
             if squeeze_pct < 0.10: score += min((0.10 - squeeze_pct) * 200, 18.0)
                 
             if silent_accumulation:
                 vol_ratio = avg_vol_5 / avg_vol_20
                 score += min(vol_ratio * 5, 15.0)
-                if current_adx < 20 and vwap_bull: score += 20.0 
+                if current_adx < 20 and vwap_bull: score += 20.0 # تجميع هادئ جداً فوق VWAP
 
-            if current_adx > 50: score -= (current_adx - 50) * 1.5
 
             if score >= 45: 
                 if is_btc_bullish: score += 8.5
