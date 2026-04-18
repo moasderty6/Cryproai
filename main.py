@@ -148,71 +148,21 @@ async def get_btc_trend(client):
         pass
     return True # افتراضي في حال فشل الـ API
 
-async def get_multi_exchange_orderbook(client, symbol):
-    """جلب دفتر الأوامر من منصات صديقة للسيرفرات (MEXC, KuCoin, Gate) ودمجها لحساب السيولة"""
-    
-    # تنسيق الرموز لكل منصة
-    mexc_sym = f"{symbol}USDT"
-    kucoin_sym = f"{symbol}-USDT"
-    gate_sym = f"{symbol}_USDT"
-
-    # روابط الـ APIs الجديدة (MEXC و KuCoin لا تحظر السيرفرات الأمريكية غالباً)
-    urls = {
-        "mexc": f"https://api.mexc.com/api/v3/depth?symbol={mexc_sym}&limit=50",
-        "kucoin": f"https://api.kucoin.com/api/v1/market/orderbook/level2_20?symbol={kucoin_sym}",
-        "gate": f"https://api.gateio.ws/api/v4/spot/order_book?currency_pair={gate_sym}&limit=50"
-    }
-
-    async def fetch_ob(exchange, url):
-        try:
-            res = await client.get(url, timeout=3.0)
-            if res.status_code == 200:
-                return exchange, res.json()
-            else:
-                print(f"❌ خطأ في {exchange.upper()} لـ {symbol}: كود {res.status_code}")
-        except Exception as e:
-            print(f"⚠️ فشل الاتصال مع {exchange.upper()} لـ {symbol}: {e}")
-        return exchange, None
-
-    tasks = [fetch_ob(ex, url) for ex, url in urls.items()]
-    results = await asyncio.gather(*tasks)
-
-    total_bids = 0.0 
-    total_asks = 0.0 
-    ob_details = {}
-
-    for exchange, data in results:
-        if not data: continue
-        
-        bids = 0.0
-        asks = 0.0
-        try:
-            if exchange == "mexc":
-                # MEXC تستخدم نفس هيكل بايننس
-                bids = sum([float(b[1]) for b in data.get("bids", [])])
-                asks = sum([float(a[1]) for a in data.get("asks", [])])
-            elif exchange == "kucoin":
-                # KuCoin تضع البيانات داخل مفتاح data
-                ku_data = data.get("data", {})
-                bids = sum([float(b[1]) for b in ku_data.get("bids", [])])
-                asks = sum([float(a[1]) for a in ku_data.get("asks", [])])
-            elif exchange == "gate":
-                bids = sum([float(b[1]) for b in data.get("bids", [])])
-                asks = sum([float(a[1]) for a in data.get("asks", [])])
-                
-            total_bids += bids
-            total_asks += asks
-            ob_details[exchange] = f"Bids: {bids:.0f} | Asks: {asks:.0f}"
-            
-        except Exception as e:
-            print(f"Error parsing OB for {exchange}: {e}")
-
-    print(f"📊 دفتر أوامر {symbol}: MEXC({ob_details.get('mexc', 'فشل')}) | KuCoin({ob_details.get('kucoin', 'فشل')}) | Gate({ob_details.get('gate', 'فشل')})")
-
-    if total_asks == 0:
-        return 999.0 if total_bids > 0 else 1.0 
-        
-    return total_bids / total_asks
+async def get_orderbook_pressure(client, symbol):
+    """حساب ضغط الشراء من دفتر الأوامر (حيتان مخفية)"""
+    try:
+        res = await client.get("https://api.gateio.ws/api/v4/spot/order_book", params={
+            "currency_pair": f"{symbol}_USDT", "limit": 50
+        })
+        if res.status_code == 200:
+            data = res.json()
+            bids = sum([float(b[1]) for b in data.get("bids", [])]) 
+            asks = sum([float(a[1]) for a in data.get("asks", [])]) 
+            if asks == 0: return 999.0 # لمنع القسمة على صفر
+            return bids / asks
+    except:
+        pass
+    return 1.0
 
 
 async def update_market_memory_loop(pool):
