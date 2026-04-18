@@ -160,7 +160,6 @@ async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
     جلب ودمج الأوردر بوك من 6 منصات لقرائة ضغط الحيتان
     Binance, Bybit, Gate.io, KuCoin, OKX, MEXC
     """
-    # تهيئة اسم العملة حسب صيغة كل منصة
     sym_binance_mexc = f"{symbol}USDT"
     sym_gate = f"{symbol}_USDT"
     sym_kucoin_okx = f"{symbol}-USDT"
@@ -176,13 +175,11 @@ async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
 
     async def fetch_ob(exchange, url):
         try:
-            # مهلة 3 ثواني فقط حتى لا يتعطل الرادار إذا تعطلت إحدى المنصات
             res = await client.get(url, timeout=3.0) 
             if res.status_code == 200:
                 data = res.json()
                 bids_vol, asks_vol = 0.0, 0.0
                 
-                # حساب القيمة بالدولار (السعر × الكمية)
                 if exchange in ["binance", "mexc", "gate"]:
                     bids_vol = sum(float(b[0]) * float(b[1]) for b in data.get("bids", []))
                     asks_vol = sum(float(a[0]) * float(a[1]) for a in data.get("asks", []))
@@ -199,22 +196,32 @@ async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
                     bids_vol = sum(float(b[0]) * float(b[1]) for b in d.get("bids", []))
                     asks_vol = sum(float(a[0]) * float(a[1]) for a in d.get("asks", []))
 
-                return bids_vol, asks_vol
+                return exchange, bids_vol, asks_vol
         except:
-            pass # تجاهل المنصة إذا كانت العملة غير مدرجة فيها
-        return 0.0, 0.0
+            pass 
+        return exchange, 0.0, 0.0
 
-    # تنفيذ الطلبات الستة في نفس اللحظة
     tasks = [fetch_ob(ex, url) for ex, url in urls.items()]
     results = await asyncio.gather(*tasks)
 
-    total_bids_usd = sum(r[0] for r in results)
-    total_asks_usd = sum(r[1] for r in results)
+    total_bids_usd = 0.0
+    total_asks_usd = 0.0
+
+    # ----- الطباعة في اللوغ -----
+    print(f"\n📊 --- تفاصيل الأوردر بوك لعملة {symbol} ---")
+    for exchange, bids, asks in results:
+        total_bids_usd += bids
+        total_asks_usd += asks
+        # طباعة المنصات التي تحتوي على بيانات فقط لتجنب الإزعاج
+        if bids > 0 or asks > 0:
+            print(f"🔹 {exchange.upper():<8}: Bids = ${bids:,.0f} | Asks = ${asks:,.0f}")
+            
+    print(f"🌍 الإجمالي: Bids = ${total_bids_usd:,.0f} | Asks = ${total_asks_usd:,.0f}")
+    print("------------------------------------------\n")
 
     if total_asks_usd == 0:
         return 999.0 if total_bids_usd > 0 else 1.0 
     
-    # إرجاع نسبة ضغط الشراء العالمي
     return total_bids_usd / total_asks_usd
 
 
@@ -1311,9 +1318,19 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
         tp2 = max(tp1 * 1.005, current_price + (atr * 2.5)) 
         tp3 = max(tp2 * 1.005, current_price + (atr * 3.5)) 
 
-    # 🎯 دعم ومقاومة هيكلية (Swing High/Low لآخر 50 شمعة وليس 20)
-    support = df['low'].rolling(50).min().iloc[-1]
-    resistance = df['high'].rolling(50).max().iloc[-1]
+    try:
+        support = df['low'].rolling(window=50, min_periods=1).min().iloc[-1]
+        if pd.isna(support) or support <= 0:
+            support = current_price * 0.90 # حماية إضافية
+    except:
+        support = current_price * 0.90
+
+    try:
+        resistance = df['high'].rolling(window=50, min_periods=1).max().iloc[-1]
+        if pd.isna(resistance) or resistance <= 0:
+            resistance = current_price * 1.10 # حماية إضافية
+    except:
+        resistance = current_price * 1.10
 
     return trend_direction, trend_strength, market_action, real_adx_value, sl, tp1, tp2, tp3, support, resistance
 def compute_indicators(candles):
