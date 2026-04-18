@@ -319,7 +319,7 @@ async def ai_opportunity_radar(pool):
     # الـ Semaphore سيسمح بـ 15 اتصال في نفس الوقت، مما يقلص وقت المسح لثوانٍ
     sem = asyncio.Semaphore(15)
     
-        while True:
+    while True:
         try:
             print("🔍 جاري بدء دورة مسح متزامنة لـ 250 عملة...")
             headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
