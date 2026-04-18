@@ -9,7 +9,7 @@ import httpx
 import random
 import time
 import base64
-import pandas_ta as ta
+import ta
 import pandas as pd
 import uuid
 import numpy as np
@@ -1134,16 +1134,24 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
     distance_pct = abs(current_price - ema50) / ema50 * 100
     
     # 🌟 3. الحل هنا: حساب الـ ADX الحقيقي باستخدام pandas_ta
+    
+        # 🌟 3. حساب الـ ADX الحقيقي باستخدام مكتبة ta المستقرة
     try:
-        # تقوم pandas_ta بإنشاء 3 أعمدة: ADX_14, DMP_14, DMN_14
-        adx_df = df.ta.adx(length=14)
+        # إنشاء كائن مؤشر ADX
+        adx_indicator = ta.trend.ADXIndicator(
+            high=df['high'],
+            low=df['low'],
+            close=df['close'],
+            window=14,
+            fillna=True # حماية من قيم NaN
+        )
         
-        # نأخذ القيمة الأخيرة من عمود ADX_14 ونحولها إلى رقم حقيقي
-        # نستخدم fillna(0) كحماية في حال كانت الشموع غير كافية
-        real_adx_value = float(adx_df['ADX_14'].fillna(0).iloc[-1])
+        # استخراج القيمة الأخيرة لخط ADX
+        real_adx_value = float(adx_indicator.adx().iloc[-1])
+        
     except Exception as e:
         print(f"ADX Calculation Error: {e}")
-        real_adx_value = 0.0 # قيمة احتياطية في حال فشل المكتبة
+        real_adx_value = 0.0 # قيمة احتياطية في حال فشل الحساب
 
     # 4. تحديد قوة الاتجاه الحقيقية بناءً على ADX الفعلي (وليس بناءً على مسافة السعر)
     # في التحليل الفني: ADX فوق 25 يعني ترند قوي، تحت 20 يعني تذبذب عرضي
