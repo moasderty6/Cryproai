@@ -1192,7 +1192,7 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
     else: 
         if micro_bull:
             if macro_bull and vwap_bull:
-                trend_strength = "قوي جداً" if real_adx_value >= 40 else ("قوي" if real_adx_value >= 25 else "جيد")
+                trend_strength = "قوي" if real_adx_value >= 40 else ("قوي" if real_adx_value >= 25 else "جيد")
                 market_action = "دخول سيولة مؤسسية حقيقية (السعر مدعوم فوق VWAP)"
             elif not macro_bull and vwap_bull:
                 trend_strength = "متوسط"
@@ -1205,7 +1205,7 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
                 market_action = "فخ مشتريات (Bull Trap) للتعليق في القمة"
         else: # Bearish
             if not macro_bull and not vwap_bull:
-                trend_strength = "قوي جداً" if real_adx_value >= 40 else ("قوي" if real_adx_value >= 25 else "جيد")
+                trend_strength = "قوي" if real_adx_value >= 40 else ("قوي" if real_adx_value >= 25 else "جيد")
                 market_action = "تصريف مؤسسي قوي (السعر تحت VWAP)"
             elif macro_bull and not vwap_bull:
                 trend_strength = "متوسط"
