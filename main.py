@@ -229,7 +229,7 @@ async def update_market_memory_loop(pool):
                 res = await client.get(
                     "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
                     headers=headers,
-                    params={"limit": "250"} # جلب أهم 250 عملة
+                    params={"limit": "5000"} # جلب أهم 250 عملة
                 )
                 
                 if res.status_code == 200:
