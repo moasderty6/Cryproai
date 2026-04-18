@@ -148,21 +148,62 @@ async def get_btc_trend(client):
         pass
     return True # افتراضي في حال فشل الـ API
 
-async def get_orderbook_pressure(client, symbol):
-    """حساب ضغط الشراء من دفتر الأوامر (حيتان مخفية)"""
-    try:
-        res = await client.get("https://api.gateio.ws/api/v4/spot/order_book", params={
-            "currency_pair": f"{symbol}_USDT", "limit": 50
-        })
-        if res.status_code == 200:
-            data = res.json()
-            bids = sum([float(b[1]) for b in data.get("bids", [])]) # قوة الدعم (الشراء)
-            asks = sum([float(a[1]) for a in data.get("asks", [])]) # قوة المقاومة (البيع)
-            if asks == 0: return 1.0
-            return bids / asks
-    except:
-        pass
-    return 1.0
+async def get_multi_exchange_orderbook(client, symbol):
+    """جلب دفتر الأوامر من بينانس، بايبيت، وجيت آي أو ودمجها لحساب السيولة العالمية"""
+    
+    # تنسيق الرموز لكل منصة (لأن كل منصة لها طريقة كتابة مختلفة)
+    binance_sym = f"{symbol}USDT"
+    bybit_sym = f"{symbol}USDT"
+    gate_sym = f"{symbol}_USDT"
+
+    # إعداد روابط الـ APIs المباشرة والمجانية
+    urls = {
+        "binance": f"https://api.binance.com/api/v3/depth?symbol={binance_sym}&limit=50",
+        "bybit": f"https://api.bybit.com/v5/market/orderbook?category=spot&symbol={bybit_sym}&limit=50",
+        "gate": f"https://api.gateio.ws/api/v4/spot/order_book?currency_pair={gate_sym}&limit=50"
+    }
+
+    # دالة داخلية لجلب البيانات بسرعة مع تجاهل الأخطاء (لو منصة معلقة ما يوقف البوت)
+    async def fetch_ob(exchange, url):
+        try:
+            res = await client.get(url, timeout=3.0) # مهلة 3 ثواني كحد أقصى
+            if res.status_code == 200:
+                return exchange, res.json()
+        except:
+            pass
+        return exchange, None
+
+    # 🔥 هنا السر: تشغيل الـ 3 طلبات في نفس اللحظة (Concurrent) وليس بالدور
+    tasks = [fetch_ob(ex, url) for ex, url in urls.items()]
+    results = await asyncio.gather(*tasks)
+
+    total_bids = 0.0 # قوة الشراء العالمية
+    total_asks = 0.0 # قوة البيع العالمية
+
+    for exchange, data in results:
+        if not data: continue
+        
+        try:
+            # استخراج الكميات بناءً على هيكل بيانات كل منصة
+            if exchange == "binance":
+                total_bids += sum([float(b[1]) for b in data.get("bids", [])])
+                total_asks += sum([float(a[1]) for a in data.get("asks", [])])
+            elif exchange == "bybit":
+                result = data.get("result", {})
+                total_bids += sum([float(b[1]) for b in result.get("b", [])])
+                total_asks += sum([float(a[1]) for a in result.get("a", [])])
+            elif exchange == "gate":
+                total_bids += sum([float(b[1]) for b in data.get("bids", [])])
+                total_asks += sum([float(a[1]) for a in data.get("asks", [])])
+        except Exception as e:
+            print(f"Error parsing OB for {exchange}: {e}")
+
+    # جدار الحماية الرياضي
+    if total_asks == 0:
+        return 999.0 if total_bids > 0 else 1.0 # طلبات شراء بدون بيع = انفجار
+        
+    return total_bids / total_asks # النسبة النهائية للسيولة العالمية
+
 
 async def update_market_memory_loop(pool):
     """مهمة خلفية لتحديث ذاكرة السوق لكل العملات بشكل دوري"""
@@ -310,7 +351,8 @@ async def ai_opportunity_radar(pool):
                 if score >= 45: # تصفية للعملات الضعيفة قبل استهلاك الـ API
                     if is_btc_bullish: score += 5
                     
-                    buy_pressure = await get_orderbook_pressure(client, symbol)
+                    buy_pressure = await get_multi_exchange_orderbook(client, symbol)
+
                     # نقاط ديناميكية لدفتر الأوامر (حد أقصى 20)
                     if buy_pressure > 1.2:
                         ob_score = min(20, (buy_pressure - 1) * 8)
