@@ -375,91 +375,123 @@ async def analyze_radar_coin(c, client, is_btc_bullish, sem):
 
 
 async def ai_opportunity_radar(pool):
-    print("🚀 تم تشغيل الرادار الشامل (مسح كامل ومتزامن للسوق)...")
-    await asyncio.sleep(5)
+    print("🚀 تم تشغيل الرادار الشامل (مسحة واحدة بناءً على طلب الأدمن)...")
     
-    # الـ Semaphore سيسمح بـ 15 اتصال في نفس الوقت، مما يقلص وقت المسح لثوانٍ
+    # الـ Semaphore سيسمح بـ 15 اتصال في نفس الوقت
     sem = asyncio.Semaphore(15)
     
-    while True:
-        try:
-            print("🔍 جاري بدء دورة مسح متزامنة لـ 250 عملة...")
-            headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
-            STABLE_COINS = {"USDT","USDC","BUSD","DAI","TUSD","FDUSD"}
+    try:
+        print("🔍 جاري بدء دورة مسح متزامنة لـ 250 عملة...")
+        headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
+        STABLE_COINS = {"USDT","USDC","BUSD","DAI","TUSD","FDUSD"}
 
-            # 🟢 1. جلب العملات التي ظهرت في آخر 7 أيام لتجاهلها
+        # 🟢 1. جلب العملات التي ظهرت في آخر 7 أيام لتجاهلها
+        async with pool.acquire() as conn:
+            records = await conn.fetch("""
+                SELECT symbol FROM radar_history 
+                WHERE last_signaled > CURRENT_TIMESTAMP - INTERVAL '7 days'
+            """)
+            ignored_symbols = {r['symbol'] for r in records}
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            is_btc_bullish = await get_btc_trend(client)
+            res = await client.get(
+                "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
+                headers=headers, params={"limit": "250"}
+            )
+            
+            if res.status_code != 200:
+                await bot.send_message(ADMIN_USER_ID, "❌ فشل الاتصال بـ CoinMarketCap. جرب مرة أخرى لاحقاً.")
+                return
+            
+            # 🟢 2. فلترة العملات
+            coins = [
+                c for c in res.json()["data"] 
+                if c["symbol"] not in STABLE_COINS 
+                and c["symbol"] not in ignored_symbols
+                and c["quote"]["USD"]["volume_24h"] >= 5_000_000 
+                and abs(c["quote"]["USD"]["percent_change_24h"]) >= 0.4
+            ]
+
+            # ⚡ التشغيل المتزامن (Concurrency)
+            tasks = [analyze_radar_coin(c, client, is_btc_bullish, sem) for c in coins]
+            results = await asyncio.gather(*tasks)
+            
+            # تصفية النتائج
+            valid_signals = [r for r in results if r is not None]
+            valid_signals.sort(key=lambda x: x['score'], reverse=True)
+
+            if not valid_signals:
+                print("😴 مسح مكتمل: لا يوجد فرص قوية.")
+                await bot.send_message(ADMIN_USER_ID, "😴 <b>مسح مكتمل:</b>\nلم يتم العثور على فرص قوية تتجاوز السكور المطلوب حالياً، أو أن جميع الفرص الجيدة موجودة مسبقاً في الذاكرة.", parse_mode=ParseMode.HTML)
+                return
+
+            # أخذ أفضل فرصة
+            best_meta = valid_signals[0]
+            best_score = best_meta['score']
+            symbol = best_meta['symbol']
+            price = best_meta['price']
+
+            # 🟢 3. إدراج العملة الفائزة في قاعدة البيانات
             async with pool.acquire() as conn:
-                records = await conn.fetch("""
-                    SELECT symbol FROM radar_history 
-                    WHERE last_signaled > CURRENT_TIMESTAMP - INTERVAL '7 days'
-                """)
-                ignored_symbols = {r['symbol'] for r in records}
+                await conn.execute("""
+                    INSERT INTO radar_history (symbol, last_signaled)
+                    VALUES ($1, CURRENT_TIMESTAMP)
+                    ON CONFLICT (symbol) DO UPDATE
+                    SET last_signaled = CURRENT_TIMESTAMP
+                """, symbol)
 
-            async with httpx.AsyncClient(timeout=30) as client:
-                is_btc_bullish = await get_btc_trend(client)
-                res = await client.get(
-                    "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
-                    headers=headers, params={"limit": "250"}
-                )
-                
-                if res.status_code != 200:
-                    await asyncio.sleep(30); continue
-                
-                # 🟢 2. فلترة العملات: استبعاد المستقرة + استبعاد العملات التي ظهرت في آخر أسبوع
-                coins = [
-                    c for c in res.json()["data"] 
-                    if c["symbol"] not in STABLE_COINS 
-                    and c["symbol"] not in ignored_symbols # الفلتر الجديد
-                    and c["quote"]["USD"]["volume_24h"] >= 5_000_000 
-                    and abs(c["quote"]["USD"]["percent_change_24h"]) >= 0.4
-                ]
+            # تحديد قوة الإشارة
+            if best_score >= 90.0: signal = "🌌 HYPER ACCUMULATION"
+            elif best_score >= 80.0: signal = "🐋 WHALE WALLET ACTIVATION"
+            elif best_score >= 75.0: signal = "⚡ SMART MONEY"
+            else: signal = "🎯 HIGH PROBABILITY"
 
-                # ⚡ التشغيل المتزامن (Concurrency) لجميع العملات
-                tasks = [analyze_radar_coin(c, client, is_btc_bullish, sem) for c in coins]
-                results = await asyncio.gather(*tasks)
-                
-                # تصفية النتائج الفارغة وترتيبها حسب السكور
-                valid_signals = [r for r in results if r is not None]
-                valid_signals.sort(key=lambda x: x['score'], reverse=True)
-
-                if not valid_signals:
-                    print(f"😴 مسح مكتمل: لا يوجد فرص قوية أو جميع الفرص تم اصطيادها مسبقاً. إعادة المحاولة...")
-                    await asyncio.sleep(60); continue
-
-                # نأخذ أفضل فرصة
-                best_meta = valid_signals[0]
-                best_score = best_meta['score']
-                symbol = best_meta['symbol']
-                price = best_meta['price']
-
-                # 🟢 3. إدراج العملة الفائزة في قاعدة البيانات لبدء عداد الأسبوع
-                async with pool.acquire() as conn:
-                    await conn.execute("""
-                        INSERT INTO radar_history (symbol, last_signaled)
-                        VALUES ($1, CURRENT_TIMESTAMP)
-                        ON CONFLICT (symbol) DO UPDATE
-                        SET last_signaled = CURRENT_TIMESTAMP
-                    """, symbol)
-
-                # تحديد قوة الإشارة (تكملة كودك كما هو...)
-                if best_score >= 90.0: signal = "🌌 HYPER ACCUMULATION"
-                elif best_score >= 80.0: signal = "🐋 WHALE WALLET ACTIVATION"
-                elif best_score >= 75.0: signal = "⚡ SMART MONEY"
-                else: signal = "🎯 HIGH PROBABILITY"
-
-                # البرومبت كما هو في كودك...
-                prompt_ar = f"""
+            # إنشاء البرومبت للذكاء الاصطناعي
+            prompt_ar = f"""
 أنت كبير المحللين الفنيين. رادار الذكاء الاصطناعي التقط فرصة لعملة {symbol} بسكور {best_score}/100.
 الإشارة: {signal} | ADX: {best_meta['adx']} | RSI: {best_meta['rsi']} | سيولة أعلى بـ {best_meta['vol_ratio']} ضعف.
-ضغط الشراء العالمي (Orderbook 6 Exchanges): طلبات الشراء تتفوق بـ {best_meta['ob_pressure']} ضعف عن البيع.
+ضغط الشراء العالمي (Orderbook): طلبات الشراء تتفوق بـ {best_meta.get('ob_pressure', 1.0)} ضعف.
 اكتب تحليلاً احترافياً (3 أسطر) يدمج هذه الأرقام مباشرة.
 """
-                prompt_en = f"""
+            prompt_en = f"""
 You are Lead Technical Analyst. AI radar caught {symbol} with score {best_score}/100.
 Signal: {signal} | ADX: {best_meta['adx']} | RSI: {best_meta['rsi']} | Liquidity {best_meta['vol_ratio']}x higher.
-Global Buy Pressure (6 Exchanges Orderbook): Buy bids are {best_meta['ob_pressure']}x stronger than asks.
+Global Buy Pressure (Orderbook): Buy bids are {best_meta.get('ob_pressure', 1.0)}x stronger.
 Write a 3-line professional analysis integrating these metrics.
 """
+
+            insight_ar = await ask_groq(prompt_ar, lang="ar")
+            insight_en = await ask_groq(prompt_en, lang="en")
+
+            signal_id = str(uuid.uuid4())[:8] 
+            radar_pending_approvals[signal_id] = {
+                "symbol": symbol, "price": price, "signal": signal, "score": best_score,
+                "insight_ar": insight_ar, "insight_en": insight_en
+            }
+
+            admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ موافقة ونشر للمشتركين", callback_data=f"rad_app_{signal_id}")],
+                [InlineKeyboardButton(text="❌ إلغاء وتجاهل", callback_data=f"rad_rej_{signal_id}")]
+            ])
+
+            admin_text = (
+                f"⚠️ <b>تنبيه أدمن: مسح السوق مكتمل 🔥</b>\n"
+                f"🏆 <b>أفضل عملة:</b> #{symbol}\n"
+                f"💵 السعر: ${format_price(price)}\n"
+                f"⚡ الإشارة: {signal}\n"
+                f"📊 السكور: <b>{best_score}/100</b>\n\n"
+                f"📝 <b>التحليل:</b>\n{insight_ar}\n"
+                f"هل تريد الموافقة على نشرها؟"
+            )
+
+            await bot.send_message(ADMIN_USER_ID, admin_text, reply_markup=admin_kb, parse_mode=ParseMode.HTML)
+            print(f"✅ تم اصطياد {symbol} بسكور {best_score}!")
+
+    except Exception as e:
+        print(f"Radar Error: {e}")
+        await bot.send_message(ADMIN_USER_ID, f"⚠️ حدث خطأ في الرادار: {e}")
+
 
 
                 insight_ar = await ask_groq(prompt_ar, lang="ar")
@@ -800,6 +832,19 @@ async def minus_month_btn(cb: types.CallbackQuery):
             await cb.message.edit_text(f"✅ <b>تم الخصم!</b>\nتم خصم 30 يوم بنجاح من المستخدم: <code>{target_id}</code>\n📅 تاريخ الانتهاء الجديد: {new_date.strftime('%Y-%m-%d')}")
         else:
             await cb.message.edit_text(f"❌ المستخدم <code>{target_id}</code> غير موجود في جدول المشتركين!")
+
+@dp.message(Command("clear_radar"))
+async def clear_radar_memory_cmd(m: types.Message):
+    # التأكد أن الأمر للأدمن فقط
+    if m.from_user.id != ADMIN_USER_ID:
+        return await m.answer("❌ لا تملك صلاحية استخدام هذا الأمر.")
+    
+    pool = dp['db_pool']
+    async with pool.acquire() as conn:
+        # مسح جميع العملات المسجلة في الذاكرة
+        await conn.execute("DELETE FROM radar_history")
+    
+    await m.answer("🧹 <b>تم تنظيف ذاكرة الرادار بنجاح!</b>\nالرادار الآن جاهز لاصطياد أي عملة قوية حتى لو قام بإرسالها مسبقاً في الأيام الماضية.", parse_mode=ParseMode.HTML)
 
 @dp.message(Command("sendphoto"))
 async def send_photo_to_trials(m: types.Message):
