@@ -319,11 +319,19 @@ async def ai_opportunity_radar(pool):
     # الـ Semaphore سيسمح بـ 15 اتصال في نفس الوقت، مما يقلص وقت المسح لثوانٍ
     sem = asyncio.Semaphore(15)
     
-    while True:
+        while True:
         try:
             print("🔍 جاري بدء دورة مسح متزامنة لـ 250 عملة...")
             headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
             STABLE_COINS = {"USDT","USDC","BUSD","DAI","TUSD","FDUSD"}
+
+            # 🟢 1. جلب العملات التي ظهرت في آخر 7 أيام لتجاهلها
+            async with pool.acquire() as conn:
+                records = await conn.fetch("""
+                    SELECT symbol FROM radar_history 
+                    WHERE last_signaled > CURRENT_TIMESTAMP - INTERVAL '7 days'
+                """)
+                ignored_symbols = {r['symbol'] for r in records}
 
             async with httpx.AsyncClient(timeout=30) as client:
                 is_btc_bullish = await get_btc_trend(client)
@@ -334,54 +342,48 @@ async def ai_opportunity_radar(pool):
                 
                 if res.status_code != 200:
                     await asyncio.sleep(30); continue
-                    
-                coins = [c for c in res.json()["data"] if c["symbol"] not in STABLE_COINS and c["quote"]["USD"]["volume_24h"] >= 5_000_000 and abs(c["quote"]["USD"]["percent_change_24h"]) >= 0.4]
+                
+                # 🟢 2. فلترة العملات: استبعاد المستقرة + استبعاد العملات التي ظهرت في آخر أسبوع
+                coins = [
+                    c for c in res.json()["data"] 
+                    if c["symbol"] not in STABLE_COINS 
+                    and c["symbol"] not in ignored_symbols # الفلتر الجديد
+                    and c["quote"]["USD"]["volume_24h"] >= 5_000_000 
+                    and abs(c["quote"]["USD"]["percent_change_24h"]) >= 0.4
+                ]
 
                 # ⚡ التشغيل المتزامن (Concurrency) لجميع العملات
                 tasks = [analyze_radar_coin(c, client, is_btc_bullish, sem) for c in coins]
                 results = await asyncio.gather(*tasks)
                 
                 # تصفية النتائج الفارغة وترتيبها حسب السكور
-                                 # تأكد من عمل import datetime في أعلى الملف إذا لم تكن موجودة
-
-                # تصفية النتائج الفارغة وترتيبها حسب السكور
                 valid_signals = [r for r in results if r is not None]
                 valid_signals.sort(key=lambda x: x['score'], reverse=True)
 
-                # --- 🟢 نظام الذاكرة لمنع تكرار العملة في نفس اليوم ---
-                today_date = datetime.date.today()
-                
-                # 1. تنظيف الذاكرة من عملات الأمس (حتى تتاح مرة أخرى في اليوم الجديد)
-                old_coins = [coin for coin, date_signaled in daily_signaled_coins.items() if date_signaled != today_date]
-                for coin in old_coins:
-                    del daily_signaled_coins[coin]
+                if not valid_signals:
+                    print(f"😴 مسح مكتمل: لا يوجد فرص قوية أو جميع الفرص تم اصطيادها مسبقاً. إعادة المحاولة...")
+                    await asyncio.sleep(60); continue
 
-                # 2. فلترة القائمة واستبعاد العملات التي تم إرسالها اليوم
-                fresh_signals = [s for s in valid_signals if s['symbol'] not in daily_signaled_coins]
-
-                if not fresh_signals:
-                    print(f"😴 مسح مكتمل: الفرص القوية تم إرسالها مسبقاً اليوم أو لا يوجد فرص جديدة. إعادة المحاولة...")
-                    await asyncio.sleep(60)
-                    continue
-
-                # 3. نأخذ أفضل فرصة "جديدة" لم يتم إرسالها اليوم
-                best_meta = fresh_signals[0]
+                # نأخذ أفضل فرصة
+                best_meta = valid_signals[0]
                 best_score = best_meta['score']
                 symbol = best_meta['symbol']
                 price = best_meta['price']
 
-                # 4. تسجيل العملة في ذاكرة اليوم حتى لا تتكرر في المسحات القادمة
-                daily_signaled_coins[symbol] = today_date
-                # ---------------------------------------------------
-                best_score = best_meta['score']
-                symbol = best_meta['symbol']
-                price = best_meta['price']
+                # 🟢 3. إدراج العملة الفائزة في قاعدة البيانات لبدء عداد الأسبوع
+                async with pool.acquire() as conn:
+                    await conn.execute("""
+                        INSERT INTO radar_history (symbol, last_signaled)
+                        VALUES ($1, CURRENT_TIMESTAMP)
+                        ON CONFLICT (symbol) DO UPDATE
+                        SET last_signaled = CURRENT_TIMESTAMP
+                    """, symbol)
 
-                # تحديد قوة الإشارة
-                if best_score >= 90.0: signal = "🌌 HYPER ACCUMULATION (Institutional Buy)"
+                # تحديد قوة الإشارة (تكملة كودك كما هو...)
+                if best_score >= 90.0: signal = "🌌 HYPER ACCUMULATION"
                 elif best_score >= 80.0: signal = "🐋 WHALE WALLET ACTIVATION"
-                elif best_score >= 75.0: signal = "⚡ SMART MONEY FOOTPRINT"
-                else: signal = "🎯 HIGH PROBABILITY SETUP"
+                elif best_score >= 75.0: signal = "⚡ SMART MONEY"
+                else: signal = "🎯 HIGH PROBABILITY"
 
                 # البرومبت كما هو في كودك...
                 prompt_ar = f"""
@@ -1613,6 +1615,14 @@ async def on_startup(app):
                 market_phase TEXT,
                 volume_change TEXT,
                 last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+             
+        # 🟢 الجديد: إنشاء جدول تتبع العملات المكتشفة في الرادار
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS radar_history (
+                symbol TEXT PRIMARY KEY,
+                last_signaled TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         # 2. إجبار تحديث الجداول القديمة (للمشتركين الحاليين)
