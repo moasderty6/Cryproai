@@ -149,7 +149,7 @@ async def get_btc_trend(client):
     return True # افتراضي في حال فشل الـ API
 
 async def get_multi_exchange_orderbook(client, symbol):
-    """جلب دفتر الأوامر من بينانس، بايبيت، وجيت آي أو ودمجها لحساب السيولة العالمية"""
+    """جلب دفتر الأوامر من بينانس، بايبيت، وجيت آي أو مع استخدام بروكسي إماراتي"""
     
     binance_sym = f"{symbol}USDT"
     bybit_sym = f"{symbol}USDT"
@@ -161,17 +161,32 @@ async def get_multi_exchange_orderbook(client, symbol):
         "gate": f"https://api.gateio.ws/api/v4/spot/order_book?currency_pair={gate_sym}&limit=50"
     }
 
+    # 🔥 بيانات البروكسي الخاص بك من الصورة
+    PROXY_URL = "http://td-customer-pWrOuoese126-country-AE:uPBwL2f8jb72@o2917gdh.as.thordata.net:9999"
+    
+    proxies = {
+        "http://": PROXY_URL,
+        "https://": PROXY_URL,
+    }
+
     async def fetch_ob(exchange, url):
         try:
-            res = await client.get(url, timeout=3.0)
+            # تفعيل البروكسي فقط للمنصات المحظورة (بايننس وبايبيت)
+            if exchange in ["binance", "bybit"]:
+                # مهلة 5 ثواني لأن البروكسي قد يضيف تأخيراً بسيطاً
+                async with httpx.AsyncClient(proxies=proxies, timeout=5.0) as proxy_client:
+                    res = await proxy_client.get(url)
+            else:
+                # Gate.io تعمل بدون بروكسي للسرعة القصوى
+                res = await client.get(url, timeout=3.0)
+
             if res.status_code == 200:
-                # 🔥 هذا السطر رح يطبع لك كلمة نجاح واسم المنصة
-                # print(f"✅ نجح الاتصال مع: {exchange.upper()} لعملة {symbol}") 
                 return exchange, res.json()
             else:
-                print(f"❌ خطأ في منصة {exchange.upper()} للعملة {symbol}: كود الخطأ {res.status_code}")
+                print(f"❌ خطأ {exchange.upper()} لـ {symbol}: كود {res.status_code}")
         except Exception as e:
-            print(f"⚠️ فشل الاتصال مع منصة {exchange.upper()} للعملة {symbol}: {e}")
+            # رسالة مختصرة في حال فشل البروكسي لتجنب تشويش الشاشة
+            print(f"⚠️ فشل الاتصال مع {exchange.upper()} لـ {symbol}") 
         return exchange, None
 
     tasks = [fetch_ob(ex, url) for ex, url in urls.items()]
@@ -179,8 +194,6 @@ async def get_multi_exchange_orderbook(client, symbol):
 
     total_bids = 0.0 
     total_asks = 0.0 
-    
-    # متغيرات لتتبع السيولة من كل منصة (عشان نطبعها وتشوفها بعينك)
     ob_details = {}
 
     for exchange, data in results:
@@ -207,13 +220,14 @@ async def get_multi_exchange_orderbook(client, symbol):
         except Exception as e:
             print(f"Error parsing OB for {exchange}: {e}")
 
-    # 🔥 طباعة التقرير النهائي للعملة في الـ Terminal عشان تتأكد إن الأرقام حقيقية
+    # طباعة النتيجة لنتأكد من نجاح البروكسي
     print(f"📊 دفتر أوامر {symbol}: Binance({ob_details.get('binance', 'فشل')}) | Bybit({ob_details.get('bybit', 'فشل')}) | Gate({ob_details.get('gate', 'فشل')})")
 
     if total_asks == 0:
         return 999.0 if total_bids > 0 else 1.0 
         
-    return total_bids / total_asks 
+    return total_bids / total_asks
+ 
 
 
 async def update_market_memory_loop(pool):
@@ -490,7 +504,7 @@ async def ai_opportunity_radar(pool):
                 try:
                     await bot.send_message(ADMIN_USER_ID, admin_text, reply_markup=admin_kb, parse_mode=ParseMode.HTML)
                     print(f"✅ تم الإرسال للأدمن. استراحة 3 دقائق لمنع التكرار المزعج.")
-                    await asyncio.sleep(180) # 🔥 استراحة 3 دقائق بعد إيجاد الهدف حتى لا يزعجك بنفس العملة فوراً
+                    await asyncio.sleep(83300) # 🔥 استراحة 3 دقائق بعد إيجاد الهدف حتى لا يزعجك بنفس العملة فوراً
                 except Exception as e:
                     print(f"Failed to send approval to admin: {e}")
 
