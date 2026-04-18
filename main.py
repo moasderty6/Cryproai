@@ -258,232 +258,245 @@ async def update_market_memory_loop(pool):
 
 # --- الرادار الخارق المعدل ---
 # --- الرادار الخارق المعدل (النسخة الديناميكية الانفجارية) ---
+# --- الرادار الخارق المعدل (النسخة الديناميكية المستمرة) ---
 async def ai_opportunity_radar(pool):
-    try:
-        headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
-        STABLE_COINS = {"USDT","USDC","BUSD","DAI","TUSD","FDUSD","USDP","GUSD","USDD","LUSD"}
+    print("🚀 تم تفعيل رادار المسح المستمر...")
+    await asyncio.sleep(5) # انتظار 5 ثواني لضمان استقرار السيرفر عند التشغيل
+    
+    while True: # 🔥 هذه الحلقة تمنع الرادار من الموت وتجعله يعمل 24/7
+        try:
+            headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
+            STABLE_COINS = {"USDT","USDC","BUSD","DAI","TUSD","FDUSD","USDP","GUSD","USDD","LUSD"}
 
-        async with httpx.AsyncClient(timeout=25) as client:
-            
-            is_btc_bullish = await get_btc_trend(client)
-
-            res = await client.get(
-                "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
-                headers=headers,
-                params={"limit": "250"}
-            )
-            coins = res.json()["data"]
-
-            best_coin = None
-            best_score = 0
-            best_meta = None
-
-            for c in coins:
-                symbol = c["symbol"]
-                if symbol in STABLE_COINS: continue
-
-                quote = c["quote"]["USD"]
-                volume = quote["volume_24h"]
-                marketcap = quote["market_cap"]
-                change24 = quote["percent_change_24h"]
+            async with httpx.AsyncClient(timeout=25) as client:
                 
-                vol_change_cmc = float(quote.get("volume_change_24h", 0))
+                is_btc_bullish = await get_btc_trend(client)
 
-                if volume < 5_000_000 or marketcap < 10_000_000: continue
-                if abs(change24) < 0.4: continue
-
-                price = quote["price"]
+                res = await client.get(
+                    "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
+                    headers=headers,
+                    params={"limit": "250"}
+                )
                 
-                candles = await get_candles_gate(f"{symbol}_USDT", "1h", limit=120)
-                if not candles: continue
+                # حماية في حال فصل API CoinMarketCap
+                if res.status_code != 200:
+                    print("❌ خطأ بالاتصال بـ CMC، إعادة المحاولة...")
+                    await asyncio.sleep(20)
+                    continue
 
-                import pandas as pd
-                df = pd.DataFrame(candles)
-                df = df.iloc[:, :6]
-                df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
-                for col in ["close","high","low","open","volume"]:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                coins = res.json()["data"]
 
-                last_rsi, last_macd_diff, last_bb, last_vol, _, _ = compute_indicators(candles)
+                best_coin = None
+                best_score = 0
+                best_meta = None
 
-                trend_dir, trend_str, market_action, adx_val, _, _, _, _, _ = calculate_smart_trend_and_targets(df, price, vol_change_cmc)
+                for c in coins:
+                    symbol = c["symbol"]
+                    if symbol in STABLE_COINS: continue
 
-                avg_vol = df["volume"].rolling(20).mean().iloc[-1]
-                current_vol = df["volume"].iloc[-1]
-                vol_ratio = current_vol / avg_vol if avg_vol > 0 else 1
-
-                range_20 = df["high"].rolling(20).max() - df["low"].rolling(20).min()
-                squeeze_pct = (range_20.iloc[-1] / price) * 100
-                recent_high = df["high"].rolling(20).max().iloc[-2]
-                breakout = price > recent_high
-
-                fake_move = (df["high"].iloc[-1] - df["low"].iloc[-1]) / price > 0.15 
-                if fake_move: continue
-
-                # ----------------------------------------------------
-                # 🔥 DYNAMIC SCORING ENGINE (محرك النقاط الديناميكي)
-                # ----------------------------------------------------
-                score = 0
-                components = {} # لتتبع أي عامل هو الأقوى في هذه العملة
-
-                # 1. Whale Action (التجميع المخفي)
-                whale_score = 0
-                if "تجميع حيتان" in market_action:
-                    whale_score = 40
-                elif "اختراق حقيقي" in market_action:
-                    whale_score = 25
-                elif "تصريف" in market_action or "كاذب" in market_action or "بيع هلع" in market_action:
-                    continue  # طرد فوري للفخاخ
-                score += whale_score
-                components["WHALE ACCUMULATION"] = whale_score
-
-                # 2. Dynamic Volume (كلما زاد الفوليوم زاد السكور بشكل مضاعف - حد أقصى 25)
-                dynamic_vol_score = min(25, vol_ratio * 4.5)
-                score += dynamic_vol_score
-                components["VOLUME EXPLOSION"] = dynamic_vol_score
-
-                # 3. Dynamic Trend & ADX (قوة الترند - حد أقصى 15)
-                trend_score = min(15, adx_val * 0.4)
-                if trend_dir == "Bullish": trend_score += 5
-                score += trend_score
-                components["TREND MOMENTUM"] = trend_score
-
-                # 4. Squeeze (كلما كان الانضغاط أشد، الانفجار أقوى - حد أقصى 15)
-                squeeze_score = 0
-                if squeeze_pct < 5.0: # انضغاط قوي
-                    squeeze_score = min(15, (5.0 - squeeze_pct) * 4)
-                    score += squeeze_score
-                    components["VOLATILITY SQUEEZE"] = squeeze_score
-
-                # ----------------------------------------------------
-                # 🚀 MULTI-TIMEFRAME & ORDERBOOK DEEP DIVE
-                # ----------------------------------------------------
-                ob_score = 0
-                if score >= 45: # تصفية للعملات الضعيفة قبل استهلاك الـ API
-                    if is_btc_bullish: score += 5
+                    quote = c["quote"]["USD"]
+                    volume = quote["volume_24h"]
+                    marketcap = quote["market_cap"]
+                    change24 = quote["percent_change_24h"]
                     
-                    buy_pressure = await get_multi_exchange_orderbook(client, symbol)
+                    vol_change_cmc = float(quote.get("volume_change_24h", 0))
 
-                    # نقاط ديناميكية لدفتر الأوامر (حد أقصى 20)
-                    if buy_pressure > 1.2:
-                        ob_score = min(20, (buy_pressure - 1) * 8)
-                        score += ob_score
-                        components["ORDERBOOK SHOCK"] = ob_score
+                    if volume < 5_000_000 or marketcap < 10_000_000: continue
+                    if abs(change24) < 0.4: continue
 
-                # 🔒 Clamp Score
-                score = max(0, min(score, 110)) # سمحنا للسكور يتجاوز 100 للحالات الخارقة
-
-                # اختيار الأفضل
-                if score > best_score:
-                    best_score = score
-                    best_coin = c
+                    price = quote["price"]
                     
-                    # تحديد أقوى سبب للصعود لدمجه في اسم الإشارة
-                    top_catalyst = max(components, key=components.get)
-                    
-                    best_meta = {
-                        "symbol": symbol,
-                        "price": price,
-                        "action": market_action,
-                        "catalyst": top_catalyst
-                    }
+                    candles = await get_candles_gate(f"{symbol}_USDT", "1h", limit=120)
+                    if not candles: continue
 
-                await asyncio.sleep(0.15)
+                    import pandas as pd
+                    df = pd.DataFrame(candles)
+                    df = df.iloc[:, :6]
+                    df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+                    for col in ["close","high","low","open","volume"]:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
 
-            # -----------------
-            # 10 TIERS DYNAMIC SIGNAL GENERATION (نظام الـ 10 مستويات)
-            # -----------------
-            if not best_coin or best_score < 60:
-                print("Radar: No explosive setup found this round.")
-                return
+                    last_rsi, last_macd_diff, last_bb, last_vol, _, _ = compute_indicators(candles)
 
-            symbol = best_meta["symbol"]
-            price = best_meta["price"]
-            action = best_meta["action"]
-            catalyst = best_meta["catalyst"]
+                    trend_dir, trend_str, market_action, adx_val, _, _, _, _, _ = calculate_smart_trend_and_targets(df, price, vol_change_cmc)
 
-            # تحديد الـ Tier بناءً على السكور
-            if best_score >= 100:
-                tier_name = "[TIER 1: GOD MODE]"
-                emoji = "🌌"
-            elif best_score >= 95:
-                tier_name = "[TIER 2: OMEGA]"
-                emoji = "☢️"
-            elif best_score >= 90:
-                tier_name = "[TIER 3: ALPHA]"
-                emoji = "👑"
-            elif best_score >= 85:
-                tier_name = "[TIER 4: SIGMA]"
-                emoji = "🔥"
-            elif best_score >= 80:
-                tier_name = "[TIER 5: IGNITION]"
-                emoji = "🚀"
-            elif best_score >= 75:
-                tier_name = "[TIER 6: MOMENTUM]"
-                emoji = "⚡"
-            elif best_score >= 70:
-                tier_name = "[TIER 7: CATALYST]"
-                emoji = "🎯"
-            elif best_score >= 65:
-                tier_name = "[TIER 8: STEALTH]"
-                emoji = "🥷"
-            elif best_score >= 60:
-                tier_name = "[TIER 9: RADAR]"
-                emoji = "📡"
-            else:
-                tier_name = "[TIER 10: WATCHLIST]"
-                emoji = "👁️"
+                    avg_vol = df["volume"].rolling(20).mean().iloc[-1]
+                    current_vol = df["volume"].iloc[-1]
+                    vol_ratio = current_vol / avg_vol if avg_vol > 0 else 1
 
-            # دمج اسم الـ Tier مع أقوى عامل (Catalyst) لإنتاج اسم إشارة فريد كل مرة
-            signal_name = f"{emoji} {tier_name} {catalyst}"
+                    range_20 = df["high"].rolling(20).max() - df["low"].rolling(20).min()
+                    squeeze_pct = (range_20.iloc[-1] / price) * 100
+                    recent_high = df["high"].rolling(20).max().iloc[-2]
+                    breakout = price > recent_high
 
-            # 🔥 تغذية الذكاء الاصطناعي
-            insight_ar = await ask_groq(
-                f"اكتب سطرين فقط ومقنعين جداً كسبب لصعود عملة {symbol}. السر هو أن أقوى محفز الآن هو ({catalyst}) وحالة السوق ({action}).",
-                lang="ar"
-            )
+                    fake_move = (df["high"].iloc[-1] - df["low"].iloc[-1]) / price > 0.15 
+                    if fake_move: continue
 
-            insight_en = await ask_groq(
-                f"Write exactly 2 persuasive lines on why {symbol} might pump. The primary catalyst is ({catalyst}) and market phase is ({action}).",
-                lang="en"
-            )
+                    # ----------------------------------------------------
+                    # 🔥 DYNAMIC SCORING ENGINE (محرك النقاط الديناميكي)
+                    # ----------------------------------------------------
+                    score = 0
+                    components = {} 
 
-            # --- إرسال الإشارة للأدمن للموافقة ---
-            signal_id = str(uuid.uuid4())[:8] 
-            radar_pending_approvals[signal_id] = {
-                "symbol": symbol,
-                "price": price,
-                "signal": signal_name,
-                "score": round(best_score, 1), # تقريب لخانة عشرية واحدة ليعطي طابع الدقة
-                "insight_ar": insight_ar,
-                "insight_en": insight_en
-            }
+                    # 1. Whale Action (التجميع المخفي)
+                    whale_score = 0
+                    if "تجميع حيتان" in market_action:
+                        whale_score = 40
+                    elif "اختراق حقيقي" in market_action:
+                        whale_score = 25
+                    elif "تصريف" in market_action or "كاذب" in market_action or "بيع هلع" in market_action:
+                        continue  
+                    score += whale_score
+                    components["WHALE ACCUMULATION"] = whale_score
 
-            admin_kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✅ موافقة ونشر للمشتركين", callback_data=f"rad_app_{signal_id}")],
-                [InlineKeyboardButton(text="❌ إلغاء وتجاهل", callback_data=f"rad_rej_{signal_id}")]
-            ])
+                    # 2. Dynamic Volume 
+                    dynamic_vol_score = min(25, vol_ratio * 4.5)
+                    score += dynamic_vol_score
+                    components["VOLUME EXPLOSION"] = dynamic_vol_score
 
-            admin_text = (
-                f"⚠️ <b>تنبيه أدمن: رادار ذكي جديد 🚀</b>\n"
-                f"━━━━━━━━━━━━━━\n"
-                f"العملة: #{symbol}\n"
-                f"السعر: ${format_price(price)}\n"
-                f"الإشارة: <b>{signal_name}</b>\n"
-                f"السكور: {round(best_score, 1)}/100\n\n"
-                f"📝 <b>نبذة (عربي):</b>\n{insight_ar}\n\n"
-                f"📝 <b>نبذة (إنجليزي):</b>\n{insight_en}\n"
-                f"━━━━━━━━━━━━━━\n"
-                f"هل تريد الموافقة على نشرها؟"
-            )
+                    # 3. Dynamic Trend & ADX 
+                    trend_score = min(15, adx_val * 0.4)
+                    if trend_dir == "Bullish": trend_score += 5
+                    score += trend_score
+                    components["TREND MOMENTUM"] = trend_score
 
-            try:
-                await bot.send_message(ADMIN_USER_ID, admin_text, reply_markup=admin_kb, parse_mode=ParseMode.HTML)
-            except Exception as e:
-                print(f"Failed to send approval to admin: {e}")
+                    # 4. Squeeze 
+                    squeeze_score = 0
+                    if squeeze_pct < 5.0: 
+                        squeeze_score = min(15, (5.0 - squeeze_pct) * 4)
+                        score += squeeze_score
+                        components["VOLATILITY SQUEEZE"] = squeeze_score
 
-    except Exception as e:
-        print(f"Radar Error: {e}")
+                    # ----------------------------------------------------
+                    # 🚀 MULTI-TIMEFRAME & ORDERBOOK DEEP DIVE
+                    # ----------------------------------------------------
+                    ob_score = 0
+                    if score >= 45: 
+                        if is_btc_bullish: score += 5
+                        
+                        buy_pressure = await get_multi_exchange_orderbook(client, symbol)
+
+                        if buy_pressure > 1.2:
+                            ob_score = min(20, (buy_pressure - 1) * 8)
+                            score += ob_score
+                            components["ORDERBOOK SHOCK"] = ob_score
+
+                    # 🔒 Clamp Score
+                    score = max(0, min(score, 110)) 
+
+                    # اختيار الأفضل
+                    if score > best_score:
+                        best_score = score
+                        best_coin = c
+                        
+                        top_catalyst = max(components, key=components.get) if components else "UNKNOWN"
+                        
+                        best_meta = {
+                            "symbol": symbol,
+                            "price": price,
+                            "action": market_action,
+                            "catalyst": top_catalyst
+                        }
+
+                    # فاصل بسيط لتخفيف الضغط عن السيرفر
+                    await asyncio.sleep(0.05)
+
+                # -----------------
+                # 10 TIERS DYNAMIC SIGNAL GENERATION (نظام الـ 10 مستويات)
+                # -----------------
+                
+                # 🔥 التعديل الجوهري هنا: استبدال return بـ continue
+                if not best_coin or best_score < 60:
+                    print(f"Radar: No explosive setup found this round (Top score: {round(best_score,1)}). Retrying in 10s...")
+                    await asyncio.sleep(10) # ينام 10 ثواني ويرجع يعيد المسح
+                    continue # يرجع لأول الـ while True
+
+                symbol = best_meta["symbol"]
+                price = best_meta["price"]
+                action = best_meta["action"]
+                catalyst = best_meta["catalyst"]
+
+                if best_score >= 100:
+                    tier_name = "[TIER 1: GOD MODE]"
+                    emoji = "🌌"
+                elif best_score >= 95:
+                    tier_name = "[TIER 2: OMEGA]"
+                    emoji = "☢️"
+                elif best_score >= 90:
+                    tier_name = "[TIER 3: ALPHA]"
+                    emoji = "👑"
+                elif best_score >= 85:
+                    tier_name = "[TIER 4: SIGMA]"
+                    emoji = "🔥"
+                elif best_score >= 80:
+                    tier_name = "[TIER 5: IGNITION]"
+                    emoji = "🚀"
+                elif best_score >= 75:
+                    tier_name = "[TIER 6: MOMENTUM]"
+                    emoji = "⚡"
+                elif best_score >= 70:
+                    tier_name = "[TIER 7: CATALYST]"
+                    emoji = "🎯"
+                elif best_score >= 65:
+                    tier_name = "[TIER 8: STEALTH]"
+                    emoji = "🥷"
+                elif best_score >= 60:
+                    tier_name = "[TIER 9: RADAR]"
+                    emoji = "📡"
+                else:
+                    tier_name = "[TIER 10: WATCHLIST]"
+                    emoji = "👁️"
+
+                signal_name = f"{emoji} {tier_name} {catalyst}"
+
+                insight_ar = await ask_groq(
+                    f"اكتب سطرين فقط ومقنعين جداً كسبب لصعود عملة {symbol}. السر هو أن أقوى محفز الآن هو ({catalyst}) وحالة السوق ({action}).",
+                    lang="ar"
+                )
+
+                insight_en = await ask_groq(
+                    f"Write exactly 2 persuasive lines on why {symbol} might pump. The primary catalyst is ({catalyst}) and market phase is ({action}).",
+                    lang="en"
+                )
+
+                signal_id = str(uuid.uuid4())[:8] 
+                radar_pending_approvals[signal_id] = {
+                    "symbol": symbol,
+                    "price": price,
+                    "signal": signal_name,
+                    "score": round(best_score, 1), 
+                    "insight_ar": insight_ar,
+                    "insight_en": insight_en
+                }
+
+                admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="✅ موافقة ونشر للمشتركين", callback_data=f"rad_app_{signal_id}")],
+                    [InlineKeyboardButton(text="❌ إلغاء وتجاهل", callback_data=f"rad_rej_{signal_id}")]
+                ])
+
+                admin_text = (
+                    f"⚠️ <b>تنبيه أدمن: رادار ذكي جديد 🚀</b>\n"
+                    f"━━━━━━━━━━━━━━\n"
+                    f"العملة: #{symbol}\n"
+                    f"السعر: ${format_price(price)}\n"
+                    f"الإشارة: <b>{signal_name}</b>\n"
+                    f"السكور: {round(best_score, 1)}/100\n\n"
+                    f"📝 <b>نبذة (عربي):</b>\n{insight_ar}\n\n"
+                    f"📝 <b>نبذة (إنجليزي):</b>\n{insight_en}\n"
+                    f"━━━━━━━━━━━━━━\n"
+                    f"هل تريد الموافقة على نشرها؟"
+                )
+
+                try:
+                    await bot.send_message(ADMIN_USER_ID, admin_text, reply_markup=admin_kb, parse_mode=ParseMode.HTML)
+                    print(f"✅ تم الإرسال للأدمن. استراحة 3 دقائق لمنع التكرار المزعج.")
+                    await asyncio.sleep(180) # 🔥 استراحة 3 دقائق بعد إيجاد الهدف حتى لا يزعجك بنفس العملة فوراً
+                except Exception as e:
+                    print(f"Failed to send approval to admin: {e}")
+
+        except Exception as e:
+            print(f"Radar Loop Error: {e}")
+            await asyncio.sleep(10) # حماية للسيرفر في حال حدوث خطأ برمجي طارئ
 
 
         # تم تصحيح وقت الانتظار ليكون 6 ساعات بالضبط (6 * 60 * 60)
