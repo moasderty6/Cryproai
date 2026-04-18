@@ -149,40 +149,29 @@ async def get_btc_trend(client):
     return True # افتراضي في حال فشل الـ API
 
 async def get_multi_exchange_orderbook(client, symbol):
-    """جلب دفتر الأوامر من بينانس، بايبيت، وجيت آي أو مع معالجة متقدمة للبروكسي"""
+    """جلب دفتر الأوامر من منصات صديقة للسيرفرات (MEXC, KuCoin, Gate) ودمجها لحساب السيولة"""
     
-    binance_sym = f"{symbol}USDT"
-    bybit_sym = f"{symbol}USDT"
+    # تنسيق الرموز لكل منصة
+    mexc_sym = f"{symbol}USDT"
+    kucoin_sym = f"{symbol}-USDT"
     gate_sym = f"{symbol}_USDT"
 
+    # روابط الـ APIs الجديدة (MEXC و KuCoin لا تحظر السيرفرات الأمريكية غالباً)
     urls = {
-        "binance": f"https://api.binance.com/api/v3/depth?symbol={binance_sym}&limit=50",
-        "bybit": f"https://api.bybit.com/v5/market/orderbook?category=spot&symbol={bybit_sym}&limit=50",
+        "mexc": f"https://api.mexc.com/api/v3/depth?symbol={mexc_sym}&limit=50",
+        "kucoin": f"https://api.kucoin.com/api/v1/market/orderbook/level2_20?symbol={kucoin_sym}",
         "gate": f"https://api.gateio.ws/api/v4/spot/order_book?currency_pair={gate_sym}&limit=50"
     }
 
-    # 🔥 بيانات البروكسي الخاص بك
-    PROXY_URL = "http://td-customer-pWrOuoese126-country-AE:uPBwL2f8jb72@o2917gdh.as.thordata.net:9999"
-
     async def fetch_ob(exchange, url):
         try:
-            # تفعيل البروكسي فقط للمنصات المحظورة
-            if exchange in ["binance", "bybit"]:
-                # 🔥 التعديل هنا: استخدام proxy= وزيادة المهلة وتخطي فحص SSL
-                async with httpx.AsyncClient(proxy=PROXY_URL, timeout=10.0, verify=False) as proxy_client:
-                    res = await proxy_client.get(url)
-            else:
-                # Gate.io تعمل بدون بروكسي
-                res = await client.get(url, timeout=5.0)
-
+            res = await client.get(url, timeout=3.0)
             if res.status_code == 200:
-                print(f"✅ نجح سحب الأوامر من {exchange.upper()} لعملة {symbol}")
                 return exchange, res.json()
             else:
-                print(f"❌ خطأ {exchange.upper()} لـ {symbol}: كود {res.status_code}")
+                print(f"❌ خطأ في {exchange.upper()} لـ {symbol}: كود {res.status_code}")
         except Exception as e:
-            # 🔥 التعديل هنا: طباعة نوع الخطأ بدقة لمعرفة سبب الفشل الحقيقي
-            print(f"⚠️ فشل الاتصال مع {exchange.upper()} لـ {symbol} | نوع الخطأ: {type(e).__name__} | التفاصيل: {e}") 
+            print(f"⚠️ فشل الاتصال مع {exchange.upper()} لـ {symbol}: {e}")
         return exchange, None
 
     tasks = [fetch_ob(ex, url) for ex, url in urls.items()]
@@ -198,13 +187,15 @@ async def get_multi_exchange_orderbook(client, symbol):
         bids = 0.0
         asks = 0.0
         try:
-            if exchange == "binance":
+            if exchange == "mexc":
+                # MEXC تستخدم نفس هيكل بايننس
                 bids = sum([float(b[1]) for b in data.get("bids", [])])
                 asks = sum([float(a[1]) for a in data.get("asks", [])])
-            elif exchange == "bybit":
-                result = data.get("result", {})
-                bids = sum([float(b[1]) for b in result.get("b", [])])
-                asks = sum([float(a[1]) for a in result.get("a", [])])
+            elif exchange == "kucoin":
+                # KuCoin تضع البيانات داخل مفتاح data
+                ku_data = data.get("data", {})
+                bids = sum([float(b[1]) for b in ku_data.get("bids", [])])
+                asks = sum([float(a[1]) for a in ku_data.get("asks", [])])
             elif exchange == "gate":
                 bids = sum([float(b[1]) for b in data.get("bids", [])])
                 asks = sum([float(a[1]) for a in data.get("asks", [])])
@@ -216,13 +207,13 @@ async def get_multi_exchange_orderbook(client, symbol):
         except Exception as e:
             print(f"Error parsing OB for {exchange}: {e}")
 
-    # طباعة الخلاصة
-    print(f"📊 الخلاصة لـ {symbol}: Binance({ob_details.get('binance', 'فشل')}) | Bybit({ob_details.get('bybit', 'فشل')}) | Gate({ob_details.get('gate', 'فشل')})")
+    print(f"📊 دفتر أوامر {symbol}: MEXC({ob_details.get('mexc', 'فشل')}) | KuCoin({ob_details.get('kucoin', 'فشل')}) | Gate({ob_details.get('gate', 'فشل')})")
 
     if total_asks == 0:
         return 999.0 if total_bids > 0 else 1.0 
         
     return total_bids / total_asks
+
 
 async def update_market_memory_loop(pool):
     """مهمة خلفية لتحديث ذاكرة السوق لكل العملات بشكل دوري"""
