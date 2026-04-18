@@ -283,31 +283,50 @@ async def ai_opportunity_radar(pool):
                     # ----------------------------------------------------
                     # 🎯 الحساب الديناميكي الدقيق للسكور (Dynamic Scoring)
                     # ----------------------------------------------------
+                                        # 🌟 حساب ADX للرادار
+                    try:
+                        adx_ind = ta.trend.ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14, fillna=True)
+                        current_adx = float(adx_ind.adx().iloc[-1])
+                    except:
+                        current_adx = 0.0
+
+                    # ----------------------------------------------------
+                    # 🎯 الحساب الديناميكي الدقيق للسكور (Dynamic Scoring)
+                    # ----------------------------------------------------
                     score = 0.0
                     
-                    # 1. نقاط الـ RSI (معادلة سلسة بدلاً من أرقام ثابتة)
-                    # أفضل منطقة للتجميع هي بين 40 و 60
+                    # 1. نقاط الـ RSI 
                     if 35 <= last_rsi <= 65:
                         score += 20 - abs(50 - last_rsi) * 0.5 
                     
-                    # 2. نقاط الماكد (حسب قوة الزخم)
+                    # 2. نقاط الماكد
                     if last_macd_diff > 0:
-                        score += 10 + min(last_macd_diff * 100, 10.0) # سكور مرن يصل لـ 20
+                        score += 10 + min(last_macd_diff * 100, 10.0)
                         
-                    # 3. نقاط الاتجاه
-                    if trend_up: score += 12.5
+                    # 3. نقاط الاتجاه وتأكيد الـ ADX (السر هنا 🔥)
+                    if trend_up: 
+                        score += 12.5
+                        if current_adx >= 25:
+                            score += min((current_adx - 20) * 0.8, 15.0) # ترند قوي، زد السكور
+                        elif current_adx < 20:
+                            score -= 5.0 # ترند ضعيف ووهمي، اخصم نقاط
                     
-                    # 4. الانضغاط السعري (كلما زاد الانضغاط زاد السكور بشكل عكسي)
+                    # 4. الانضغاط السعري والتجميع
                     if squeeze_pct < 0.10:
                         squeeze_bonus = (0.10 - squeeze_pct) * 200 
                         score += min(squeeze_bonus, 18.0)
                         
-                    # 5. التجميع الصامت
                     if silent_accumulation:
                         vol_ratio = avg_vol_5 / avg_vol_20
                         score += min(vol_ratio * 5, 15.0)
+                        if current_adx < 20:
+                            score += 15.0 # السوق نائم والحيتان تجمع! فرصة ذهبية
 
-                    # فلترة متقدمة للعملات القوية فقط للبحث العميق
+                    # 5. عقاب الشراء في القمة (FOMO)
+                    if current_adx > 50:
+                        score -= (current_adx - 50) * 1.5
+
+                    # فلترة متقدمة
                     if score >= 45: 
                         if is_btc_bullish: score += 8.5
                         else: score -= 5.5 
@@ -325,17 +344,14 @@ async def ai_opportunity_radar(pool):
                         if buy_pressure > 1.2:
                             score += min((buy_pressure - 1) * 10, 18.0)
 
-                    # تقييد السكور بين 0 و 100 مع كسر عشري واحد
+                    # تقييد السكور
                     score = round(max(0.0, min(score, 100.0)), 1)
 
-                    # تحديث أفضل عملة في هذه الدورة
                     if score > best_score:
                         best_score = score
                         best_coin = c
-                        best_meta = {
-                            "symbol": symbol,
-                            "price": price
-                        }
+                        best_meta = {"symbol": symbol, "price": price}
+
 
                 # ====================================================
                 # 🏆 تم انتهاء المسح بالكامل. الآن نقيم أفضل عملة وجدناها
