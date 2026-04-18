@@ -155,22 +155,67 @@ async def get_btc_trend(client):
         pass
     return True # افتراضي في حال فشل الـ API
 
-async def get_orderbook_pressure(client, symbol):
-    """حساب ضغط الشراء من دفتر الأوامر في Binance"""
-    try:
-        clean_symbol = symbol.replace("_", "")
-        res = await client.get(f"{BINANCE_BASE}/depth", params={
-            "symbol": f"{clean_symbol}USDT", "limit": 50
-        }, headers=BINANCE_HEADERS)
-        if res.status_code == 200:
-            data = res.json()
-            bids = sum([float(b[1]) for b in data.get("bids", [])]) 
-            asks = sum([float(a[1]) for a in data.get("asks", [])]) 
-            if asks == 0: return 999.0 
-            return bids / asks
-    except:
-        pass
-    return 1.0
+async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
+    """
+    جلب ودمج الأوردر بوك من 6 منصات لقرائة ضغط الحيتان
+    Binance, Bybit, Gate.io, KuCoin, OKX, MEXC
+    """
+    # تهيئة اسم العملة حسب صيغة كل منصة
+    sym_binance_mexc = f"{symbol}USDT"
+    sym_gate = f"{symbol}_USDT"
+    sym_kucoin_okx = f"{symbol}-USDT"
+
+    urls = {
+        "binance": f"https://api.binance.com/api/v3/depth?symbol={sym_binance_mexc}&limit=50",
+        "bybit": f"https://api.bybit.com/v5/market/orderbook?category=spot&symbol={sym_binance_mexc}&limit=50",
+        "gate": f"https://api.gateio.ws/api/v4/spot/order_book?currency_pair={sym_gate}&limit=50",
+        "kucoin": f"https://api.kucoin.com/api/v1/market/orderbook/level2_100?symbol={sym_kucoin_okx}",
+        "okx": f"https://www.okx.com/api/v5/market/books?instId={sym_kucoin_okx}&sz=50",
+        "mexc": f"https://api.mexc.com/api/v3/depth?symbol={sym_binance_mexc}&limit=50"
+    }
+
+    async def fetch_ob(exchange, url):
+        try:
+            # مهلة 3 ثواني فقط حتى لا يتعطل الرادار إذا تعطلت إحدى المنصات
+            res = await client.get(url, timeout=3.0) 
+            if res.status_code == 200:
+                data = res.json()
+                bids_vol, asks_vol = 0.0, 0.0
+                
+                # حساب القيمة بالدولار (السعر × الكمية)
+                if exchange in ["binance", "mexc", "gate"]:
+                    bids_vol = sum(float(b[0]) * float(b[1]) for b in data.get("bids", []))
+                    asks_vol = sum(float(a[0]) * float(a[1]) for a in data.get("asks", []))
+                elif exchange == "bybit":
+                    result = data.get("result", {})
+                    bids_vol = sum(float(b[0]) * float(b[1]) for b in result.get("b", []))
+                    asks_vol = sum(float(a[0]) * float(a[1]) for a in result.get("a", []))
+                elif exchange == "kucoin":
+                    d = data.get("data", {})
+                    bids_vol = sum(float(b[0]) * float(b[1]) for b in d.get("bids", [])[:50])
+                    asks_vol = sum(float(a[0]) * float(a[1]) for a in d.get("asks", [])[:50])
+                elif exchange == "okx":
+                    d = data.get("data", [{}])[0]
+                    bids_vol = sum(float(b[0]) * float(b[1]) for b in d.get("bids", []))
+                    asks_vol = sum(float(a[0]) * float(a[1]) for a in d.get("asks", []))
+
+                return bids_vol, asks_vol
+        except:
+            pass # تجاهل المنصة إذا كانت العملة غير مدرجة فيها
+        return 0.0, 0.0
+
+    # تنفيذ الطلبات الستة في نفس اللحظة
+    tasks = [fetch_ob(ex, url) for ex, url in urls.items()]
+    results = await asyncio.gather(*tasks)
+
+    total_bids_usd = sum(r[0] for r in results)
+    total_asks_usd = sum(r[1] for r in results)
+
+    if total_asks_usd == 0:
+        return 999.0 if total_bids_usd > 0 else 1.0 
+    
+    # إرجاع نسبة ضغط الشراء العالمي
+    return total_bids_usd / total_asks_usd
 
 
 async def update_market_memory_loop(pool):
@@ -286,11 +331,22 @@ async def analyze_radar_coin(c, client, is_btc_bullish, sem):
 
             if current_adx > 50: score -= (current_adx - 50) * 1.5
 
-            if score >= 45: 
+                        if score >= 45: 
                 if is_btc_bullish: score += 8.5
                 else: score -= 5.5 
 
-                # استبدال Orderbook بـ Volume Delta من الشموع الصغرى (أدق ولا يمكن تزييفه)
+                # 🌍 دمج الأوردر بوك من 6 منصات!
+                global_ob_pressure = await get_aggregated_orderbook(client, symbol)
+                
+                # إضافة نقاط قوية إذا كانت طلبات الشراء أعلى من البيع عالمياً
+                if global_ob_pressure >= 1.5:
+                    # ضغط شراء قوي جداً
+                    score += min((global_ob_pressure - 1) * 6, 20.0)
+                elif global_ob_pressure < 0.8:
+                    # جدران بيع قوية عبر المنصات (تهبيط السكور)
+                    score -= 10.0
+
+                # دمج الفوليوم دلتا اللحظي للتأكيد
                 candles_15m = await get_candles_binance(f"{symbol}USDT", "15m", limit=30)
                 if candles_15m:
                     df_15m = pd.DataFrame(candles_15m).iloc[:, :6]
@@ -305,13 +361,15 @@ async def analyze_radar_coin(c, client, is_btc_bullish, sem):
             score = round(max(0.0, min(score, 100.0)), 1)
             current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
 
-            if score >= 70.0:  # نحتفظ فقط بالفرص الجدية
+            # نمرر الـ ob_pressure لكي يقرأه الذكاء الاصطناعي في الخطوة القادمة
+            if score >= 70.0:  
                 return {
                     "symbol": symbol, "price": price, "score": score,
                     "rsi": round(last_rsi, 2), "adx": round(current_adx, 2),
-                    "macd": round(last_macd_diff, 4), "vol_ratio": round(current_vol_ratio, 2)
+                    "macd": round(last_macd_diff, 4), "vol_ratio": round(current_vol_ratio, 2),
+                    "ob_pressure": round(locals().get('global_ob_pressure', 1.0), 2) # حفظ النسبة
                 }
-            return None
+            return None 
         except Exception as e:
             return None
 
@@ -393,13 +451,16 @@ async def ai_opportunity_radar(pool):
                 prompt_ar = f"""
 أنت كبير المحللين الفنيين. رادار الذكاء الاصطناعي التقط فرصة لعملة {symbol} بسكور {best_score}/100.
 الإشارة: {signal} | ADX: {best_meta['adx']} | RSI: {best_meta['rsi']} | سيولة أعلى بـ {best_meta['vol_ratio']} ضعف.
+ضغط الشراء العالمي (Orderbook 6 Exchanges): طلبات الشراء تتفوق بـ {best_meta['ob_pressure']} ضعف عن البيع.
 اكتب تحليلاً احترافياً (3 أسطر) يدمج هذه الأرقام مباشرة.
 """
                 prompt_en = f"""
 You are Lead Technical Analyst. AI radar caught {symbol} with score {best_score}/100.
 Signal: {signal} | ADX: {best_meta['adx']} | RSI: {best_meta['rsi']} | Liquidity {best_meta['vol_ratio']}x higher.
+Global Buy Pressure (6 Exchanges Orderbook): Buy bids are {best_meta['ob_pressure']}x stronger than asks.
 Write a 3-line professional analysis integrating these metrics.
 """
+
 
                 insight_ar = await ask_groq(prompt_ar, lang="ar")
                 insight_en = await ask_groq(prompt_en, lang="en")
