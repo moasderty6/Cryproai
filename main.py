@@ -1421,10 +1421,10 @@ TP3: <code>{format_price(calc_tp3)}</code>
 Stop Loss: <code>{format_price(calc_sl)}</code>
 
 📈 <b>تحليل المؤشرات</b>
-&rlm;• &lrm;Liquidity:&rlm; {market_action} (اكتب سطر يعلق على هذه الحالة بالعربية)
-&rlm;• &lrm;RSI ({safe_rsi}):&rlm; (اكتب سطر واحد يوضح التشبع أو الحياد بالعربية)
-&rlm;• &lrm;MACD ({macd_fmt}):&rlm; (اكتب سطر واحد يوضح الزخم بالعربية)
-&rlm;• &lrm;ADX ({adx_val:.1f}):&rlm; (اكتب سطر واحد يوضح قوة الترند بالعربية)
+•Liquidity: {market_action} (اكتب سطر يعلق على هذه الحالة بالعربية)
+•RSI ({safe_rsi}): (اكتب سطر واحد يوضح التشبع أو الحياد بالعربية)
+•MACD ({macd_fmt}): (اكتب سطر واحد يوضح الزخم بالعربية)
+•ADX ({adx_val:.1f}): (اكتب سطر واحد يوضح قوة الترند بالعربية)
 """
     else:
         prompt = f"""
