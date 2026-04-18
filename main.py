@@ -205,6 +205,7 @@ async def update_market_memory_loop(pool):
         await asyncio.sleep(14400)
 
 # --- الرادار الخارق المعدل ---
+# --- الرادار الخارق المعدل (النسخة الديناميكية الانفجارية) ---
 async def ai_opportunity_radar(pool):
     try:
         headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
@@ -212,10 +213,8 @@ async def ai_opportunity_radar(pool):
 
         async with httpx.AsyncClient(timeout=25) as client:
             
-            # 1. تحديد بوصلة السوق (Bitcoin Trend)
             is_btc_bullish = await get_btc_trend(client)
 
-            # 2. جلب قائمة العملات
             res = await client.get(
                 "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
                 headers=headers,
@@ -231,195 +230,196 @@ async def ai_opportunity_radar(pool):
                 symbol = c["symbol"]
                 if symbol in STABLE_COINS: continue
 
-                volume = c["quote"]["USD"]["volume_24h"]
-                marketcap = c["quote"]["USD"]["market_cap"]
-                change24 = c["quote"]["USD"]["percent_change_24h"]
+                quote = c["quote"]["USD"]
+                volume = quote["volume_24h"]
+                marketcap = quote["market_cap"]
+                change24 = quote["percent_change_24h"]
+                
+                vol_change_cmc = float(quote.get("volume_change_24h", 0))
 
-                # 🛑 الفلترة الذكية (Hard Filters)
                 if volume < 5_000_000 or marketcap < 10_000_000: continue
                 if abs(change24) < 0.4: continue
 
-                price = c["quote"]["USD"]["price"]
+                price = quote["price"]
                 
                 candles = await get_candles_gate(f"{symbol}_USDT", "1h", limit=120)
                 if not candles: continue
 
+                import pandas as pd
                 df = pd.DataFrame(candles)
                 df = df.iloc[:, :6]
                 df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
                 for col in ["close","high","low","open","volume"]:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
 
-                # حساب المؤشرات القديمة (نحتاجها للـ RSI والماكدي)
                 last_rsi, last_macd_diff, last_bb, last_vol, _, _ = compute_indicators(candles)
 
-                # 🔥 التعديل الجبار: استدعاء دالة التحليل الرياضي للرادار
-                trend_dir, trend_str, adx_val, _, _, _, _, _, _ = calculate_smart_trend_and_targets(df, price)
+                trend_dir, trend_str, market_action, adx_val, _, _, _, _, _ = calculate_smart_trend_and_targets(df, price, vol_change_cmc)
 
-                avg_vol = df["volume"].rolling(20).mean()
-                volume_spike = df["volume"].iloc[-1] > (avg_vol.iloc[-1] * 2.5)
+                avg_vol = df["volume"].rolling(20).mean().iloc[-1]
+                current_vol = df["volume"].iloc[-1]
+                vol_ratio = current_vol / avg_vol if avg_vol > 0 else 1
 
                 range_20 = df["high"].rolling(20).max() - df["low"].rolling(20).min()
-                squeeze = range_20.iloc[-1] < (price * 0.07)
+                squeeze_pct = (range_20.iloc[-1] / price) * 100
                 recent_high = df["high"].rolling(20).max().iloc[-2]
                 breakout = price > recent_high
 
-                fake_move = (df["high"].iloc[-1] - df["low"].iloc[-1]) / price > 0.35
+                fake_move = (df["high"].iloc[-1] - df["low"].iloc[-1]) / price > 0.15 
                 if fake_move: continue
 
-                # -----------------
-                # 🎯 1H BASE SCORING (النظام المحدث)
-                # -----------------
-                base_score = 0
-                
-                # 1. فلتر الاتجاه وقوته (أهم شرط)
-                if trend_dir == "Bullish":
-                    base_score += 20  # مكافأة للترند الصاعد
-                elif trend_dir == "Bearish":
-                    base_score -= 30  # عقوبة قاسية للترند الهابط (تجنب السكاكين الساقطة)
+                # ----------------------------------------------------
+                # 🔥 DYNAMIC SCORING ENGINE (محرك النقاط الديناميكي)
+                # ----------------------------------------------------
+                score = 0
+                components = {} # لتتبع أي عامل هو الأقوى في هذه العملة
+
+                # 1. Whale Action (التجميع المخفي)
+                whale_score = 0
+                if "تجميع حيتان" in market_action:
+                    whale_score = 40
+                elif "اختراق حقيقي" in market_action:
+                    whale_score = 25
+                elif "تصريف" in market_action or "كاذب" in market_action or "بيع هلع" in market_action:
+                    continue  # طرد فوري للفخاخ
+                score += whale_score
+                components["WHALE ACCUMULATION"] = whale_score
+
+                # 2. Dynamic Volume (كلما زاد الفوليوم زاد السكور بشكل مضاعف - حد أقصى 25)
+                dynamic_vol_score = min(25, vol_ratio * 4.5)
+                score += dynamic_vol_score
+                components["VOLUME EXPLOSION"] = dynamic_vol_score
+
+                # 3. Dynamic Trend & ADX (قوة الترند - حد أقصى 15)
+                trend_score = min(15, adx_val * 0.4)
+                if trend_dir == "Bullish": trend_score += 5
+                score += trend_score
+                components["TREND MOMENTUM"] = trend_score
+
+                # 4. Squeeze (كلما كان الانضغاط أشد، الانفجار أقوى - حد أقصى 15)
+                squeeze_score = 0
+                if squeeze_pct < 5.0: # انضغاط قوي
+                    squeeze_score = min(15, (5.0 - squeeze_pct) * 4)
+                    score += squeeze_score
+                    components["VOLATILITY SQUEEZE"] = squeeze_score
+
+                # ----------------------------------------------------
+                # 🚀 MULTI-TIMEFRAME & ORDERBOOK DEEP DIVE
+                # ----------------------------------------------------
+                ob_score = 0
+                if score >= 45: # تصفية للعملات الضعيفة قبل استهلاك الـ API
+                    if is_btc_bullish: score += 5
                     
-                if adx_val >= 25:
-                    base_score += 15  # ترند قوي وحقيقي
-                elif adx_val < 20:
-                    base_score -= 20  # السوق عرضي وممل (تجنب الاختراقات الكاذبة)
-
-                # 2. فلتر المؤشرات الكلاسيكية
-                if 40 <= last_rsi <= 65: base_score += 10
-                elif last_rsi > 75: base_score -= 10 # تشبع شرائي خطير
-                
-                if last_macd_diff > 0:
-                    base_score += 10
-                
-                # 3. فلتر السيولة والاختراق
-                if volume_spike:
-                    base_score += 20
-                    if df["volume"].iloc[-1] > (avg_vol.iloc[-1] * 3): base_score += 10
-                else:
-                    base_score -= 15 # لا ندخل بدون فوليوم
-                
-                if squeeze: base_score += 10
-                if breakout: base_score += 15
-
-                # ----------------------------------------------------
-                # 🚀 SUPER RADAR: Multi-Timeframe & Orderbook Funnel
-                # ----------------------------------------------------
-                # نفحص بعمق فقط العملات التي لديها أساس قوي (توفر استهلاك الـ API)
-                score = base_score
-                if score >= 45: 
-                    # 1. تأثير البيتكوين (الترند العام)
-                    if is_btc_bullish: score += 10
-                    else: score -= 5 # عقوبة إذا كان السوق ينزف
-
-                    # 2. فريم 15 دقيقة (نقطة الدخول والانفجار اللحظي)
-                    candles_15m = await get_candles_gate(f"{symbol}_USDT", "15m", limit=30)
-                    if candles_15m:
-                        df_15m = pd.DataFrame(candles_15m).iloc[:, :6]
-                        df_15m.columns = ["timestamp", "volume", "close", "high", "low", "open"]
-                        for col in ["close","volume","open"]: df_15m[col] = pd.to_numeric(df_15m[col], errors='coerce')
-                        
-                        vol_15m_avg = df_15m["volume"].rolling(10).mean().iloc[-1]
-                        # فوليوم انفجاري لحظي الآن
-                        if df_15m["volume"].iloc[-1] > (vol_15m_avg * 2): score += 15
-                        # شمعة 15 دقيقة خضراء صاعدة
-                        if df_15m["close"].iloc[-1] > df_15m["open"].iloc[-1]: score += 5
-
-                    # 3. فريم 4 ساعات (التأكيد الكلي)
-                    candles_4h = await get_candles_gate(f"{symbol}_USDT", "4h", limit=60)
-                    if candles_4h:
-                        df_4h = pd.DataFrame(candles_4h).iloc[:, :6]
-                        df_4h.columns = ["timestamp", "volume", "close", "high", "low", "open"]
-                        df_4h["close"] = pd.to_numeric(df_4h["close"], errors='coerce')
-                        ema50_4h = df_4h["close"].ewm(span=50).mean().iloc[-1]
-                        # ترند الماكرو إيجابي
-                        if df_4h["close"].iloc[-1] > ema50_4h: score += 10
-
-                    # 4. دفتر الأوامر (السيولة المخفية)
                     buy_pressure = await get_orderbook_pressure(client, symbol)
-                    if buy_pressure > 2.0: score += 20 # حيتان تشتري بجنون
-                    elif buy_pressure > 1.3: score += 10
+                    # نقاط ديناميكية لدفتر الأوامر (حد أقصى 20)
+                    if buy_pressure > 1.2:
+                        ob_score = min(20, (buy_pressure - 1) * 8)
+                        score += ob_score
+                        components["ORDERBOOK SHOCK"] = ob_score
 
-                # -----------------
-                # 🔒 Clamp & Elite Filter
-                # -----------------
-                score = max(0, min(score, 100))
+                # 🔒 Clamp Score
+                score = max(0, min(score, 110)) # سمحنا للسكور يتجاوز 100 للحالات الخارقة
 
-                if score >= 90:
-                    if not (volume_spike and breakout and trend_up):
-                        score = 85
-
-                # -----------------
                 # اختيار الأفضل
-                # -----------------
                 if score > best_score:
                     best_score = score
                     best_coin = c
+                    
+                    # تحديد أقوى سبب للصعود لدمجه في اسم الإشارة
+                    top_catalyst = max(components, key=components.get)
+                    
                     best_meta = {
                         "symbol": symbol,
-                        "price": price
+                        "price": price,
+                        "action": market_action,
+                        "catalyst": top_catalyst
                     }
 
                 await asyncio.sleep(0.15)
 
             # -----------------
-            # فلترة نهائية وتجهيز الإرسال
+            # 10 TIERS DYNAMIC SIGNAL GENERATION (نظام الـ 10 مستويات)
             # -----------------
             if not best_coin or best_score < 60:
-                print("Radar: No strong setup.")
+                print("Radar: No explosive setup found this round.")
                 return
-
-            if best_score >= 90:
-                signal = "💣 SMART MONEY"
-            elif best_score >= 80:
-                signal = "🚀 STRONG BREAKOUT"
-            elif best_score >= 70:
-                signal = "🎯 HIGH PROBABILITY"
-            else:
-                signal = "⚡ EARLY SETUP"
 
             symbol = best_meta["symbol"]
             price = best_meta["price"]
+            action = best_meta["action"]
+            catalyst = best_meta["catalyst"]
 
+            # تحديد الـ Tier بناءً على السكور
+            if best_score >= 100:
+                tier_name = "[TIER 1: GOD MODE]"
+                emoji = "🌌"
+            elif best_score >= 95:
+                tier_name = "[TIER 2: OMEGA]"
+                emoji = "☢️"
+            elif best_score >= 90:
+                tier_name = "[TIER 3: ALPHA]"
+                emoji = "👑"
+            elif best_score >= 85:
+                tier_name = "[TIER 4: SIGMA]"
+                emoji = "🔥"
+            elif best_score >= 80:
+                tier_name = "[TIER 5: IGNITION]"
+                emoji = "🚀"
+            elif best_score >= 75:
+                tier_name = "[TIER 6: MOMENTUM]"
+                emoji = "⚡"
+            elif best_score >= 70:
+                tier_name = "[TIER 7: CATALYST]"
+                emoji = "🎯"
+            elif best_score >= 65:
+                tier_name = "[TIER 8: STEALTH]"
+                emoji = "🥷"
+            elif best_score >= 60:
+                tier_name = "[TIER 9: RADAR]"
+                emoji = "📡"
+            else:
+                tier_name = "[TIER 10: WATCHLIST]"
+                emoji = "👁️"
+
+            # دمج اسم الـ Tier مع أقوى عامل (Catalyst) لإنتاج اسم إشارة فريد كل مرة
+            signal_name = f"{emoji} {tier_name} {catalyst}"
+
+            # 🔥 تغذية الذكاء الاصطناعي
             insight_ar = await ask_groq(
-                f"اشرح باختصار سبب احتمال صعود {symbol} بسبب الفوليوم والتجميع والاختراق. سطرين فقط.",
+                f"اكتب سطرين فقط ومقنعين جداً كسبب لصعود عملة {symbol}. السر هو أن أقوى محفز الآن هو ({catalyst}) وحالة السوق ({action}).",
                 lang="ar"
             )
 
             insight_en = await ask_groq(
-                f"Explain briefly why {symbol} may pump based on volume, accumulation and breakout. 2 lines.",
+                f"Write exactly 2 persuasive lines on why {symbol} might pump. The primary catalyst is ({catalyst}) and market phase is ({action}).",
                 lang="en"
             )
 
-            # --- إرسال الإشعارات للمستخدمين (نفس نصوصك تماماً) ---
-            # --- إرسال الإشعارات للمستخدمين ---
-                        # --- إرسال الإشارة للأدمن للموافقة ---
-            signal_id = str(uuid.uuid4())[:8] # إنشاء معرف فريد للإشارة
+            # --- إرسال الإشارة للأدمن للموافقة ---
+            signal_id = str(uuid.uuid4())[:8] 
             radar_pending_approvals[signal_id] = {
                 "symbol": symbol,
                 "price": price,
-                "signal": signal,
-                "score": best_score,
+                "signal": signal_name,
+                "score": round(best_score, 1), # تقريب لخانة عشرية واحدة ليعطي طابع الدقة
                 "insight_ar": insight_ar,
                 "insight_en": insight_en
             }
 
             admin_kb = InlineKeyboardMarkup(inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="✅ موافقة ونشر للمشتركين", callback_data=f"rad_app_{signal_id}")
-                ],
-                [
-                    InlineKeyboardButton(text="❌ إلغاء وتجاهل", callback_data=f"rad_rej_{signal_id}")
-                ]
+                [InlineKeyboardButton(text="✅ موافقة ونشر للمشتركين", callback_data=f"rad_app_{signal_id}")],
+                [InlineKeyboardButton(text="❌ إلغاء وتجاهل", callback_data=f"rad_rej_{signal_id}")]
             ])
 
             admin_text = (
-                f"⚠️ <b>تنبيه أدمن: رادار جديد ينتظر موافقتك</b>\n"
+                f"⚠️ <b>تنبيه أدمن: رادار ذكي جديد 🚀</b>\n"
                 f"━━━━━━━━━━━━━━\n"
                 f"العملة: #{symbol}\n"
                 f"السعر: ${format_price(price)}\n"
-                f"الإشارة: {signal}\n"
-                f"السكور: {best_score}/100\n\n"
-                f"📝 <b>التحليل (عربي):</b>\n{insight_ar}\n\n"
-                f"📝 <b>التحليل (إنجليزي):</b>\n{insight_en}\n"
+                f"الإشارة: <b>{signal_name}</b>\n"
+                f"السكور: {round(best_score, 1)}/100\n\n"
+                f"📝 <b>نبذة (عربي):</b>\n{insight_ar}\n\n"
+                f"📝 <b>نبذة (إنجليزي):</b>\n{insight_en}\n"
                 f"━━━━━━━━━━━━━━\n"
                 f"هل تريد الموافقة على نشرها؟"
             )
@@ -431,6 +431,7 @@ async def ai_opportunity_radar(pool):
 
     except Exception as e:
         print(f"Radar Error: {e}")
+
 
         # تم تصحيح وقت الانتظار ليكون 6 ساعات بالضبط (6 * 60 * 60)
   # 6 ساعات # انتطار الدورة القادمة
