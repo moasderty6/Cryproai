@@ -974,24 +974,30 @@ async def handle_symbol(m: types.Message):
     
     status_msg = await m.answer("⏳ جاري جلب السعر..." if lang=="ar" else "⏳ Fetching price...")
 
-    try:
+        try:
         async with httpx.AsyncClient() as client:
-            pair = f"{sym}_USDT"
-            res_gate = await client.get(
-                "https://api.gateio.ws/api/v4/spot/tickers",
-                params={"currency_pair": pair},
+            # بايننس تستخدم الرمز متصل بدون شرطة سفلية، مثلاً BTCUSDT
+            pair = f"{sym}USDT" 
+            
+            # تمرير مفتاحك الخاص في الهيدر
+            binance_headers = {
+                "X-MBX-APIKEY": "rvApoDI6XRYcki1r2QTnPUBs3QwESzrpTVKohgjbK1zxSzlvrFPxAbZKr94xA2Lx"
+            }
+            
+            # جلب السعر والفوليوم من بايننس باستخدام حسابك
+            res_binance = await client.get(
+                "https://api.binance.com/api/v3/ticker/24hr",
+                params={"symbol": pair},
+                headers=binance_headers,
                 timeout=10
             )
-            data_gate = res_gate.json()
+            
+            if res_binance.status_code == 200:
+                data_binance = res_binance.json()
+                price = float(data_binance["lastPrice"])
+                volume_24h = float(data_binance["quoteVolume"]) # الفوليوم بـ USDT
 
-            if isinstance(data_gate, list) and len(data_gate) > 0 and "last" in data_gate[0]:
-                price = float(data_gate[0]["last"])
-                
-                # ✅ التعديل هنا: نأخذ الفوليوم من Gate.io كقيمة افتراضية (quote_volume يمثل الفوليوم بـ USDT)
-                volume_24h = float(data_gate[0].get("quote_volume", 0))
-
-                # محاولة جلب الفوليوم الأدق من CMC
-                                # محاولة جلب الفوليوم الأدق من CMC
+                # محاولة جلب نسبة تغير الفوليوم من CMC
                 try:
                     res_cmc = await client.get(
                         f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol={sym}",
@@ -1001,12 +1007,9 @@ async def handle_symbol(m: types.Message):
                     data_cmc = res_cmc.json()
                     if res_cmc.status_code == 200 and sym in data_cmc.get("data", {}):
                         quote_data = data_cmc["data"][sym]["quote"]["USD"]
-                        # الفوليوم الكلي
-                        volume_24h = float(quote_data["volume_24h"])
-                        # نسبة تغير الفوليوم (مهم جداً لكشف الحيتان)
                         vol_change_cmc = float(quote_data.get("volume_change_24h", 0))
                         
-                        # 🔥 تحديث قاعدة البيانات فوراً بنسبة تغير الفوليوم
+                        # تحديث قاعدة البيانات
                         async with pool.acquire() as conn:
                             await conn.execute("""
                                 INSERT INTO market_memory (symbol, volume_change, last_updated)
@@ -1022,8 +1025,7 @@ async def handle_symbol(m: types.Message):
                     "lang": lang, "is_dex": False
                 }
             else:
-                raise ValueError("Symbol not found in Gate.io")
-
+                raise ValueError("Symbol not found in Binance")
 
     except Exception:
         dex_data = await search_dex_coin(sym)
