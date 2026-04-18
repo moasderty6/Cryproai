@@ -327,7 +327,7 @@ async def analyze_radar_coin(c, client, is_btc_bullish, sem):
             squeeze_pct = df["bb_width"].iloc[-1]
             if squeeze_pct < 0.05:
                 score += 35.0
-                signal_type = "🗜️ MAX BB SQUEEZE (انضغاط عنيف)"
+                signal_type = "🗜️ MAX BB SQUEEZE"
             elif squeeze_pct < 0.08:
                 score += 20.0
 
@@ -346,19 +346,19 @@ async def analyze_radar_coin(c, client, is_btc_bullish, sem):
             
             if sweep_detected:
                 score += 30.0
-                signal_type = "🧹 LIQUIDITY SWEEP (ضرب ستوبات وتجميع)"
+                signal_type = "🧹 LIQUIDITY SWEEP"
 
             # 3. الدايفرجنس الإيجابي (Bullish Divergence Proxy)
             # السعر تحت EMA200 (قاع)، والـ RSI يخرج من منطقة التشبع البيعي (انعكاس)
             if price < ema200_val:
                 if last_rsi > 30 and df["rsi"].iloc[-10:-1].min() < 30:
                     score += 25.0
-                    signal_type = "📉 BULLISH DIVERGENCE (انعكاس من القاع)"
+                    signal_type = "📉 BULLISH DIVERGENCE"
             
             # 4. التجميع الصامت تحت الرادار
             if avg_vol_5 > (avg_vol_20 * 1.5) and price < ema50_val and squeeze_pct < 0.15:
                 score += 20.0
-                signal_type = "🐋 SMART MONEY ACCUMULATION (تجميع حيتان)"
+                signal_type = "🐋 SMART MONEY ACCUMULATION"
 
             # --- الفلتر النهائي: دمج الأوردر بوك (الضغط العالمي) ---
             if score >= 45.0: 
