@@ -204,7 +204,7 @@ async def update_market_memory_loop(pool):
             print(f"Market Memory Loop Error: {e}")
         
         # ينام ويحدث البيانات كل 4 ساعات (14400 ثانية)
-        await asyncio.sleep(14400)
+        await asyncio.sleep(900)
 
 import random
 
