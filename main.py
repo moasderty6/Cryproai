@@ -206,22 +206,19 @@ async def update_market_memory_loop(pool):
         # ينام ويحدث البيانات كل 4 ساعات (14400 ثانية)
         await asyncio.sleep(14400)
 
-# --- الرادار الخارق المعدل ---
-# --- الرادار الخارق المعدل (النسخة الديناميكية الانفجارية) ---
-# --- الرادار الخارق المعدل (النسخة الديناميكية المستمرة) ---
-# --- الرادار الخارق المعدل (النسخة الاستباقية) ---
+# --- الرادار الخارق المعدل ---import random
+
 async def ai_opportunity_radar(pool):
-    print("🚀 تم تشغيل الرادار الاستباقي للبحث عن التجميع قبل الانفجار...")
+    print("🚀 تم تشغيل الرادار الشامل (مسح كامل للسوق)...")
     await asyncio.sleep(5)
     
-    while True: # تشغيل مستمر بدون توقف
+    while True:
         try:
-            print("🔍 جاري مسح السوق...")
+            print("🔍 جاري بدء دورة مسح جديدة لـ 250 عملة...")
             headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
             STABLE_COINS = {"USDT","USDC","BUSD","DAI","TUSD","FDUSD","USDP","GUSD","USDD","LUSD"}
 
-            async with httpx.AsyncClient(timeout=25) as client:
-                
+            async with httpx.AsyncClient(timeout=30) as client:
                 is_btc_bullish = await get_btc_trend(client)
 
                 res = await client.get(
@@ -236,10 +233,12 @@ async def ai_opportunity_radar(pool):
                     
                 coins = res.json()["data"]
 
+                # متغيرات لحفظ أفضل عملة بعد انتهاء المسح بالكامل
                 best_coin = None
-                best_score = 0
+                best_score = 0.0
                 best_meta = None
 
+                # ⚠️ المسح الكامل يبدأ هنا
                 for c in coins:
                     symbol = c["symbol"]
                     if symbol in STABLE_COINS: continue
@@ -248,11 +247,13 @@ async def ai_opportunity_radar(pool):
                     marketcap = c["quote"]["USD"]["market_cap"]
                     change24 = c["quote"]["USD"]["percent_change_24h"]
 
-                    # 🛑 الفلترة الذكية
                     if volume < 5_000_000 or marketcap < 10_000_000: continue
                     if abs(change24) < 0.4: continue
 
                     price = c["quote"]["USD"]["price"]
+
+                    # 🛡️ حماية السيرفر: انتظار عشوائي متذبذب بين كل عملة وأخرى
+                    await asyncio.sleep(random.uniform(1.8, 3.5))
 
                     candles = await get_candles_gate(f"{symbol}_USDT", "1h", limit=120)
                     if not candles: continue
@@ -269,61 +270,48 @@ async def ai_opportunity_radar(pool):
                     ema200 = df["close"].ewm(span=200).mean()
                     trend_up = df["close"].iloc[-1] > ema200.iloc[-1]
 
-                    # ----------------------------------------------------
-                    # 🔥 مؤشرات التنبؤ المبكر (Pre-Breakout & Accumulation)
-                    # ----------------------------------------------------
                     avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
                     avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
                     
-                    # 1. التجميع الصامت: الفوليوم يرتفع تدريجياً لكن السعر لم ينفجر بعد
                     silent_accumulation = (avg_vol_5 > avg_vol_20 * 1.2)
-                    
-                    # 2. الانضغاط السعري الشديد (الهدوء الذي يسبق العاصفة)
                     range_20 = df["high"].rolling(20).max() - df["low"].rolling(20).min()
                     squeeze_pct = range_20.iloc[-1] / price
-                    super_squeeze = squeeze_pct < 0.04 # نطاق تذبذب ضيق جداً (أقل من 4%)
                     
-                    # 3. التحضير للاختراق: السعر يطرق باب القمة (قريب منها بـ 2% فقط)
-                    recent_high = df["high"].rolling(20).max().iloc[-2]
-                    distance_to_high = (recent_high - price) / price
-                    pre_breakout = 0 < distance_to_high < 0.02
-
-                    # الفلتر القاتل للحركات الوهمية
                     fake_move = (high - low) / price > 0.35
                     if fake_move: continue
 
-                    # -----------------
-                    # 🎯 1H BASE SCORING (نظام التقييم الاستباقي)
-                    # -----------------
-                    base_score = 0
+                    # ----------------------------------------------------
+                    # 🎯 الحساب الديناميكي الدقيق للسكور (Dynamic Scoring)
+                    # ----------------------------------------------------
+                    score = 0.0
                     
-                    # نكافئ الـ RSI اللي بدأ يصحى من القاع (مرحلة التجميع)
-                    if 40 <= last_rsi <= 55: base_score += 15
-                    elif 55 < last_rsi <= 65: base_score += 10 # الزخم بدأ يرتفع
+                    # 1. نقاط الـ RSI (معادلة سلسة بدلاً من أرقام ثابتة)
+                    # أفضل منطقة للتجميع هي بين 40 و 60
+                    if 35 <= last_rsi <= 65:
+                        score += 20 - abs(50 - last_rsi) * 0.5 
                     
+                    # 2. نقاط الماكد (حسب قوة الزخم)
                     if last_macd_diff > 0:
-                        base_score += 10
-                        if last_macd_diff > 0.002: base_score += 5
+                        score += 10 + min(last_macd_diff * 100, 10.0) # سكور مرن يصل لـ 20
+                        
+                    # 3. نقاط الاتجاه
+                    if trend_up: score += 12.5
                     
-                    if trend_up: base_score += 10
-                    
-                    # مكافآت التنبؤ قبل الانفجار (السر هنا)
-                    if silent_accumulation: base_score += 20
-                    if super_squeeze: base_score += 15
-                    if pre_breakout: base_score += 20 # السعر يطرق باب الانفجار
-                    
-                    if not silent_accumulation and not trend_up: base_score -= 15
-                    if last_rsi < 35: base_score -= 10
+                    # 4. الانضغاط السعري (كلما زاد الانضغاط زاد السكور بشكل عكسي)
+                    if squeeze_pct < 0.10:
+                        squeeze_bonus = (0.10 - squeeze_pct) * 200 
+                        score += min(squeeze_bonus, 18.0)
+                        
+                    # 5. التجميع الصامت
+                    if silent_accumulation:
+                        vol_ratio = avg_vol_5 / avg_vol_20
+                        score += min(vol_ratio * 5, 15.0)
 
-                    # ----------------------------------------------------
-                    # 🚀 SUPER RADAR: Multi-Timeframe & Orderbook Funnel
-                    # ----------------------------------------------------
-                    score = base_score
+                    # فلترة متقدمة للعملات القوية فقط للبحث العميق
                     if score >= 45: 
-                        if is_btc_bullish: score += 10
-                        else: score -= 5 
+                        if is_btc_bullish: score += 8.5
+                        else: score -= 5.5 
 
-                        # فريم 15 دقيقة لتأكيد نقطة الدخول اللحظية
                         candles_15m = await get_candles_gate(f"{symbol}_USDT", "15m", limit=30)
                         if candles_15m:
                             df_15m = pd.DataFrame(candles_15m).iloc[:, :6]
@@ -331,17 +319,16 @@ async def ai_opportunity_radar(pool):
                             for col in ["close","volume","open"]: df_15m[col] = pd.to_numeric(df_15m[col], errors='coerce')
                             
                             vol_15m_avg = df_15m["volume"].rolling(10).mean().iloc[-1]
-                            if df_15m["volume"].iloc[-1] > (vol_15m_avg * 1.5): score += 10
-                            if df_15m["close"].iloc[-1] > df_15m["open"].iloc[-1]: score += 5
+                            if df_15m["volume"].iloc[-1] > (vol_15m_avg * 1.5): score += 9.2
 
-                        # دفتر الأوامر (السيولة المخفية اللي بتأكد التجميع)
                         buy_pressure = await get_orderbook_pressure(client, symbol)
-                        if buy_pressure > 2.0: score += 20 
-                        elif buy_pressure > 1.3: score += 10
+                        if buy_pressure > 1.2:
+                            score += min((buy_pressure - 1) * 10, 18.0)
 
-                    # 🔒 Clamp 
-                    score = max(0, min(score, 100))
+                    # تقييد السكور بين 0 و 100 مع كسر عشري واحد
+                    score = round(max(0.0, min(score, 100.0)), 1)
 
+                    # تحديث أفضل عملة في هذه الدورة
                     if score > best_score:
                         best_score = score
                         best_coin = c
@@ -350,35 +337,48 @@ async def ai_opportunity_radar(pool):
                             "price": price
                         }
 
-                    await asyncio.sleep(0.15)
-
-                # -----------------
-                # الإرسال للأدمن والانتظار
-                # -----------------
-                if not best_coin or best_score < 65:
-                    print(f"😴 لم يجد الرادار فرصة تجميع قوية. إعادة المحاولة بعد 15 ثانية...")
-                    await asyncio.sleep(15)
+                # ====================================================
+                # 🏆 تم انتهاء المسح بالكامل. الآن نقيم أفضل عملة وجدناها
+                # ====================================================
+                
+                if not best_coin or best_score < 60.0:
+                    print(f"😴 مسح مكتمل: أعلى سكور كان {best_score}. لا يوجد فرص قوية. إعادة المحاولة...")
+                    await asyncio.sleep(60) # راحة دقيقة ثم نعيد المسح
                     continue
 
-                if best_score >= 90:
-                    signal = "💣 SMART MONEY"
-                elif best_score >= 80:
-                    signal = "🚀 STRONG BREAKOUT"
-                elif best_score >= 70:
-                    signal = "🎯 HIGH PROBABILITY"
-                else:
-                    signal = "⚡ EARLY SETUP"
+                # 🔥 قائمة الإشارات الـ 10 الاحترافية بناءً على السكور الدقيق
+                if best_score >= 96.0:
+                    signal = "🌌 HYPER ACCUMULATION (Institutional Buy)"
+                elif best_score >= 92.0:
+                    signal = "🌋 IMMINENT PARABOLIC BREAKOUT"
+                elif best_score >= 88.0:
+                    signal = "🐋 WHALE WALLET ACTIVATION"
+                elif best_score >= 84.0:
+                    signal = "🚀 STRONG BULLISH MOMENTUM"
+                elif best_score >= 80.0:
+                    signal = "📈 GOLDEN CROSS COMPRESSION"
+                elif best_score >= 76.0:
+                    signal = "⚡ SMART MONEY FOOTPRINT"
+                elif best_score >= 72.0:
+                    signal = "🎯 HIGH PROBABILITY SETUP"
+                elif best_score >= 68.0:
+                    signal = "🔍 SILENT ACCUMULATION PHASE"
+                elif best_score >= 64.0:
+                    signal = "⏳ EARLY REVERSAL DETECTED"
+                else: # من 60 إلى 63.9
+                    signal = "🛡️ SUPPORT TESTING / BASE BUILDING"
 
                 symbol = best_meta["symbol"]
                 price = best_meta["price"]
 
+                # استدعاء Groq فقط للعملة الفائزة (لتقليل الضغط)
                 insight_ar = await ask_groq(
-                    f"اشرح باختصار سبب احتمال صعود {symbol} مبرزاً علامات التجميع والانضغاط قبل الاختراق. سطرين فقط.",
+                    f"اكتب سطرين فقط: لماذا تعتبر عملة {symbol} في مرحلة '{signal}' فنياً بناءً على تجميع السيولة؟",
                     lang="ar"
                 )
 
                 insight_en = await ask_groq(
-                    f"Explain briefly why {symbol} is accumulating and preparing for a breakout soon. 2 lines.",
+                    f"Write strictly 2 lines: Why is {symbol} in a '{signal}' phase technically based on liquidity?",
                     lang="en"
                 )
 
@@ -398,12 +398,12 @@ async def ai_opportunity_radar(pool):
                 ])
 
                 admin_text = (
-                    f"⚠️ <b>تنبيه أدمن: رادار استباقي جديد 🔥</b>\n"
+                    f"⚠️ <b>تنبيه أدمن: مسح السوق مكتمل 🔥</b>\n"
                     f"━━━━━━━━━━━━━━\n"
-                    f"العملة: #{symbol}\n"
-                    f"السعر: ${format_price(price)}\n"
-                    f"الإشارة: {signal}\n"
-                    f"السكور: {best_score}/100\n\n"
+                    f"🏆 <b>أفضل عملة:</b> #{symbol}\n"
+                    f"💵 السعر: ${format_price(price)}\n"
+                    f"⚡ الإشارة: {signal}\n"
+                    f"📊 السكور: <b>{best_score}/100</b>\n\n"
                     f"📝 <b>التحليل (عربي):</b>\n{insight_ar}\n\n"
                     f"📝 <b>التحليل (إنجليزي):</b>\n{insight_en}\n"
                     f"━━━━━━━━━━━━━━\n"
@@ -412,14 +412,14 @@ async def ai_opportunity_radar(pool):
 
                 try:
                     await bot.send_message(ADMIN_USER_ID, admin_text, reply_markup=admin_kb, parse_mode=ParseMode.HTML)
-                    print(f"✅ تم اصطياد {symbol} وإرسالها للأدمن! استراحة 3 دقائق...")
-                    await asyncio.sleep(49999) # ينام 3 دقائق بعد الإرسال عشان ما يزعجك بنفس العملة
+                    print(f"✅ تم اصطياد أفضل عملة ({symbol} بسكور {best_score})! استراحة 3 دقائق قبل الدورة القادمة...")
+                    await asyncio.sleep(1200) # راحة للمنطق قبل بدء مسح جديد
                 except Exception as e:
                     print(f"Failed to send approval to admin: {e}")
 
         except Exception as e:
             print(f"Radar Error: {e}")
-            await asyncio.sleep(15)
+            await asyncio.sleep(60)
 
         # تم تصحيح وقت الانتظار ليكون 6 ساعات بالضبط (6 * 60 * 60)
   # 6 ساعات # انتطار الدورة القادمة
