@@ -269,11 +269,11 @@ async def update_market_memory_loop(pool):
 import random
 
 async def analyze_radar_coin(c, client, is_btc_bullish, sem):
-    """دالة فرعية تفحص كل عملة بشكل متزامن"""
-    async with sem:  # تقييد الطلبات المتزامنة لحماية الـ API
+    """دالة قناص القيعان: تبحث عن التجميع، ابتلاع السيولة، والانضغاط السعري"""
+    async with sem:  
         try:
             symbol = c["symbol"]
-            price = c["quote"]["USD"]["price"]
+            price = float(c["quote"]["USD"]["price"])
             
             candles = await get_candles_binance(f"{symbol}USDT", "1h", limit=500)
             if not candles: return None
@@ -284,27 +284,34 @@ async def analyze_radar_coin(c, client, is_btc_bullish, sem):
             for col in ["close","high","low","open","volume"]:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
 
-            last_rsi, last_macd_diff, last_bb, last_vol, high, low = compute_indicators(candles)
+            # --- حساب المؤشرات داخلياً لسهولة الوصول ---
+            # RSI
+            delta = df["close"].diff()
+            gain = delta.clip(lower=0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+            loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+            rs = gain / loss
+            df["rsi"] = 100 - (100 / (1 + rs))
+            last_rsi = df["rsi"].iloc[-1]
 
-            ema20_val = df["close"].ewm(span=20).mean().iloc[-1]
+            # Bollinger Bands Width (Squeeze)
+            sma20 = df["close"].rolling(20).mean()
+            std20 = df["close"].rolling(20).std(ddof=0)
+            df["upper_band"] = sma20 + 2*std20
+            df["lower_band"] = sma20 - 2*std20
+            df["bb_width"] = (df["upper_band"] - df["lower_band"]) / sma20
+            
             ema50_val = df["close"].ewm(span=50).mean().iloc[-1]
             ema200_val = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else ema50_val
-            
-            # Anchored VWAP للرادار
-            df['datetime'] = pd.to_datetime(pd.to_numeric(df['timestamp']), unit='s')
-            df['date'] = df['datetime'].dt.date
-            df['typical_vol'] = ((df['high'] + df['low'] + df['close']) / 3) * df['volume']
-            vwap_val = (df.groupby('date')['typical_vol'].cumsum() / df.groupby('date')['volume'].cumsum()).iloc[-1]
 
             avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
             avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
-            
-            silent_accumulation = (avg_vol_5 > avg_vol_20 * 1.2)
-            range_20 = df["high"].rolling(20).max() - df["low"].rolling(20).min()
-            squeeze_pct = range_20.iloc[-1] / price
-            
-            fake_move = (high - low) / price > 0.35
-            if fake_move: return None
+
+            # --- الحماية من الشموع الخادعة (الذيول العلوية الطويلة - التصريف) ---
+            last = df.iloc[-1]
+            last_body = abs(last["close"] - last["open"])
+            last_upper_wick = last["high"] - max(last["open"], last["close"])
+            if last_upper_wick > (last_body * 3) and (last_upper_wick / price) > 0.04:
+                return None # تصريف عنيف، تجاهل العملة
 
             try:
                 adx_ind = ta.trend.ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14, fillna=True)
@@ -312,89 +319,87 @@ async def analyze_radar_coin(c, client, is_btc_bullish, sem):
             except:
                 current_adx = 0.0
 
-            # --- Scoring System ---
+            # --- 🎯 نظام تنقيط صيد القيعان (Bottom Sniper Scoring) ---
             score = 0.0
-            
-            if 35 <= last_rsi <= 65: score += 20 - abs(50 - last_rsi) * 0.5 
-            if last_macd_diff > 0: score += 10 + min(last_macd_diff * 100, 10.0)
-                
-            micro_bull = ema20_val > ema50_val
-            macro_bull = price > ema200_val
-            vwap_bull = price > vwap_val
+            signal_type = "🎯 HIGH PROBABILITY"
 
-            if micro_bull and macro_bull and vwap_bull:
+            # 1. انضغاط البولينجر (Bollinger Squeeze) - قنبلة موقوتة
+            squeeze_pct = df["bb_width"].iloc[-1]
+            if squeeze_pct < 0.05:
+                score += 35.0
+                signal_type = "🗜️ MAX BB SQUEEZE (انضغاط عنيف)"
+            elif squeeze_pct < 0.08:
                 score += 20.0
-                if current_adx >= 25: score += min((current_adx - 20) * 0.8, 15.0)
-            elif micro_bull and not vwap_bull:
-                score -= 15.0 
-            elif not micro_bull and vwap_bull and current_adx < 25:
-                score += 12.0 
 
-            if squeeze_pct < 0.10: score += min((0.10 - squeeze_pct) * 200, 18.0)
+            # 2. اصطياد السيولة (Liquidity Sweep / Spring)
+            # فحص آخر 5 شموع للبحث عن ذيل سفلي طويل جداً ابتلع ستوبات المتداولين
+            recent_5 = df.tail(5)
+            sweep_detected = False
+            for idx, row in recent_5.iterrows():
+                body = max(abs(row["close"] - row["open"]), price * 0.0001)
+                lower_wick = min(row["open"], row["close"]) - row["low"]
                 
-            if silent_accumulation:
-                vol_ratio = avg_vol_5 / avg_vol_20
-                score += min(vol_ratio * 5, 15.0)
-                if current_adx < 20 and vwap_bull: score += 20.0 
+                # ذيل سفلي أطول من الجسم بمرتين ونصف + فوليوم أعلى من المتوسط
+                if lower_wick > (body * 2.5) and row["volume"] > (avg_vol_20 * 1.3):
+                    sweep_detected = True
+                    break
+            
+            if sweep_detected:
+                score += 30.0
+                signal_type = "🧹 LIQUIDITY SWEEP (ضرب ستوبات وتجميع)"
 
-            if current_adx > 50: score -= (current_adx - 50) * 1.5
+            # 3. الدايفرجنس الإيجابي (Bullish Divergence Proxy)
+            # السعر تحت EMA200 (قاع)، والـ RSI يخرج من منطقة التشبع البيعي (انعكاس)
+            if price < ema200_val:
+                if last_rsi > 30 and df["rsi"].iloc[-10:-1].min() < 30:
+                    score += 25.0
+                    signal_type = "📉 BULLISH DIVERGENCE (انعكاس من القاع)"
+            
+            # 4. التجميع الصامت تحت الرادار
+            if avg_vol_5 > (avg_vol_20 * 1.5) and price < ema50_val and squeeze_pct < 0.15:
+                score += 20.0
+                signal_type = "🐋 SMART MONEY ACCUMULATION (تجميع حيتان)"
 
-            if score >= 45: 
-                if is_btc_bullish: score += 8.5
-                else: score -= 5.5 
-
-                # 🌍 دمج الأوردر بوك من 6 منصات!
+            # --- الفلتر النهائي: دمج الأوردر بوك (الضغط العالمي) ---
+            if score >= 45.0: 
                 global_ob_pressure = await get_aggregated_orderbook(client, symbol)
                 
-                # إضافة نقاط قوية إذا كانت طلبات الشراء أعلى من البيع عالمياً
+                # إذا كانت هناك طلبات شراء ضخمة مخفية في الأوردر بوك
                 if global_ob_pressure >= 1.5:
-                    # ضغط شراء قوي جداً
-                    score += min((global_ob_pressure - 1) * 6, 20.0)
+                    score += min((global_ob_pressure - 1) * 8, 25.0)
                 elif global_ob_pressure < 0.8:
-                    # جدران بيع قوية عبر المنصات (تهبيط السكور)
-                    score -= 10.0
-
-                # دمج الفوليوم دلتا اللحظي للتأكيد
-                candles_15m = await get_candles_binance(f"{symbol}USDT", "15m", limit=30)
-                if candles_15m:
-                    df_15m = pd.DataFrame(candles_15m).iloc[:, :6]
-                    df_15m.columns = ["timestamp", "volume", "close", "high", "low", "open"]
-                    for col in ["close","open","volume"]: df_15m[col] = pd.to_numeric(df_15m[col])
-                    buy_vol = df_15m[df_15m["close"] > df_15m["open"]]["volume"].sum()
-                    sell_vol = df_15m[df_15m["close"] < df_15m["open"]]["volume"].sum()
-                    
-                    if sell_vol > 0 and (buy_vol / sell_vol) > 1.2:
-                        score += min(((buy_vol / sell_vol) - 1) * 10, 18.0)
-
+                    # جدران بيع وهمية (Spoofing) أو حقيقية، نخصم نقاط
+                    score -= 20.0
 
             score = round(max(0.0, min(score, 100.0)), 1)
             current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
 
-            # نمرر الـ ob_pressure لكي يقرأه الذكاء الاصطناعي في الخطوة القادمة
-            if score >= 70.0:  
+            # نرفع شرط الموافقة إلى 75 بدلاً من 70 لزيادة الدقة
+            if score >= 75.0:  
                 return {
                     "symbol": symbol, "price": price, "score": score,
                     "rsi": round(last_rsi, 2), "adx": round(current_adx, 2),
-                    "macd": round(last_macd_diff, 4), "vol_ratio": round(current_vol_ratio, 2),
-                    "ob_pressure": round(locals().get('global_ob_pressure', 1.0), 2) # حفظ النسبة
+                    "macd": 0.0, "vol_ratio": round(current_vol_ratio, 2),
+                    "ob_pressure": round(locals().get('global_ob_pressure', 1.0), 2),
+                    "signal_type": signal_type # إرسال نوع الإشارة الفريد
                 }
             return None 
         except Exception as e:
             return None
 
 
+
 async def ai_opportunity_radar(pool):
-    print("🚀 تم تشغيل الرادار الشامل (مسحة واحدة بناءً على طلب الأدمن)...")
+    print("🚀 تم تشغيل الرادار الشامل (وضع صيد القيعان)...")
     
-    # الـ Semaphore سيسمح بـ 15 اتصال في نفس الوقت
-    sem = asyncio.Semaphore(15)
+    # 🛡️ الأمان أولاً: 5 طلبات متزامنة فقط بدلاً من 15 لحماية السيرفر من الحظر
+    sem = asyncio.Semaphore(5)
     
     try:
-        print("🔍 جاري بدء دورة مسح متزامنة لـ 250 عملة...")
+        print("🔍 جاري جلب 1000 عملة للبحث عن الجواهر المنسية...")
         headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
         STABLE_COINS = {"USDT","USDC","BUSD","DAI","TUSD","FDUSD"}
 
-        # 🟢 1. جلب العملات التي ظهرت في آخر 7 أيام لتجاهلها
         async with pool.acquire() as conn:
             records = await conn.fetch("""
                 SELECT symbol FROM radar_history 
@@ -406,42 +411,39 @@ async def ai_opportunity_radar(pool):
             is_btc_bullish = await get_btc_trend(client)
             res = await client.get(
                 "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
-                headers=headers, params={"limit": "250"}
+                headers=headers, params={"limit": "1000"} # 🎯 مسح 1000 عملة
             )
             
             if res.status_code != 200:
-                await bot.send_message(ADMIN_USER_ID, "❌ فشل الاتصال بـ CoinMarketCap. جرب مرة أخرى لاحقاً.")
+                await bot.send_message(ADMIN_USER_ID, "❌ فشل الاتصال بـ CoinMarketCap.")
                 return
             
-            # 🟢 2. فلترة العملات
+            # 🎯 فلترة لاصطياد الانفجارات (فوليوم مليون دولار كافي جداً)
             coins = [
                 c for c in res.json()["data"] 
                 if c["symbol"] not in STABLE_COINS 
                 and c["symbol"] not in ignored_symbols
-                and c["quote"]["USD"]["volume_24h"] >= 5_000_000 
-                and abs(c["quote"]["USD"]["percent_change_24h"]) >= 0.4
+                and c["quote"]["USD"]["volume_24h"] >= 1_000_000 # تم تخفيض الفوليوم لصيد العملات قبل أن تطير
+                and abs(c["quote"]["USD"]["percent_change_24h"]) >= 0.2
             ]
 
-            # ⚡ التشغيل المتزامن (Concurrency)
             tasks = [analyze_radar_coin(c, client, is_btc_bullish, sem) for c in coins]
             results = await asyncio.gather(*tasks)
             
-            # تصفية النتائج
             valid_signals = [r for r in results if r is not None]
             valid_signals.sort(key=lambda x: x['score'], reverse=True)
 
             if not valid_signals:
-                print("😴 مسح مكتمل: لا يوجد فرص قوية.")
-                await bot.send_message(ADMIN_USER_ID, "😴 <b>مسح مكتمل:</b>\nلم يتم العثور على فرص قوية تتجاوز السكور المطلوب حالياً، أو أن جميع الفرص الجيدة موجودة مسبقاً في الذاكرة.", parse_mode=ParseMode.HTML)
+                print("😴 مسح مكتمل: لم يتم العثور على قيعان مهيأة للانفجار حالياً.")
+                await bot.send_message(ADMIN_USER_ID, "😴 <b>مسح مكتمل:</b>\nالسوق لا يعطي إشارات تجميع واضحة حالياً، أو أن السيولة معدومة. تم تأجيل الصيد.", parse_mode=ParseMode.HTML)
                 return
 
-            # أخذ أفضل فرصة
             best_meta = valid_signals[0]
             best_score = best_meta['score']
             symbol = best_meta['symbol']
             price = best_meta['price']
+            signal = best_meta.get('signal_type', "🎯 BOTTOM SNIPED") # أخذ الإشارة الدقيقة من الدالة
 
-            # 🟢 3. إدراج العملة الفائزة في قاعدة البيانات
             async with pool.acquire() as conn:
                 await conn.execute("""
                     INSERT INTO radar_history (symbol, last_signaled)
@@ -450,24 +452,17 @@ async def ai_opportunity_radar(pool):
                     SET last_signaled = CURRENT_TIMESTAMP
                 """, symbol)
 
-            # تحديد قوة الإشارة
-            if best_score >= 90.0: signal = "🌌 HYPER ACCUMULATION"
-            elif best_score >= 80.0: signal = "🐋 WHALE WALLET ACTIVATION"
-            elif best_score >= 75.0: signal = "⚡ SMART MONEY"
-            else: signal = "🎯 HIGH PROBABILITY"
-
-            # إنشاء البرومبت للذكاء الاصطناعي
             prompt_ar = f"""
-أنت كبير المحللين الفنيين. رادار السوق الذكي التقط فرصة لعملة {symbol} بسكور {best_score}/100.
+أنت كبير المحللين الفنيين. رادار الذكاء الاصطناعي التقط فرصة من القاع لعملة {symbol} بسكور {best_score}/100.
 الإشارة: {signal} | ADX: {best_meta['adx']} | RSI: {best_meta['rsi']} | سيولة أعلى بـ {best_meta['vol_ratio']} ضعف.
-ضغط الشراء العالمي (Orderbook): طلبات الشراء تتفوق بـ {best_meta.get('ob_pressure', 1.0)} ضعف.
-اكتب تحليلاً احترافياً (3 أسطر) يدمج هذه الأرقام مباشرة.
+ضغط الشراء (Orderbook): طلبات الشراء تتفوق بـ {best_meta.get('ob_pressure', 1.0)} ضعف.
+اكتب تحليلاً احترافياً (3 أسطر) يدمج هذه الأرقام مباشرة ويوضح سبب التجميع الحالي.
 """
             prompt_en = f"""
-You are Lead Technical Analyst. Smart market radar caught {symbol} with score {best_score}/100.
+You are Lead Technical Analyst. AI radar caught a bottom opportunity for {symbol} with score {best_score}/100.
 Signal: {signal} | ADX: {best_meta['adx']} | RSI: {best_meta['rsi']} | Liquidity {best_meta['vol_ratio']}x higher.
-Global Buy Pressure (Orderbook): Buy bids are {best_meta.get('ob_pressure', 1.0)}x stronger.
-Write a 3-line professional analysis integrating these metrics.
+Buy Pressure (Orderbook): Buy bids are {best_meta.get('ob_pressure', 1.0)}x stronger.
+Write a 3-line professional analysis integrating these metrics and explaining the current accumulation.
 """
 
             insight_ar = await ask_groq(prompt_ar, lang="ar")
@@ -485,17 +480,17 @@ Write a 3-line professional analysis integrating these metrics.
             ])
 
             admin_text = (
-                f"⚠️ <b>تنبيه أدمن: مسح السوق مكتمل 🔥</b>\n"
+                f"⚠️ <b>تنبيه أدمن: قناص القيعان أنهى المسح 🎯</b>\n"
                 f"🏆 <b>أفضل عملة:</b> #{symbol}\n"
                 f"💵 السعر: ${format_price(price)}\n"
-                f"⚡ الإشارة: {signal}\n"
+                f"⚡ نوع التجميع: {signal}\n"
                 f"📊 السكور: <b>{best_score}/100</b>\n\n"
-                f"📝 <b>التحليل:</b>\n{insight_ar}\n"
+                f"📝 <b>التحليل:</b>\n{insight_ar}\n\n"
                 f"هل تريد الموافقة على نشرها؟"
             )
 
             await bot.send_message(ADMIN_USER_ID, admin_text, reply_markup=admin_kb, parse_mode=ParseMode.HTML)
-            print(f"✅ تم اصطياد {symbol} بسكور {best_score}!")
+            print(f"✅ تم اصطياد قاع {symbol} بسكور {best_score}!")
 
     except Exception as e:
         print(f"Radar Error: {e}")
@@ -1144,37 +1139,37 @@ def gate_sign(params: dict):
     return {}
 
 # --- جلب الشموع ---
-async def get_candles_binance(symbol: str, interval: str, limit: int = 500):
-    """جلب الشموع من بايننس وترتيبها لتتطابق مع خوارزميات المؤشرات لديك"""
-    # بايننس لا تستخدم (_) في الرموز، يجب أن يكون BTCUSDT
+async def get_candles_binance(symbol: str, interval: str, limit: int = 500, retries: int = 3):
+    """جلب الشموع من بايننس مع نظام حماية وإعادة محاولة لتجنب الحظر (Rate Limits)"""
     clean_symbol = symbol.replace("_", "") 
     
     async with httpx.AsyncClient() as client:
-        try:
-            res = await client.get(
-                f"{BINANCE_BASE}/klines",
-                params={"symbol": clean_symbol, "interval": interval, "limit": limit},
-                headers=BINANCE_HEADERS,
-                timeout=10
-            )
-            if res.status_code == 200:
-                data = res.json()
-                formatted_candles = []
-                for c in data:
-                    # تحويل صيغة بايننس إلى الصيغة التي يفهمها البوت
-                    formatted_candles.append([
-                        str(int(c[0] / 1000)), # timestamp (ثواني)
-                        c[5],                  # volume
-                        c[4],                  # close
-                        c[2],                  # high
-                        c[3],                  # low
-                        c[1]                   # open
-                    ])
-                return formatted_candles
-        except Exception as e:
-            print(f"Error fetching Binance candles for {clean_symbol}: {e}")
-            
+        for attempt in range(retries):
+            try:
+                res = await client.get(
+                    f"{BINANCE_BASE}/klines",
+                    params={"symbol": clean_symbol, "interval": interval, "limit": limit},
+                    headers=BINANCE_HEADERS,
+                    timeout=10
+                )
+                if res.status_code == 200:
+                    data = res.json()
+                    formatted_candles = []
+                    for c in data:
+                        formatted_candles.append([
+                            str(int(c[0] / 1000)), c[5], c[4], c[2], c[3], c[1]
+                        ])
+                    return formatted_candles
+                elif res.status_code == 429: # تم تجاوز الحد المسموح
+                    await asyncio.sleep(2 * (attempt + 1)) # انتظر قبل المحاولة القادمة
+                else:
+                    return None
+            except Exception as e:
+                if attempt == retries - 1:
+                    print(f"Error fetching Binance candles for {clean_symbol}: {e}")
+                await asyncio.sleep(1)
         return None
+
 
 
 # --- حساب المؤشرات ---
