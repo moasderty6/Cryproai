@@ -386,17 +386,36 @@ async def ai_opportunity_radar(pool):
 
                 symbol = best_meta["symbol"]
                 price = best_meta["price"]
+                b_rsi = best_meta["rsi"]
+                b_adx = best_meta["adx"]
+                b_macd = best_meta["macd"]
+                b_vol = best_meta["vol_ratio"]
 
-                # استدعاء Groq فقط للعملة الفائزة (لتقليل الضغط)
-                insight_ar = await ask_groq(
-                    f"اكتب سطرين فقط: لماذا تعتبر عملة {symbol} في مرحلة '{signal}' فنياً بناءً على تجميع السيولة؟",
-                    lang="ar"
-                )
+                # 🔥 البرومبت العربي الاحترافي
+                prompt_ar = f"""
+أنت كبير المحللين الفنيين في "NaiF CHarT". رادار الذكاء الاصطناعي التقط فرصة تجميع وانفجار لعملة {symbol} بسكور {best_score}/100.
+اكتب تحليلاً احترافياً (من 3 إلى 4 أسطر كحد أقصى) تتوقع فيه صعود العملة وتؤكد على قوة الاتجاه، ويجب أن تذكر هذه الأرقام في سياق تحليلك لتبدو خبيراً:
+- الإشارة: {signal}
+- قوة الترند (ADX): {b_adx} (علق على هذا الرقم)
+- مؤشر الزخم (RSI): {b_rsi} (علق على هذا الرقم)
+- تضخم الفوليوم: السيولة أعلى بـ {b_vol} ضعف من المتوسط الطبيعي.
+اكتب بأسلوب حازم ومؤسساتي، لا تكتب أي مقدمات أو ترحيب، ابدأ التحليل الفني المباشر فوراً.
+"""
 
-                insight_en = await ask_groq(
-                    f"Write strictly 2 lines: Why is {symbol} in a '{signal}' phase technically based on liquidity?",
-                    lang="en"
-                )
+                # 🔥 البرومبت الإنجليزي الاحترافي
+                prompt_en = f"""
+You are the Lead Technical Analyst at "NaiF CHarT". The AI radar just caught an imminent breakout setup for {symbol} with a score of {best_score}/100.
+Write a highly professional analysis (max 3-4 lines) predicting an upward movement and confirming the trend strength. You MUST seamlessly integrate these actual metrics into your analysis to sound data-driven:
+- Phase: {signal}
+- Trend Strength (ADX): {b_adx}
+- Momentum (RSI): {b_rsi}
+- Volume Surge: Liquidity is {b_vol}x higher than average.
+Write in an institutional, authoritative tone. No introductions, jump straight into the technical analysis.
+"""
+
+                insight_ar = await ask_groq(prompt_ar, lang="ar")
+                insight_en = await ask_groq(prompt_en, lang="en")
+
 
                 signal_id = str(uuid.uuid4())[:8] 
                 radar_pending_approvals[signal_id] = {
