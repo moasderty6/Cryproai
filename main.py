@@ -264,11 +264,18 @@ async def ai_opportunity_radar(pool):
                     for col in ["close","high","low","open","volume"]:
                         df[col] = pd.to_numeric(df[col], errors='coerce')
 
+                                        # ... (الكود السابق داخل حلقة for c in coins:) ...
                     last_rsi, last_macd_diff, last_bb, last_vol, high, low = compute_indicators(candles)
 
-                    ema50 = df["close"].ewm(span=50).mean()
-                    ema200 = df["close"].ewm(span=200).mean()
-                    trend_up = df["close"].iloc[-1] > ema200.iloc[-1]
+                    # 🌟 1. تجهيز مؤشرات التوافق (Alignment)
+                    ema20_val = df["close"].ewm(span=20).mean().iloc[-1]
+                    ema50_val = df["close"].ewm(span=50).mean().iloc[-1]
+                    ema200_val = df["close"].ewm(span=200).mean().iloc[-1]
+                    
+                    # 🌟 2. حساب VWAP للرادار لمعرفة تمركز السيولة
+                    df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
+                    df['vwap'] = (df['typical_price'] * df['volume']).cumsum() / df['volume'].cumsum()
+                    vwap_val = df['vwap'].iloc[-1]
 
                     avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
                     avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
@@ -280,10 +287,7 @@ async def ai_opportunity_radar(pool):
                     fake_move = (high - low) / price > 0.35
                     if fake_move: continue
 
-                    # ----------------------------------------------------
-                    # 🎯 الحساب الديناميكي الدقيق للسكور (Dynamic Scoring)
-                    # ----------------------------------------------------
-                                        # 🌟 حساب ADX للرادار
+                    # 🌟 حساب ADX الحقيقي للرادار
                     try:
                         adx_ind = ta.trend.ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14, fillna=True)
                         current_adx = float(adx_ind.adx().iloc[-1])
@@ -303,14 +307,42 @@ async def ai_opportunity_radar(pool):
                     if last_macd_diff > 0:
                         score += 10 + min(last_macd_diff * 100, 10.0)
                         
-                    # 3. نقاط الاتجاه وتأكيد الـ ADX (السر هنا 🔥)
-                    if trend_up: 
-                        score += 12.5
+                    # 🚀 3. فلتر التوافق والسيولة (سر الرادار الجديد)
+                    micro_bull = ema20_val > ema50_val
+                    macro_bull = price > ema200_val
+                    vwap_bull = price > vwap_val
+
+                    # حالة التوافق الكامل (Alignment): ترند صاعد والسيولة حقيقية
+                    if micro_bull and macro_bull and vwap_bull:
+                        score += 20.0
                         if current_adx >= 25:
-                            score += min((current_adx - 20) * 0.8, 15.0) # ترند قوي، زد السكور
-                        elif current_adx < 20:
-                            score -= 5.0 # ترند ضعيف ووهمي، اخصم نقاط
+                            score += min((current_adx - 20) * 0.8, 15.0) # ترند قوي ومدعوم!
                     
+                    # كشف الفخ (Bull Trap): تقاطع صاعد لكن السعر تحت VWAP (لا توجد سيولة)
+                    elif micro_bull and not vwap_bull:
+                        score -= 15.0 # اخصم نقاط بقسوة، هذا اختراق كاذب
+                    
+                    # كشف التجميع الخفي: السعر عرضي (لا يوجد ترند واضح) لكنه متمركز فوق VWAP 
+                    elif not micro_bull and vwap_bull and current_adx < 25:
+                        score += 12.0 # الحيتان تجمع بهدوء قبل التقاطع!
+
+                    # 4. الانضغاط السعري والتجميع
+                    if squeeze_pct < 0.10:
+                        squeeze_bonus = (0.10 - squeeze_pct) * 200 
+                        score += min(squeeze_bonus, 18.0)
+                        
+                    if silent_accumulation:
+                        vol_ratio = avg_vol_5 / avg_vol_20
+                        score += min(vol_ratio * 5, 15.0)
+                        # دمج قوي: تجميع صامت + السعر فوق VWAP + ADX ميت = فرصة العمر قبل الانفجار
+                        if current_adx < 20 and vwap_bull:
+                            score += 20.0 
+
+                    # 5. عقاب الشراء في القمة (FOMO)
+                    if current_adx > 50:
+                        score -= (current_adx - 50) * 1.5
+                    
+ 
                     # 4. الانضغاط السعري والتجميع
                     if squeeze_pct < 0.10:
                         squeeze_bonus = (0.10 - squeeze_pct) * 200 
