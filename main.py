@@ -13,6 +13,7 @@ import ta
 import pandas as pd
 import uuid
 import numpy as np
+import datetime
 
 from aiohttp import web
 from dotenv import load_dotenv
@@ -341,7 +342,7 @@ async def ai_opportunity_radar(pool):
                 results = await asyncio.gather(*tasks)
                 
                 # تصفية النتائج الفارغة وترتيبها حسب السكور
-                                import datetime # تأكد من عمل import datetime في أعلى الملف إذا لم تكن موجودة
+                                 # تأكد من عمل import datetime في أعلى الملف إذا لم تكن موجودة
 
                 # تصفية النتائج الفارغة وترتيبها حسب السكور
                 valid_signals = [r for r in results if r is not None]
