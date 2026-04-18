@@ -453,13 +453,13 @@ async def ai_opportunity_radar(pool):
                 """, symbol)
 
             prompt_ar = f"""
-أنت كبير المحللين الفنيين. رادار الذكاء الاصطناعي التقط فرصة من القاع لعملة {symbol} بسكور {best_score}/100.
+أنت كبير المحللين الفنيين. رادار السوق الذكي التقط فرصة من القاع لعملة {symbol} بسكور {best_score}/100.
 الإشارة: {signal} | ADX: {best_meta['adx']} | RSI: {best_meta['rsi']} | سيولة أعلى بـ {best_meta['vol_ratio']} ضعف.
 ضغط الشراء (Orderbook): طلبات الشراء تتفوق بـ {best_meta.get('ob_pressure', 1.0)} ضعف.
 اكتب تحليلاً احترافياً (3 أسطر) يدمج هذه الأرقام مباشرة ويوضح سبب التجميع الحالي.
 """
             prompt_en = f"""
-You are Lead Technical Analyst. AI radar caught a bottom opportunity for {symbol} with score {best_score}/100.
+You are Lead Technical Analyst. Smart market caught a bottom opportunity for {symbol} with score {best_score}/100.
 Signal: {signal} | ADX: {best_meta['adx']} | RSI: {best_meta['rsi']} | Liquidity {best_meta['vol_ratio']}x higher.
 Buy Pressure (Orderbook): Buy bids are {best_meta.get('ob_pressure', 1.0)}x stronger.
 Write a 3-line professional analysis integrating these metrics and explaining the current accumulation.
