@@ -1144,10 +1144,9 @@ def detect_fake_breakout(df):
     if last["high"] > recent_high and last["close"] < recent_high:
         return -20
     return 0
-import numpy as np # تأكد من إضافتها في الأعلى
 
 def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
-    # 1. حساب الـ ATR
+    # 1. حساب الـ ATR (للوقف والأهداف كما هو)
     df['prev_close'] = df['close'].shift(1)
     df['tr0'] = abs(df['high'] - df['low'])
     df['tr1'] = abs(df['high'] - df['prev_close'])
@@ -1157,66 +1156,75 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
 
     if pd.isna(atr) or atr == 0:
         atr = current_price * 0.02 
+    atr = min(atr, current_price * 0.10)
 
-    max_atr = current_price * 0.10
-    atr = min(atr, max_atr)
-
-    # 2. تحديد الاتجاه
+    # ---------------------------------------------------------
+    # 🌟 2. حساب مؤشرات "الثالوث الذكي"
+    # ---------------------------------------------------------
     ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
     ema50 = df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
-    trend_direction = "Bullish" if ema20 >= ema50 else "Bearish"
+    ema200 = df['close'].ewm(span=200, adjust=False).mean().iloc[-1] 
+    
+    # حساب VWAP 
+    df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
+    df['vwap'] = (df['typical_price'] * df['volume']).cumsum() / df['volume'].cumsum()
+    vwap = df['vwap'].iloc[-1]
 
-    distance_pct = abs(current_price - ema50) / ema50 * 100
-    
-    # 🌟 3. الحل هنا: حساب الـ ADX الحقيقي باستخدام pandas_ta
-    
-        # 🌟 3. حساب الـ ADX الحقيقي باستخدام مكتبة ta المستقرة
+    # حساب ADX الحقيقي
     try:
-        # إنشاء كائن مؤشر ADX
-        adx_indicator = ta.trend.ADXIndicator(
-            high=df['high'],
-            low=df['low'],
-            close=df['close'],
-            window=14,
-            fillna=True # حماية من قيم NaN
-        )
-        
-        # استخراج القيمة الأخيرة لخط ADX
+        adx_indicator = ta.trend.ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14, fillna=True)
         real_adx_value = float(adx_indicator.adx().iloc[-1])
-        
-    except Exception as e:
-        print(f"ADX Calculation Error: {e}")
-        real_adx_value = 0.0 # قيمة احتياطية في حال فشل الحساب
+    except:
+        real_adx_value = 0.0
 
-    # 4. تحديد قوة الاتجاه الحقيقية بناءً على ADX الفعلي (وليس بناءً على مسافة السعر)
-    # في التحليل الفني: ADX فوق 25 يعني ترند قوي، تحت 20 يعني تذبذب عرضي
-    if real_adx_value >= 40:
-        trend_strength = "قوي"
-    elif real_adx_value >= 25:
-        trend_strength = "جيد"
-    elif real_adx_value >= 20:
-        trend_strength = "متوسط"
-    else:
+    # ---------------------------------------------------------
+    # 🧠 3. مصفوفة الدمج الفني (بنفس الكلمات الأصلية بدقة)
+    # ---------------------------------------------------------
+    micro_bull = ema20 > ema50
+    macro_bull = current_price > ema200
+    vwap_bull = current_price > vwap
+
+    trend_direction = "Bullish" if micro_bull else "Bearish"
+
+    if real_adx_value < 20:
         trend_strength = "ضعيف"
+        market_action = "صراع سيولة وتجميع حول VWAP في نطاق عرضي"
+    else: 
+        if micro_bull:
+            if macro_bull and vwap_bull:
+                trend_strength = "قوي جداً" if real_adx_value >= 40 else ("قوي" if real_adx_value >= 25 else "جيد")
+                market_action = "دخول سيولة مؤسسية حقيقية (السعر مدعوم فوق VWAP)"
+            elif not macro_bull and vwap_bull:
+                trend_strength = "متوسط"
+                market_action = "سيولة شرائية لحظية تعاكس الاتجاه العام الهابط (ارتداد)"
+            elif macro_bull and not vwap_bull:
+                trend_strength = "ضعيف"
+                market_action = "صعود غير مدعوم بالسيولة، الحيتان تبيع تحت VWAP"
+            else:
+                trend_strength = "ضعيف ومخادع"
+                market_action = "فخ مشتريات (Bull Trap) للتعليق في القمة"
+        else: # Bearish
+            if not macro_bull and not vwap_bull:
+                trend_strength = "قوي جداً" if real_adx_value >= 40 else ("قوي" if real_adx_value >= 25 else "جيد")
+                market_action = "تصريف مؤسسي قوي (السعر تحت VWAP)"
+            elif macro_bull and not vwap_bull:
+                trend_strength = "متوسط"
+                market_action = "جني أرباح طبيعي وتصحيح ضمن ترند صاعد عام"
+            elif not macro_bull and vwap_bull:
+                trend_strength = "ضعيف"
+                market_action = "الحيتان تشتري الهبوط سرًا (دعم قوي فوق VWAP)"
+            else:
+                trend_strength = "ضعيف ومخادع"
+                market_action = "فخ بيعي (Bear Trap) لتخويف المتداولين"
 
-    # 5. كشف نوايا الحيتان (بدون تغيير على كودك السابق)
-    market_action = "حركة طبيعية" 
-    if trend_direction == "Bearish" and distance_pct < 4 and db_vol_change > 60:
-        market_action = "تجميع حيتان مخفي (Accumulation)"
-    elif trend_direction == "Bullish" and distance_pct > 6 and db_vol_change > 100:
-        market_action = "خطر تصريف قمم (Distribution)"
-    elif trend_direction == "Bullish" and db_vol_change < 20:
-        market_action = "اختراق كاذب أو ضعيف (Fakeout)"
-    elif trend_direction == "Bullish" and db_vol_change >= 40:
-        market_action = "اختراق حقيقي مدعوم بسيولة"
-    elif trend_direction == "Bearish" and db_vol_change > 60:
-        market_action = "بيع هلع أو هبوط قوي (Panic Sell)"
+    if db_vol_change > 80:
+        market_action += " + فوليوم انفجاري 🔥"
+    elif db_vol_change < 15:
+        market_action += " + فوليوم ميت 📉"
 
-    # إذا كان هناك اختراق كاذب، نعدل وصف قوة الاتجاه
-    if "Fakeout" in market_action:
-        trend_strength = "ضعيف ومخادع"
-
-    # 6. حساب الأهداف والوقف (نفس كودك الممتاز الذي يعتمد على ATR)
+    # ---------------------------------------------------------
+    # 🎯 4. حساب الأهداف والوقف 
+    # ---------------------------------------------------------
     min_allowed_price = current_price * 0.000001 
     if trend_direction == "Bearish":
         sl = max(current_price * 1.005, current_price + (atr * 1.5)) 
@@ -1232,7 +1240,6 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
     support = df['low'].rolling(20).min().iloc[-1]
     resistance = df['high'].rolling(20).max().iloc[-1]
 
-    # إرجاع المتغيرات مع قيمة الـ ADX الحقيقية
     return trend_direction, trend_strength, market_action, real_adx_value, sl, tp1, tp2, tp3, support, resistance
 
 def compute_indicators(candles):
