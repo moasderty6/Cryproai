@@ -161,7 +161,7 @@ async def get_multi_exchange_orderbook(client, symbol):
         "gate": f"https://api.gateio.ws/api/v4/spot/order_book?currency_pair={gate_sym}&limit=50"
     }
 
-    # 🔥 بيانات البروكسي الخاص بك من الصورة
+    # 🔥 بيانات البروكسي الخاص بك
     PROXY_URL = "http://td-customer-pWrOuoese126-country-AE:uPBwL2f8jb72@o2917gdh.as.thordata.net:9999"
     
     proxies = {
@@ -181,11 +181,13 @@ async def get_multi_exchange_orderbook(client, symbol):
                 res = await client.get(url, timeout=3.0)
 
             if res.status_code == 200:
+                # 🔥 رسالة النجاح اللي طلبتها (رح تطبع لكل منصة تنجح)
+                print(f"✅ نجح سحب الأوامر من {exchange.upper()} لعملة {symbol}")
                 return exchange, res.json()
             else:
                 print(f"❌ خطأ {exchange.upper()} لـ {symbol}: كود {res.status_code}")
         except Exception as e:
-            # رسالة مختصرة في حال فشل البروكسي لتجنب تشويش الشاشة
+            # رسالة مختصرة في حال فشل البروكسي
             print(f"⚠️ فشل الاتصال مع {exchange.upper()} لـ {symbol}") 
         return exchange, None
 
@@ -220,13 +222,14 @@ async def get_multi_exchange_orderbook(client, symbol):
         except Exception as e:
             print(f"Error parsing OB for {exchange}: {e}")
 
-    # طباعة النتيجة لنتأكد من نجاح البروكسي
-    print(f"📊 دفتر أوامر {symbol}: Binance({ob_details.get('binance', 'فشل')}) | Bybit({ob_details.get('bybit', 'فشل')}) | Gate({ob_details.get('gate', 'فشل')})")
+    # طباعة التقرير الشامل
+    print(f"📊 الخلاصة لـ {symbol}: Binance({ob_details.get('binance', 'فشل')}) | Bybit({ob_details.get('bybit', 'فشل')}) | Gate({ob_details.get('gate', 'فشل')})")
 
     if total_asks == 0:
         return 999.0 if total_bids > 0 else 1.0 
         
     return total_bids / total_asks
+
  
 
 
