@@ -331,7 +331,7 @@ async def analyze_radar_coin(c, client, is_btc_bullish, sem):
 
             if current_adx > 50: score -= (current_adx - 50) * 1.5
 
-                if score >= 45: 
+            if score >= 45: 
                 if is_btc_bullish: score += 8.5
                 else: score -= 5.5 
 
@@ -357,6 +357,7 @@ async def analyze_radar_coin(c, client, is_btc_bullish, sem):
                     
                     if sell_vol > 0 and (buy_vol / sell_vol) > 1.2:
                         score += min(((buy_vol / sell_vol) - 1) * 10, 18.0)
+
 
             score = round(max(0.0, min(score, 100.0)), 1)
             current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
