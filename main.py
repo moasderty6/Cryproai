@@ -1172,34 +1172,34 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
         if micro_bull:
             if macro_bull and vwap_bull:
                 trend_strength = "قوي" if real_adx_value >= 40 else ("قوي" if real_adx_value >= 25 else "جيد")
-                market_action = "دخول سيولة مؤسسية حقيقية (السعر مدعوم فوق VWAP الجلسة)"
+                market_action = "دخول سيولة عالية حقيقية"
             elif not macro_bull and vwap_bull:
                 trend_strength = "متوسط"
                 market_action = "سيولة شرائية لحظية تعاكس الاتجاه العام الهابط (ارتداد)"
             elif macro_bull and not vwap_bull:
                 trend_strength = "ضعيف"
-                market_action = "صعود غير مدعوم بالسيولة، الحيتان تبيع تحت VWAP"
+                market_action = "صعود غير مدعوم بالسيولة"
             else:
                 trend_strength = "ضعيف ومخادع"
-                market_action = "فخ مشتريات (Bull Trap) للتعليق في القمة"
+                market_action = "فخ مشتريات للتعليق في القمة"
         else: # Bearish
             if not macro_bull and not vwap_bull:
                 trend_strength = "قوي" if real_adx_value >= 40 else ("قوي" if real_adx_value >= 25 else "جيد")
-                market_action = "تصريف مؤسسي قوي (السعر تحت VWAP الجلسة)"
+                market_action = "تصريف قوي"
             elif macro_bull and not vwap_bull:
                 trend_strength = "متوسط"
                 market_action = "جني أرباح طبيعي وتصحيح ضمن ترند صاعد عام"
             elif not macro_bull and vwap_bull:
                 trend_strength = "ضعيف"
-                market_action = "الحيتان تشتري الهبوط سرًا (دعم قوي فوق VWAP)"
+                market_action = "الحيتان تشتري الهبوط سرًا"
             else:
                 trend_strength = "ضعيف ومخادع"
-                market_action = "فخ بيعي (Bear Trap) لتخويف المتداولين"
+                market_action = "فخ بيعي لتخويف المتداولين"
 
     if db_vol_change > 80:
-        market_action += " + فوليوم انفجاري 🔥"
+        market_action += " + فوليوم انفجاري"
     elif db_vol_change < 15:
-        market_action += " + فوليوم ميت 📉"
+        market_action += " + فوليوم ميت"
 
     # حساب الأهداف بناءً على ATR
     min_allowed_price = current_price * 0.000001 
@@ -1366,10 +1366,10 @@ TP3: <code>{format_price(calc_tp3)}</code>
 Stop Loss: <code>{format_price(calc_sl)}</code>
 
 📈 <b>تحليل المؤشرات</b>
-•Liquidity: {market_action} (اكتب سطر يعلق على هذه الحالة بالعربية)
-•RSI ({safe_rsi}): (اكتب سطر واحد يوضح التشبع أو الحياد بالعربية)
-•MACD ({macd_fmt}): (اكتب سطر واحد يوضح الزخم بالعربية)
-•ADX ({adx_val:.1f}): (اكتب سطر واحد يوضح قوة الترند بالعربية)
+•Liquidity: {market_action} (اكتب سطر يعلق على هذه الحالة بالعربية فقط ولا حرف غير عربي)
+•RSI ({safe_rsi}): (اكتب سطر واحد يوضح التشبع أو الحياد بالعربية فقط ولا حرف غير عربي)
+•MACD ({macd_fmt}): (اكتب سطر واحد يوضح الزخم بالعربية فقط ولا حرف غير عربي)
+•ADX ({adx_val:.1f}): (اكتب سطر واحد يوضح قوة الترند بالعربية فقط ولا حرف غير عربي)
 """
     else:
         prompt = f"""
