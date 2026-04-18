@@ -151,58 +151,69 @@ async def get_btc_trend(client):
 async def get_multi_exchange_orderbook(client, symbol):
     """جلب دفتر الأوامر من بينانس، بايبيت، وجيت آي أو ودمجها لحساب السيولة العالمية"""
     
-    # تنسيق الرموز لكل منصة (لأن كل منصة لها طريقة كتابة مختلفة)
     binance_sym = f"{symbol}USDT"
     bybit_sym = f"{symbol}USDT"
     gate_sym = f"{symbol}_USDT"
 
-    # إعداد روابط الـ APIs المباشرة والمجانية
     urls = {
         "binance": f"https://api.binance.com/api/v3/depth?symbol={binance_sym}&limit=50",
         "bybit": f"https://api.bybit.com/v5/market/orderbook?category=spot&symbol={bybit_sym}&limit=50",
         "gate": f"https://api.gateio.ws/api/v4/spot/order_book?currency_pair={gate_sym}&limit=50"
     }
 
-    # دالة داخلية لجلب البيانات بسرعة مع تجاهل الأخطاء (لو منصة معلقة ما يوقف البوت)
     async def fetch_ob(exchange, url):
         try:
-            res = await client.get(url, timeout=3.0) # مهلة 3 ثواني كحد أقصى
+            res = await client.get(url, timeout=3.0)
             if res.status_code == 200:
+                # 🔥 هذا السطر رح يطبع لك كلمة نجاح واسم المنصة
+                # print(f"✅ نجح الاتصال مع: {exchange.upper()} لعملة {symbol}") 
                 return exchange, res.json()
-        except:
-            pass
+            else:
+                print(f"❌ خطأ في منصة {exchange.upper()} للعملة {symbol}: كود الخطأ {res.status_code}")
+        except Exception as e:
+            print(f"⚠️ فشل الاتصال مع منصة {exchange.upper()} للعملة {symbol}: {e}")
         return exchange, None
 
-    # 🔥 هنا السر: تشغيل الـ 3 طلبات في نفس اللحظة (Concurrent) وليس بالدور
     tasks = [fetch_ob(ex, url) for ex, url in urls.items()]
     results = await asyncio.gather(*tasks)
 
-    total_bids = 0.0 # قوة الشراء العالمية
-    total_asks = 0.0 # قوة البيع العالمية
+    total_bids = 0.0 
+    total_asks = 0.0 
+    
+    # متغيرات لتتبع السيولة من كل منصة (عشان نطبعها وتشوفها بعينك)
+    ob_details = {}
 
     for exchange, data in results:
         if not data: continue
         
+        bids = 0.0
+        asks = 0.0
         try:
-            # استخراج الكميات بناءً على هيكل بيانات كل منصة
             if exchange == "binance":
-                total_bids += sum([float(b[1]) for b in data.get("bids", [])])
-                total_asks += sum([float(a[1]) for a in data.get("asks", [])])
+                bids = sum([float(b[1]) for b in data.get("bids", [])])
+                asks = sum([float(a[1]) for a in data.get("asks", [])])
             elif exchange == "bybit":
                 result = data.get("result", {})
-                total_bids += sum([float(b[1]) for b in result.get("b", [])])
-                total_asks += sum([float(a[1]) for a in result.get("a", [])])
+                bids = sum([float(b[1]) for b in result.get("b", [])])
+                asks = sum([float(a[1]) for a in result.get("a", [])])
             elif exchange == "gate":
-                total_bids += sum([float(b[1]) for b in data.get("bids", [])])
-                total_asks += sum([float(a[1]) for a in data.get("asks", [])])
+                bids = sum([float(b[1]) for b in data.get("bids", [])])
+                asks = sum([float(a[1]) for a in data.get("asks", [])])
+                
+            total_bids += bids
+            total_asks += asks
+            ob_details[exchange] = f"Bids: {bids:.0f} | Asks: {asks:.0f}"
+            
         except Exception as e:
             print(f"Error parsing OB for {exchange}: {e}")
 
-    # جدار الحماية الرياضي
+    # 🔥 طباعة التقرير النهائي للعملة في الـ Terminal عشان تتأكد إن الأرقام حقيقية
+    print(f"📊 دفتر أوامر {symbol}: Binance({ob_details.get('binance', 'فشل')}) | Bybit({ob_details.get('bybit', 'فشل')}) | Gate({ob_details.get('gate', 'فشل')})")
+
     if total_asks == 0:
-        return 999.0 if total_bids > 0 else 1.0 # طلبات شراء بدون بيع = انفجار
+        return 999.0 if total_bids > 0 else 1.0 
         
-    return total_bids / total_asks # النسبة النهائية للسيولة العالمية
+    return total_bids / total_asks 
 
 
 async def update_market_memory_loop(pool):
@@ -1664,7 +1675,7 @@ async def on_startup(app):
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
 
     #asyncio.create_task(ai_opportunity_radar(pool))
-    asyncio.create_task(daily_channel_post())
+    #asyncio.create_task(daily_channel_post())
     asyncio.create_task(update_market_memory_loop(pool)) # 🔥 تشغيل ذاكرة السوق
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
