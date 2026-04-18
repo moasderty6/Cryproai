@@ -331,7 +331,7 @@ async def analyze_radar_coin(c, client, is_btc_bullish, sem):
 
             if current_adx > 50: score -= (current_adx - 50) * 1.5
 
-                        if score >= 45: 
+                if score >= 45: 
                 if is_btc_bullish: score += 8.5
                 else: score -= 5.5 
 
