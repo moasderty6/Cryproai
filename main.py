@@ -206,7 +206,7 @@ async def update_market_memory_loop(pool):
         # ينام ويحدث البيانات كل 4 ساعات (14400 ثانية)
         await asyncio.sleep(14400)
 
-# --- الرادار الخارق المعدل ---import random
+import random
 
 async def ai_opportunity_radar(pool):
     print("🚀 تم تشغيل الرادار الشامل (مسح كامل للسوق)...")
