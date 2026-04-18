@@ -318,7 +318,7 @@ async def ai_opportunity_radar(pool):
 
                     last_rsi, last_macd_diff, last_bb, last_vol, _, _ = compute_indicators(candles)
 
-                    trend_dir, trend_str, market_action, adx_val, _, _, _, _, _ = calculate_smart_trend_and_targets(df, price, vol_change_cmc)
+                    trend_dir, trend_str, market_action, adx_val, _, _, _, _, _, _ = calculate_smart_trend_and_targets(df, price, vol_change_cmc)
 
                     avg_vol = df["volume"].rolling(20).mean().iloc[-1]
                     current_vol = df["volume"].iloc[-1]
