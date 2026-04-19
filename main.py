@@ -1450,7 +1450,8 @@ def detect_nearest_fvg(df, current_price, trend_direction):
 
     return best_fvg_target
 
-def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
+def calculate_smart_trend_and_targets(df, current_price, db_vol_change, lang="ar"):
+
     df['prev_close'] = df['close'].shift(1)
     df['tr0'] = abs(df['high'] - df['low'])
     df['tr1'] = abs(df['high'] - df['prev_close'])
@@ -1493,40 +1494,40 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
     trend_direction = "Bullish" if micro_bull else "Bearish"
 
     if real_adx_value < 20:
-        trend_strength = "ضعيف"
-        market_action = "صراع سيولة وتجميع حول VWAP اليومي في نطاق عرضي"
+        trend_strength = "ضعيف" if lang == "ar" else "Weak"
+        market_action = "صراع سيولة وتجميع حول VWAP اليومي في نطاق عرضي" if lang == "ar" else "Liquidity struggle and accumulation around daily VWAP in a ranging market"
     else: 
         if micro_bull:
             if macro_bull and vwap_bull:
-                trend_strength = "قوي" if real_adx_value >= 40 else ("قوي" if real_adx_value >= 25 else "جيد")
-                market_action = "دخول سيولة عالية حقيقية"
+                trend_strength = ("قوي" if real_adx_value >= 40 else ("قوي" if real_adx_value >= 25 else "جيد")) if lang == "ar" else ("Strong" if real_adx_value >= 40 else ("Strong" if real_adx_value >= 25 else "Good"))
+                market_action = "دخول سيولة عالية حقيقية" if lang == "ar" else "True high liquidity inflow"
             elif not macro_bull and vwap_bull:
-                trend_strength = "متوسط"
-                market_action = "سيولة شرائية لحظية تعاكس الاتجاه العام الهابط (ارتداد)"
+                trend_strength = "متوسط" if lang == "ar" else "Moderate"
+                market_action = "سيولة شرائية لحظية تعاكس الاتجاه العام الهابط (ارتداد)" if lang == "ar" else "Momentary buying liquidity countering the macro downtrend (Bounce)"
             elif macro_bull and not vwap_bull:
-                trend_strength = "ضعيف"
-                market_action = "صعود غير مدعوم بالسيولة"
+                trend_strength = "ضعيف" if lang == "ar" else "Weak"
+                market_action = "صعود غير مدعوم بالسيولة" if lang == "ar" else "Upward movement lacking liquidity support"
             else:
-                trend_strength = "ضعيف ومخادع"
-                market_action = "فخ مشتريات للتعليق في القمة"
+                trend_strength = "ضعيف ومخادع" if lang == "ar" else "Weak & Fake"
+                market_action = "فخ مشتريات للتعليق في القمة" if lang == "ar" else "Bull trap to catch late buyers"
         else: # Bearish
             if not macro_bull and not vwap_bull:
-                trend_strength = "قوي" if real_adx_value >= 40 else ("قوي" if real_adx_value >= 25 else "جيد")
-                market_action = "تصريف قوي"
+                trend_strength = ("قوي" if real_adx_value >= 40 else ("قوي" if real_adx_value >= 25 else "جيد")) if lang == "ar" else ("Strong" if real_adx_value >= 40 else ("Strong" if real_adx_value >= 25 else "Good"))
+                market_action = "تصريف قوي" if lang == "ar" else "Strong distribution/selling pressure"
             elif macro_bull and not vwap_bull:
-                trend_strength = "متوسط"
-                market_action = "جني أرباح طبيعي وتصحيح ضمن ترند صاعد عام"
+                trend_strength = "متوسط" if lang == "ar" else "Moderate"
+                market_action = "جني أرباح طبيعي وتصحيح ضمن ترند صاعد عام" if lang == "ar" else "Natural profit-taking and correction within a macro uptrend"
             elif not macro_bull and vwap_bull:
-                trend_strength = "ضعيف"
-                market_action = "الحيتان تشتري الهبوط سرًا"
+                trend_strength = "ضعيف" if lang == "ar" else "Weak"
+                market_action = "الحيتان تشتري الهبوط سرًا" if lang == "ar" else "Whales are silently buying the dip"
             else:
-                trend_strength = "ضعيف ومخادع"
-                market_action = "فخ بيعي لتخويف المتداولين"
+                trend_strength = "ضعيف ومخادع" if lang == "ar" else "Weak & Fake"
+                market_action = "فخ بيعي لتخويف المتداولين" if lang == "ar" else "Bear trap to shake out retail traders"
 
     if db_vol_change > 80:
-        market_action += " + فوليوم انفجاري"
+        market_action += " + فوليوم انفجاري" if lang == "ar" else " + Explosive Volume"
     elif db_vol_change < 15:
-        market_action += " + فوليوم ميت"
+        market_action += " + فوليوم ميت" if lang == "ar" else " + Dead Volume"
 
     # ==========================================
     # 🎯 التعديل الجذري: حساب الأهداف بالـ VPVR
@@ -1539,7 +1540,8 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
     if fvg_target:
         # تنسيق السعر لتجنب الأرقام الطويلة
         fvg_display = f"{fvg_target:,.4f}" if fvg_target > 1 else f"{fvg_target:.8f}"
-        market_action += f" 🧲 [هدف مغناطيسي FVG عند: {fvg_display}$]"
+        market_action += f" [هدف مغناطيسي FVG عند: {fvg_display}$]" if lang == "ar" else f" [Magnetic FVG Target at: {fvg_display}$]"
+
 
     try:
         support = df['low'].rolling(window=50, min_periods=1).min().iloc[-1]
@@ -1752,7 +1754,8 @@ async def run_analysis(cb: types.CallbackQuery):
             print(f"Failed to fetch market_memory for {clean_sym}: {e}")
 
         # تمرير قيمة الفوليوم للدالة الذكية
-        trend_dir, trend_str, market_action, adx_val, calc_sl, calc_tp1, calc_tp2, calc_tp3, calc_sup, calc_res = calculate_smart_trend_and_targets(df, price, db_vol_float)
+        trend_dir, trend_str, market_action, adx_val, calc_sl, calc_tp1, calc_tp2, calc_tp3, calc_sup, calc_res = calculate_smart_trend_and_targets(df, price, db_vol_float, lang)
+
         
         if lang == "ar":
             real_trend = "صاعد" if trend_dir == "Bullish" else "هابط"
