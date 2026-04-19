@@ -654,7 +654,8 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             symbol = c["symbol"]
             price = float(c["quote"]["USD"]["price"])
             
-            candles = await get_candles_binance(f"{symbol}USDT", "1h", limit=750)
+            # 1. التكتيك الأول: النزول لفريم 5m (نأخذ 150 شمعة تكفي لكشف التجميع اللحظي)
+            candles = await get_candles_binance(f"{symbol}USDT", "5m", limit=150)
             if not candles: return None
 
             df = pd.DataFrame(candles)
@@ -662,241 +663,180 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             df.columns = ["timestamp", "volume", "close", "high", "low", "open", "taker_buy_vol"]
             for col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce')
 
+            score = 20.0
+            tags = []
+            
+            # --- 2. التكتيك الثاني: رصد انضغاط السيولة القاتل (Micro Squeeze & VWAP) ---
+            # حساب الـ VWAP اللحظي
+            df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
+            df['vwap'] = (df['typical_price'] * df['volume']).cumsum() / df['volume'].cumsum()
+            
+            # مدى التصاق السعر بالـ VWAP (كلما كان أقرب = ضغط أعلى)
+            price_vwap_dist = abs(df['close'].iloc[-1] - df['vwap'].iloc[-1]) / df['vwap'].iloc[-1]
+            
+            # حساب ضيق البولينجر باند (Squeeze) لآخر 20 شمعة
+            sma20 = df["close"].rolling(20).mean()
+            std20 = df["close"].rolling(20).std(ddof=0)
+            bb_width = ((sma20 + 2*std20) - (sma20 - 2*std20)) / sma20
+            
+            # إذا كان السعر ملتصق بالـ VWAP (مسافة أقل من 0.3%) والبولينجر منضغط جداً (أقل من 1.5%)
+            if price_vwap_dist < 0.003 and bb_width.iloc[-1] < 0.015:
+                score += 25.0
+                tags.append("Micro_Squeeze")
+
+            # --- 3. التكتيك الثالث: انفجار الـ CVD الخفي (Aggressive Absorption) ---
+            df["taker_sell_vol"] = df["volume"] - df["taker_buy_vol"]
+            df["delta"] = df["taker_buy_vol"] - df["taker_sell_vol"]
+            
+            # نراقب آخر 5 شموع (آخر 25 دقيقة)
+            recent_delta = df["delta"].tail(5).sum()
+            recent_vol = df["volume"].tail(5).sum()
+            recent_price_change = (df["close"].iloc[-1] - df["close"].iloc[-5]) / df["close"].iloc[-5]
+            
+            # حيتان تشتري بماركت بقوة (الدلتا الإيجابية تشكل أكثر من 40% من الفوليوم) والسعر لسا ما طار (أقل من 1%)
+            if recent_delta > (recent_vol * 0.4) and recent_price_change < 0.01:
+                score += 30.0
+                tags.append("CVD_Ignition")
+            elif recent_delta < 0 and recent_price_change > 0.02:
+                # هذا فخ! السعر يرتفع لكن الحيتان تصرف بماركت أوردر
+                return None 
+
+            # --- 4. التكتيك الرابع: شرارة الـ ADX اللحظية ---
+            try: 
+                adx_ind = ta.trend.ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14, fillna=True)
+                current_adx = float(adx_ind.adx().iloc[-1])
+                prev_adx = float(adx_ind.adx().iloc[-4]) # الـ ADX قبل ربع ساعة
+                
+                # إذا كان ميت (تحت 20) وفجأة بدأ يرتفع بقوة
+                if current_adx > 20 and prev_adx < 18:
+                    score += 15.0
+                    tags.append("ADX_Spark")
+            except: 
+                current_adx = 0.0
+
+            # حساب RSI اللحظي
             delta = df["close"].diff()
             gain = delta.clip(lower=0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
             loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
             df["rsi"] = 100 - (100 / (1 + (gain / loss)))
             last_rsi = df["rsi"].iloc[-1]
-            
-            try: current_adx = float(ta.trend.ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14, fillna=True).adx().iloc[-1])
-            except: current_adx = 0.0
 
-            # 🟢 البداية من سكور 20 لتوزيع النسب باحترافية
-            score = 20.0
-            tags = [] # قائمة لتجميع نوع الحركات
-
-            current_z, vol_mean, vol_std = calculate_volume_zscore(df, window=720)
-            
-            pool = dp['db_pool']
-            async with pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO market_memory (symbol, vol_mean, vol_stddev, z_score, last_updated)
-                    VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
-                    ON CONFLICT (symbol) DO UPDATE 
-                    SET vol_mean = EXCLUDED.vol_mean, vol_stddev = EXCLUDED.vol_stddev, z_score = EXCLUDED.z_score, last_updated = CURRENT_TIMESTAMP
-                """, symbol, vol_mean, vol_std, current_z)
-
-            # 1. فلتر الفوليوم
-            if current_z >= 4.0:
-                score += 20.0
-                tags.append("Z_Anom")
-            elif current_z >= 3.0:
-                score += 12.0
-                tags.append("Z_High")
-            elif current_z >= 2.0:
-                score += 5.0
-            elif current_z < 0: return None 
-
-            # 2. فلتر CVD
-            cvd_boost, cvd_signal = detect_smart_money_absorption(df)
-            score += cvd_boost
-            if cvd_signal: tags.append(cvd_signal)
-
-            # 3. فلتر المشتقات
-            old_price_val = df["close"].iloc[-3] if len(df) > 3 else df["open"].iloc[0]
-            futures_boost, futures_signal = await get_futures_liquidity(symbol, client, price, old_price_val)
-            score += futures_boost
-            if futures_signal: tags.append(futures_signal)
-
-            # 4. المؤشرات الكلاسيكية
-            sma20 = df["close"].rolling(20).mean()
-            std20 = df["close"].rolling(20).std(ddof=0)
-            df["upper_band"] = sma20 + 2*std20
-            df["lower_band"] = sma20 - 2*std20
-            squeeze_pct = (df["upper_band"].iloc[-1] - df["lower_band"].iloc[-1]) / sma20.iloc[-1]
-            
-            if squeeze_pct < 0.05: 
-                score += 10.0
-                tags.append("Squeeze")
-            
-            ema200_val = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else df["close"].ewm(span=50).mean().iloc[-1]
-            if price < ema200_val and last_rsi > 30 and df["rsi"].iloc[-10:-1].min() < 30:
-                score += 10.0 
-                tags.append("RSI_Div")
-
-            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)
-            if score >= 50.0: 
+            # --- 5. التكتيك الخامس: رصد اختفاء جدران البيع (Spoofing Pull) ---
+            # لن نقوم بهذا الفحص الثقيل إلا إذا كانت العملة أصلاً حققت شروط الانضغاط والـ CVD (سكور > 65) لتخفيف الضغط
+            if score >= 65.0: 
                 depth_data = await analyze_orderbook_depth(symbol, client)
                 if depth_data:
-                    # تفاعل الرادار مع الدالة الجديدة
-                    if depth_data['spoofing_risk'] or depth_data['hidden_wall']:
-                        score -= 35.0 # جلد السكور لأنها عملة مخادعة
-                        tags.append("Spoofing_or_Wall")
-                    elif depth_data['imbalance'] > 0.4:
-                        score += 15.0 # مكافأة أعلى لأننا نقرأ 50 مستوى حقيقي الآن
-                        tags.append("OB_Buy")
+                    # إذا كان الدعم الحقيقي أكبر من المقاومة بـ 3 أضعاف (انسحاب جدار البيع)
+                    if depth_data['imbalance'] > 0.6 and not depth_data['hidden_wall']:
+                        score += 20.0
+                        tags.append("Wall_Pulled")
+                    elif depth_data['spoofing_risk']:
+                        return None # عملة مخادعة، اطردها فوراً
 
-
-                of_analyzer = OrderFlowAnalyzer(symbol)
-                await of_analyzer.start_trade_stream(duration=10)
-                if of_analyzer.delta > (price * 1000): 
-                    score += 15.0
-                    tags.append("Aggressive_Buy")
-                elif of_analyzer.delta < -(price * 1000): 
-                    score -= 20.0
-
-                global_ob_pressure = await get_aggregated_orderbook(client, symbol)
-                global_alt_volume = await verify_global_liquidity(symbol, client)
-                if global_ob_pressure >= 1.5: score += 10.0
-                elif global_ob_pressure < 0.8: score -= 15.0
-                if global_alt_volume > 100000: score += 10.0
-
-            # 6. الماكرو
-            if isinstance(market_regime, dict):
-                if market_regime['trend'] == "Trending_Bear" and ("Z_Anom" in tags or "OI_Rising" in tags):
-                    score -= 15.0
-                elif market_regime['trend'] == "Trending_Bull":
-                    score += 5.0
-
-            # 🟢 ضبط السكور ليكون مستحيلاً وصوله 100 (أقصى شيء بالواقع 95-97)
-            score = round(max(0.0, min(score, 98.5)), 1)
+            # 🟢 التقييم النهائي وإطلاق الإنذار (15 دقيقة قبل الانفجار)
+            score = round(max(0.0, min(score, 99.0)), 1)
             
-            # 🟢 محرك تسمية الإشارة الذكي (Short & Punchy Signal Names)
-            final_signal = "High Probability Setup 🎯"
-            if "Fake_Pump" in tags or "Spoofing" in tags or "Short_Covering" in tags:
-                return None # طرد العملات المخادعة تماماً من الرادار
-            elif "Whale_CVD" in tags and "Aggressive_Buy" in tags: final_signal = "Aggressive Whale Accumulation 🐋"
-            elif "Short_Squeeze" in tags: final_signal = "(Short Squeeze) 🔥"
-            elif "Z_Anom" in tags and "OI_Rising" in tags: final_signal = "(Derivatives Pump) 🚀"
-            elif "Squeeze" in tags and "OB_Buy" in tags: final_signal = "(Liquidity Breakout) ⚡"
-            elif "Whale_CVD" in tags: final_signal = "Silent Institutional Accumulation 🧲"
-            elif "Z_Anom" in tags or "Z_High" in tags: final_signal = "Smart Money Inflow 💸"
+            # شروط القناص الصارمة: يجب أن يكون هناك انضغاط + شراء حيتان أو سحب جدران
+            if score >= 80.0 and ("CVD_Ignition" in tags or "Wall_Pulled" in tags) and "Micro_Squeeze" in tags:
+                
+                final_signal = "🚨 15-Min Squeeze Explosion"
+                if "Wall_Pulled" in tags: final_signal = "🚨 Spoofing Wall Pulled + Ignition"
+                elif "ADX_Spark" in tags: final_signal = "⚡ ADX Spark + Smart Money Inflow"
 
-            avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
-            avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
-            current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
-
-            # إرجاع النتيجة إذا نجحت العملة (سكور 75 يعتبر الآن ممتاز جداً وصعب الوصول له)
-            if score >= 75.0:  
                 return {
                     "symbol": symbol, "price": price, "score": score,
                     "rsi": round(last_rsi, 2), "adx": round(current_adx, 2),
-                    "macd": current_z, 
-                    "vol_ratio": round(current_vol_ratio, 2),
-                    "ob_pressure": round(locals().get('global_ob_pressure', 1.0), 2),
                     "signal_type": final_signal
                 }
             return None 
-        except Exception:
+        except Exception as e:
+            # print(f"Error analyzing {c['symbol']}: {e}") # يمكن تفعيلها للتتبع
             return None
 
 
-async def ai_opportunity_radar(pool):
-    print("🚀 تم تشغيل الرادار الشامل (وضع صيد القيعان)...")
-    sem = asyncio.Semaphore(5)
+
+async def continuous_sniper_radar(pool):
+    print("🚀 قناص الانفجارات اللحظية (15m-5m) يعمل الآن في الخلفية 24/7...")
+    # ننتظر 15 ثانية بس عشان نتأكد إن البوت وقاعدة البيانات اشتغلوا تمام
+    await asyncio.sleep(15) 
     
-    try:
-        print("🔍 جاري جلب 1000 عملة للبحث عن الجواهر المنسية...")
-        headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
-        STABLE_COINS = {"USDT","USDC","BUSD","DAI","TUSD","FDUSD"}
-
-        async with pool.acquire() as conn:
-            records = await conn.fetch("""
-                SELECT symbol FROM radar_history 
-                WHERE last_signaled > CURRENT_TIMESTAMP - INTERVAL '7 days'
-            """)
-            ignored_symbols = {r['symbol'] for r in records}
-
-        async with httpx.AsyncClient(timeout=30) as client:
-            # 🟢 التعديل هنا: جلب بيانات الماكرو الجديدة بدل البوليان القديم
-            market_regime = await detect_market_regime(client)
+    sem = asyncio.Semaphore(5) # عشان ما نضرب API بايننس بطلبات كثيرة بنفس اللحظة
+    
+    while True:
+        try:
+            print("🔍 جاري الفحص اللحظي للسوق (بحثاً عن انضغاط السيولة)...")
             
-            res = await client.get(
-                "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
-                headers=headers, params={"limit": "1000"} 
-            )
-            
-            if res.status_code != 200:
-                await bot.send_message(ADMIN_USER_ID, "❌ فشل الاتصال بـ CoinMarketCap.")
-                return
-            
-            coins = [
-                c for c in res.json()["data"] 
-                if c["symbol"] not in STABLE_COINS 
-                and c["symbol"] not in ignored_symbols
-                and c["quote"]["USD"]["volume_24h"] >= 1_000_000 
-                and abs(c["quote"]["USD"]["percent_change_24h"]) >= 0.2
-            ]
+            async with httpx.AsyncClient(timeout=30) as client:
+                # 1. جلب أفضل 150 عملة من بايننس (فيها سيولة ممتازة)
+                res = await client.get("https://api.binance.com/api/v3/ticker/24hr")
+                if res.status_code == 200:
+                    all_tickers = res.json()
+                    # فلترة: عملات USDT + فوليوم فوق 5 مليون عشان نتجنب العملات الميتة جداً
+                    active_coins = [
+                        c for c in all_tickers 
+                        if c['symbol'].endswith("USDT") and float(c['quoteVolume']) > 5_000_000
+                    ]
+                    
+                    # نرتبهم عشوائياً أو نأخذ أول 100 لتخفيف الضغط
+                    coins_to_scan = active_coins[:100] 
+                    
+                    # 2. إرسالهم للتحليل اللحظي (سنعدل دالة التحليل لاحقاً لتفحص فريم 5 دقائق)
+                    tasks = []
+                    for c in coins_to_scan:
+                        coin_data = {
+                            "symbol": c['symbol'].replace("USDT", ""),
+                            "quote": {"USD": {"price": c['lastPrice']}}
+                        }
+                        # نستخدم نفس دالة التحليل تبعتك بس رح نعدل الفريم جواتها
+                        tasks.append(analyze_radar_coin(coin_data, client, {"trend": "Neutral"}, sem))
+                    
+                    results = await asyncio.gather(*tasks)
+                    
+                    valid_signals = [r for r in results if r is not None]
+                    
+                    # 3. إذا لقينا فرص، نبعثها للأدمن للموافقة
+                    if valid_signals:
+                        # نرتبهم حسب السكور الأعلى
+                        valid_signals.sort(key=lambda x: x['score'], reverse=True)
+                        best_meta = valid_signals[0]
+                        symbol = best_meta['symbol']
+                        price = best_meta['price']
+                        signal = best_meta.get('signal_type', "🔥 Micro Squeeze Explosion")
+                        best_score = best_meta['score']
+                        
+                        # إنشاء أزرار الموافقة/الرفض (نفس الكود تبعك)
+                        signal_id = str(uuid.uuid4())[:8] 
+                        radar_pending_approvals[signal_id] = {
+                            "symbol": symbol, "price": price, "signal": signal, "score": best_score,
+                            "insight_ar": f"انضغاط سيولة حاد على فريم 5 دقائق لعملة {symbol} مع امتصاص شرائي قوي (CVD). توقع انفجار خلال 15-30 دقيقة.", 
+                            "insight_en": f"Severe liquidity squeeze on 5m timeframe for {symbol} with strong buy absorption (CVD). Expecting an explosion in 15-30 mins."
+                        }
 
-            tasks = [analyze_radar_coin(c, client, market_regime, sem) for c in coins]
-            results = await asyncio.gather(*tasks)
-            
-            valid_signals = [r for r in results if r is not None]
-            valid_signals.sort(key=lambda x: x['score'], reverse=True)
+                        admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="✅ موافقة ونشر للمشتركين", callback_data=f"rad_app_{signal_id}")],
+                            [InlineKeyboardButton(text="❌ إلغاء وتجاهل", callback_data=f"rad_rej_{signal_id}")]
+                        ])
 
-            if not valid_signals:
-                print("😴 مسح مكتمل: لم يتم العثور على قيعان مهيأة للانفجار حالياً.")
-                await bot.send_message(ADMIN_USER_ID, "😴 <b>مسح مكتمل:</b>\nالسوق لا يعطي إشارات تجميع واضحة حالياً، أو أن السيولة معدومة. تم تأجيل الصيد.", parse_mode=ParseMode.HTML)
-                return
+                        admin_text = (
+                            f"⚠️ <b>تنبيه قناص الـ 15 دقيقة 🎯</b>\n"
+                            f"🏆 <b>العملة:</b> #{symbol}\n"
+                            f"💵 السعر: ${format_price(price)}\n"
+                            f"⚡ الإشارة: {signal}\n"
+                            f"📊 السكور: <b>{best_score}/100</b>\n\n"
+                            f"هل تريد الموافقة على نشرها؟"
+                        )
+                        
+                        await bot.send_message(ADMIN_USER_ID, admin_text, reply_markup=admin_kb, parse_mode=ParseMode.HTML)
+                        print(f"✅ تم إرسال إشارة {symbol} للأدمن!")
 
-            # تجهيز الرسالة للأدمن لأقوى عملة
-            best_meta = valid_signals[0]
-            best_score = best_meta['score']
-            symbol = best_meta['symbol']
-            price = best_meta['price']
-            signal = best_meta.get('signal_type', "🎯 BOTTOM SNIPED") 
+        except Exception as e:
+            print(f"Sniper Loop Error: {e}")
+        
+        # ⏱️ الأهم: البوت ينام لمدة 5 دقائق (300 ثانية) بعد كل فحص.
+        # ليش؟ عشان يعطي فرصة لشمعة الـ 5 دقائق الجديدة تغلق وتتكون البيانات.
+        print("💤 القناص في وضع الانتظار لـ 5 دقائق...")
+        await asyncio.sleep(300) 
 
-            async with pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO radar_history (symbol, last_signaled)
-                    VALUES ($1, CURRENT_TIMESTAMP)
-                    ON CONFLICT (symbol) DO UPDATE
-                    SET last_signaled = CURRENT_TIMESTAMP
-                """, symbol)
-
-            prompt_ar = f"""
-أنت كبير المحللين الفنيين. رادار السوق الذكي التقط فرصة لعملة {symbol} بسكور {best_score}/100.
-الإشارة: {signal} | ADX: {best_meta['adx']} | RSI: {best_meta['rsi']} | سيولة أعلى بـ {best_meta['vol_ratio']} ضعف.
-ضغط الشراء (Orderbook): طلبات الشراء تتفوق بـ {best_meta.get('ob_pressure', 1.0)} ضعف.
-اكتب تحليلاً احترافياً (3 أسطر) يدمج هذه الأرقام مباشرة ويوضح سبب احمال الصعود.
-"""
-            prompt_en = f"""
-You are Lead Technical Analyst. Smart market caught a bottom opportunity for {symbol} with score {best_score}/100.
-Signal: {signal} | ADX: {best_meta['adx']} | RSI: {best_meta['rsi']} | Liquidity {best_meta['vol_ratio']}x higher.
-Buy Pressure (Orderbook): Buy bids are {best_meta.get('ob_pressure', 1.0)}x stronger.
-Write a 3-line professional analysis integrating these metrics and explaining the current accumulation.
-"""
-
-            insight_ar = await ask_groq(prompt_ar, lang="ar")
-            insight_en = await ask_groq(prompt_en, lang="en")
-
-            signal_id = str(uuid.uuid4())[:8] 
-            radar_pending_approvals[signal_id] = {
-                "symbol": symbol, "price": price, "signal": signal, "score": best_score,
-                "insight_ar": insight_ar, "insight_en": insight_en
-            }
-
-            admin_kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✅ موافقة ونشر للمشتركين", callback_data=f"rad_app_{signal_id}")],
-                [InlineKeyboardButton(text="❌ إلغاء وتجاهل", callback_data=f"rad_rej_{signal_id}")]
-            ])
-
-            admin_text = (
-                f"⚠️ <b>تنبيه أدمن: قناص القيعان أنهى المسح 🎯</b>\n"
-                f"🏆 <b>أفضل عملة:</b> #{symbol}\n"
-                f"💵 السعر: ${format_price(price)}\n"
-                f"⚡ نوع التجميع: {signal}\n"
-                f"📊 السكور: <b>{best_score}/100</b>\n\n"
-                f"📝 <b>التحليل:</b>\n{insight_ar}\n\n"
-                f"هل تريد الموافقة على نشرها؟"
-            )
-
-            await bot.send_message(ADMIN_USER_ID, admin_text, reply_markup=admin_kb, parse_mode=ParseMode.HTML)
-            print(f"✅ تم اصطياد قاع {symbol} بسكور {best_score}!")
-
-    except Exception as e:
-        print(f"Radar Error: {e}")
-        await bot.send_message(ADMIN_USER_ID, f"⚠️ حدث خطأ في الرادار: {e}")
 
         # تم تصحيح وقت الانتظار ليكون 6 ساعات بالضبط (6 * 60 * 60)
   # 6 ساعات # انتطار الدورة القادمة
@@ -2548,6 +2488,7 @@ async def on_startup(app):
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
 
     asyncio.create_task(smart_radar_watchdog(pool))
+    asyncio.create_task(continuous_sniper_radar(pool))
     asyncio.create_task(radar_worker_process(pool))
     #asyncio.create_task(daily_channel_post())
     asyncio.create_task(update_market_memory_loop(pool)) # 🔥 تشغيل ذاكرة السوق
