@@ -1929,104 +1929,6 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change, lang="ar
         resistance = current_price * 1.10
 
     return trend_direction, trend_strength, market_action, real_adx_value, sl, tp1, tp2, tp3, support, resistance
-def calculate_volatility_position_size(entry_price, current_atr, max_portfolio_risk_pct=0.02):
-    """
-    تحديد حجم الدخول بناءً على تقلبات العملة (Volatility-Based Sizing).
-    الهدف: تساوي المخاطرة (Risk Parity) بين العملات البطيئة والعنيفة.
-    
-    - max_portfolio_risk_pct: أقصى خسارة مسموحة من إجمالي المحفظة في هذه الصفقة (لنفترض 2%).
-    """
-    # 1. حساب نسبة التذبذب الأساسية للعملة (Volatility Percentage)
-    volatility_pct = current_atr / entry_price
-
-    # حماية من العملات الميتة أو البيانات الخاطئة
-    if volatility_pct <= 0.001:
-        volatility_pct = 0.001
-
-    # 2. تحديد مسافة الوقف المنطقية (Stop Loss Distance)
-    # القاعدة المؤسساتية المعتادة هي وضع الستوب على بُعد 2 ATR لتجنب ضربه بالذبذبة العشوائية (Noise)
-    stop_loss_distance_pct = volatility_pct * 2.0
-
-    # 3. معادلة حجم المركز (Position Size Formula)
-    # Position Size = (Account Risk %) / (Trade Risk %)
-    # مثال: إذا كنا نخاطر بـ 2%، والستوب يبعد 10% (لعملة عنيفة)، حجم الدخول = 0.02 / 0.10 = 0.20 (أي 20%)
-    # أما لعملة هادئة ستوبها يبعد 4%، حجم الدخول = 0.02 / 0.04 = 0.50 (أي 50%)
-    raw_position_size = max_portfolio_risk_pct / stop_loss_distance_pct
-
-    # 4. قيود الأمان (Safety Constraints)
-    # الصناديق تمنع وضع أكثر من نسبة معينة (مثلاً 10% أو 15%) في أصل واحد مهما كان بطيئاً (Max Allocation)
-    max_allocation_limit = 0.10
-    final_position_size = min(raw_position_size, max_allocation_limit)
-
-    return {
-        "volatility_pct": round(volatility_pct * 100, 2),
-        "suggested_sl_distance_pct": round(stop_loss_distance_pct * 100, 2),
-        "recommended_position_pct": round(final_position_size * 100, 1)
-    }
-
-def calculate_institutional_risk_model(entry_price, sl_price, tp_price, signal_score, trend_direction):
-    """
-    محرك إدارة المخاطر: يحسب القيمة المتوقعة (EV) وحجم المركز (Position Size).
-    """
-    # 1. حساب العائد والمخاطرة (كـ نسب مئوية)
-    if trend_direction == "Bullish":
-        risk_pct = (entry_price - sl_price) / entry_price
-        reward_pct = (tp_price - entry_price) / entry_price
-    else: # Bearish
-        risk_pct = (sl_price - entry_price) / entry_price
-        reward_pct = (entry_price - tp_price) / entry_price
-
-    # حماية من القسمة على صفر أو البيانات الخاطئة
-    if risk_pct <= 0 or reward_pct <= 0:
-        return {"ev": -1, "valid": False, "reason": "Invalid SL/TP Levels"}
-
-    # حساب نسبة المخاطرة للعائد (Risk:Reward Ratio)
-    rr_ratio = reward_pct / risk_pct
-
-    # 2. تقدير نسبة النجاح (Win Rate Probability)
-    # الأساس هو 50%، ونقوم بتعديله بناءً على قوة الإشارة (Score)
-    # السكور في نظامك من 0 إلى 100. لنفترض أن سكور 50 يعطي احتمالية 50%
-    base_probability = 0.50
-    
-    if signal_score > 50:
-        # كل نقطة سكور فوق 50 تزيد الاحتمالية بـ 0.6%
-        base_probability += (signal_score - 50) * 0.006 
-    
-    # العقاب بناءً على الـ R:R (الهدف البعيد جداً رياضياً أصعب في التحقيق)
-    if rr_ratio > 2.5:
-        base_probability -= 0.05 # خصم 5% لأن الهدف بعيد
-    elif rr_ratio < 1.0:
-        base_probability += 0.05 # الهدف القريب أسهل، لكن العائد سيئ
-
-    # تقييد الاحتمالية بين 10% و 90% للمنطقية
-    win_probability = max(0.10, min(base_probability, 0.90))
-    loss_probability = 1.0 - win_probability
-
-    # 3. حساب القيمة المتوقعة (Expected Value - EV)
-    # إذا كانت النتيجة > 0، فالصفقة رابحة على المدى الطويل
-    ev = (win_probability * reward_pct) - (loss_probability * risk_pct)
-
-    # 4. حساب حجم الدخول الأمثل بمعيار كيلي (Kelly Fraction)
-    # المعادلة: Kelly % = W - [(1 - W) / R]
-    # حيث W = احتمالية النجاح، R = الـ R:R Ratio
-    kelly_fraction = win_probability - (loss_probability / rr_ratio)
-    
-    # الصناديق تستخدم "Half Kelly" أو "Quarter Kelly" لتقليل التذبذب في المحفظة
-    safe_kelly = max(0.0, kelly_fraction * 0.5) 
-    
-    # نوصي بعدم تجاوز 5% من المحفظة في أي صفقة كحد أقصى
-    recommended_position_size = min(safe_kelly, 0.05)
-
-    is_valid_trade = ev > 0 and rr_ratio >= 1.0
-
-    return {
-        "valid": is_valid_trade,
-        "ev": round(ev * 100, 2), # كنسبة مئوية
-        "win_rate": round(win_probability * 100, 1),
-        "rr_ratio": round(rr_ratio, 2),
-        "position_size_pct": round(recommended_position_size * 100, 1),
-        "reason": "EV Positive" if is_valid_trade else ("Negative EV" if ev <= 0 else "Poor R:R")
-    }
 
 def compute_indicators(candles):
     df = pd.DataFrame(candles)
@@ -2212,7 +2114,6 @@ async def run_analysis(cb: types.CallbackQuery):
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
         # 🔥 سحب الفوليوم من قاعدة البيانات
-        # 🔥 سحب الفوليوم من قاعدة البيانات
         db_vol_float = 0.0
         try:
             async with pool.acquire() as conn:
@@ -2226,32 +2127,16 @@ async def run_analysis(cb: types.CallbackQuery):
         # تمرير قيمة الفوليوم للدالة الذكية
         trend_dir, trend_str, market_action, adx_val, calc_sl, calc_tp1, calc_tp2, calc_tp3, calc_sup, calc_res = calculate_smart_trend_and_targets(df, price, db_vol_float, lang)
 
-        # 🟢 ربط محرك إدارة المخاطر المؤسساتي
-        # جلب الـ ATR لآخر شمعة
-        current_atr = ta.volatility.AverageTrueRange(df['high'], df['low'], df['close'], window=14).average_true_range().iloc[-1]
-        
-        risk_model = calculate_institutional_risk_model(price, calc_sl, calc_tp3, 80, trend_dir)
-        sizing_model = calculate_volatility_position_size(price, current_atr)
-
-        win_rate_display = f"{risk_model['win_rate']}%" if risk_model['valid'] else ("ضعيفة" if lang=="ar" else "Poor")
-        pos_size_display = f"{sizing_model['recommended_position_pct']}%"
         # 🟢 استعادة تعريف متغيرات RSI و MACD لتجنب خطأ NameError
         macd_fmt = format_price(last_macd) if 'last_macd' in locals() and last_macd is not None else "0.0"
         safe_rsi = f"{last_rsi:.2f}" if 'last_rsi' in locals() and last_rsi is not None else "N/A"
 
-                # تجهيز المتغيرات للغتين قبل بناء البرومبت
-                # 🟢 تعريف المتغيرات للغتين معاً قبل البرومبت لتجنب أي خطأ
+        # تجهيز المتغيرات للغتين وبناء البرومبت (محمية داخل شرط الشموع لتجنب أي خطأ)
         if lang == "ar":
             real_trend = "صاعد" if trend_dir == "Bullish" else "هابط"
             trend_strength = trend_str
-        else:
-            real_trend = "Bullish" if trend_dir == "Bullish" else "Bearish"
-            trend_strength = trend_str
-
-
-    # 🔥 تحديث البرومبت ليشمل الـ market_action
-    if lang == "ar":
-        prompt = f"""
+            
+            prompt = f"""
 أنت محلل فني خبير في شركة "NaiF CHarT". قم بصياغة هذا التحليل لعملة {clean_sym} بشكل احترافي ومختصر.
 البيانات محسوبة رياضياً وجاهزة، ⚠️ يمنع منعاً باتاً تغيير أرقام الأهداف أو الوقف ⚠️، فقط قم بترتيبها في القالب المطلوب واكتب تعليقاً فنياً دقيقاً في سطر واحد لكل مؤشر.
 
@@ -2278,8 +2163,11 @@ Stop Loss: <code>{format_price(calc_sl)}</code>
 •MACD ({macd_fmt}): (اكتب سطر واحد يوضح الزخم بالعربية فقط ولا حرف غير عربي)
 •ADX ({adx_val:.1f}): (اكتب سطر واحد يوضح قوة الترند بالعربية فقط ولا حرف غير عربي)
 """
-    else:
-        prompt = f"""
+        else:
+            real_trend = "Bullish" if trend_dir == "Bullish" else "Bearish"
+            trend_strength = trend_str
+            
+            prompt = f"""
 You are an expert Technical Analyst at "NaiF CHarT". Format this analysis for {clean_sym} professionally and concisely.
 The data is calculated mathematically and is completely ready. ⚠️ STRICT RULE: DO NOT change the TP or SL numbers ⚠️. Just arrange them in the required template and write a precise technical comment in one short line for each indicator.
 
@@ -2306,6 +2194,7 @@ Stop Loss: <code>{format_price(calc_sl)}</code>
 • MACD ({macd_fmt}): (Write one line explaining momentum)
 • ADX ({adx_val:.1f}): (Write one line explaining trend strength)
 """
+
 
 
     res = await ask_groq(prompt, lang=lang)
