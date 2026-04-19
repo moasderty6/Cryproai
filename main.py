@@ -721,15 +721,15 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             score = round(max(0.0, min(score, 98.5)), 1)
             
             # 🟢 محرك تسمية الإشارة الذكي (Short & Punchy Signal Names)
-            final_signal = "فرصة عالية الاحتمال 🎯"
+            final_signal = "High Probability Setup 🎯"
             if "Fake_Pump" in tags or "Spoofing" in tags or "Short_Covering" in tags:
                 return None # طرد العملات المخادعة تماماً من الرادار
-            elif "Whale_CVD" in tags and "Aggressive_Buy" in tags: final_signal = "تجميع حيتان عنيف 🐋"
-            elif "Short_Squeeze" in tags: final_signal = "عصر شورت (Short Squeeze) 🔥"
-            elif "Z_Anom" in tags and "OI_Rising" in tags: final_signal = "انفجار مشتقات (Derivatives Pump) 🚀"
-            elif "Squeeze" in tags and "OB_Buy" in tags: final_signal = "اختراق سيولة (Liquidity Breakout) ⚡"
-            elif "Whale_CVD" in tags: final_signal = "تجميع مؤسساتي هادئ 🧲"
-            elif "Z_Anom" in tags or "Z_High" in tags: final_signal = "دخول سيولة ذكية 💸"
+            elif "Whale_CVD" in tags and "Aggressive_Buy" in tags: final_signal = "Aggressive Whale Accumulation 🐋"
+            elif "Short_Squeeze" in tags: final_signal = "(Short Squeeze) 🔥"
+            elif "Z_Anom" in tags and "OI_Rising" in tags: final_signal = "(Derivatives Pump) 🚀"
+            elif "Squeeze" in tags and "OB_Buy" in tags: final_signal = "(Liquidity Breakout) ⚡"
+            elif "Whale_CVD" in tags: final_signal = "Silent Institutional Accumulation 🧲"
+            elif "Z_Anom" in tags or "Z_High" in tags: final_signal = "Smart Money Inflow 💸"
 
             avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
             avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
@@ -814,10 +814,10 @@ async def ai_opportunity_radar(pool):
                 """, symbol)
 
             prompt_ar = f"""
-أنت كبير المحللين الفنيين. رادار السوق الذكي التقط فرصة من القاع لعملة {symbol} بسكور {best_score}/100.
+أنت كبير المحللين الفنيين. رادار السوق الذكي التقط فرصة لعملة {symbol} بسكور {best_score}/100.
 الإشارة: {signal} | ADX: {best_meta['adx']} | RSI: {best_meta['rsi']} | سيولة أعلى بـ {best_meta['vol_ratio']} ضعف.
 ضغط الشراء (Orderbook): طلبات الشراء تتفوق بـ {best_meta.get('ob_pressure', 1.0)} ضعف.
-اكتب تحليلاً احترافياً (3 أسطر) يدمج هذه الأرقام مباشرة ويوضح سبب التجميع الحالي.
+اكتب تحليلاً احترافياً (3 أسطر) يدمج هذه الأرقام مباشرة ويوضح سبب احمال الصعود.
 """
             prompt_en = f"""
 You are Lead Technical Analyst. Smart market caught a bottom opportunity for {symbol} with score {best_score}/100.
