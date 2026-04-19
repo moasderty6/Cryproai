@@ -2132,6 +2132,9 @@ async def run_analysis(cb: types.CallbackQuery):
 
         win_rate_display = f"{risk_model['win_rate']}%" if risk_model['valid'] else ("ضعيفة" if lang=="ar" else "Poor")
         pos_size_display = f"{sizing_model['recommended_position_pct']}%"
+        # 🟢 استعادة تعريف متغيرات RSI و MACD لتجنب خطأ NameError
+        macd_fmt = format_price(last_macd) if 'last_macd' in locals() and last_macd is not None else "0.0"
+        safe_rsi = f"{last_rsi:.2f}" if 'last_rsi' in locals() and last_rsi is not None else "N/A"
 
         if lang == "ar":
             real_trend = "صاعد" if trend_dir == "Bullish" else "هابط"
