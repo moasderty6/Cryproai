@@ -515,7 +515,6 @@ def detect_smart_money_absorption(df):
     """
     اكتشاف التجميع المؤسساتي باستخدام CVD من بيانات بايننس
     """
-    # 6 هو الاندكس الخاص بـ Taker Buy Volume في بايننس
     df["taker_buy_vol"] = pd.to_numeric(df["taker_buy_vol"], errors='coerce')
     df["taker_sell_vol"] = df["volume"] - df["taker_buy_vol"]
     
@@ -530,31 +529,24 @@ def detect_smart_money_absorption(df):
     score_boost = 0.0
     signal_upgrade = None
 
+    # 🟢 تم تخفيض السكور ليكون منطقياً وضبط اسم الإشارة الداخلي
     if price_change_pct <= 0.02 and cvd_change > (recent["volume"].mean() * 3):
-        score_boost = 40.0
-        signal_upgrade = "🐋 WHALE ABSORPTION (Global CVD)"
+        score_boost = 15.0 
+        signal_upgrade = "Whale_CVD"
     elif price_change_pct > 0.05 and cvd_change < 0:
-        score_boost = -30.0
-        signal_upgrade = "🚨 DISTRIBUTION (Fake Pump)"
+        score_boost = -20.0
+        signal_upgrade = "Fake_Pump"
 
     return score_boost, signal_upgrade
+
 async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_price: float, old_price: float):
-    """
-    قراءة بيانات العقود الآجلة (Open Interest & Funding Rate) من بايننس
-    لتحديد ما إذا كانت الحركة مدعومة بأموال جديدة أم مجرد تصفيات (Short/Long Squeeze).
-    """
-    # رابط الـ API الخاص بـ Binance Futures
     fapi_base = "https://fapi.binance.com"
     pair = f"{symbol}USDT"
 
     try:
-        # 1. جلب تاريخ Open Interest لآخر شمعتين على فريم 15 دقيقة
         oi_url = f"{fapi_base}/futures/data/openInterestHist?symbol={pair}&period=15m&limit=2"
-        
-        # 2. جلب الـ Funding Rate الحالي
         funding_url = f"{fapi_base}/fapi/v1/premiumIndex?symbol={pair}"
 
-        # تنفيذ الطلبين بالتوازي لتوفير الوقت
         oi_res, fund_res = await asyncio.gather(
             client.get(oi_url, timeout=3.0),
             client.get(funding_url, timeout=3.0)
@@ -564,8 +556,34 @@ async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_
             oi_data = oi_res.json()
             fund_data = fund_res.json()
 
-            if len(oi_data) < 2:
-                return 0.0, None # لا توجد بيانات كافية للعملة (غالباً غير موجودة في الفيوترز)
+            if len(oi_data) < 2: return 0.0, None
+
+            old_oi = float(oi_data[0]["sumOpenInterest"])
+            current_oi = float(oi_data[-1]["sumOpenInterest"])
+            oi_change_pct = (current_oi - old_oi) / old_oi
+            price_change_pct = (current_price - old_price) / old_price
+            funding_rate = float(fund_data.get("lastFundingRate", 0.0))
+
+            score_modifier = 0.0
+            futures_signal = None
+
+            # 🟢 تم تخفيض السكور وضبط الـ Tags
+            if price_change_pct > 0.01 and oi_change_pct > 0.02: 
+                score_modifier += 15.0
+                futures_signal = "OI_Rising"
+            elif price_change_pct > 0.01 and oi_change_pct < -0.02:
+                score_modifier -= 25.0
+                futures_signal = "Short_Covering"
+            
+            if funding_rate < -0.0005: 
+                score_modifier += 12.0
+                if not futures_signal: futures_signal = "Short_Squeeze"
+            elif funding_rate > 0.0005:
+                score_modifier -= 10.0
+
+            return score_modifier, futures_signal
+    except Exception: pass
+    return 0.0, None
 
             # --- حساب التغير في الـ Open Interest ---
             old_oi = float(oi_data[0]["sumOpenInterest"])
@@ -633,7 +651,6 @@ def calculate_volume_zscore(df, window=720):
     return current_z, last_mean, last_std
 
 async def analyze_radar_coin(c, client, market_regime, sem):
-    """دالة قناص القيعان (مربوطة بالـ Order Flow والماكرو)"""
     async with sem:  
         try:
             symbol = c["symbol"]
@@ -645,124 +662,121 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             df = pd.DataFrame(candles)
             df = df.iloc[:, :7] 
             df.columns = ["timestamp", "volume", "close", "high", "low", "open", "taker_buy_vol"]
-            for col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+            for col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce')
 
-            # المؤشرات الأساسية
             delta = df["close"].diff()
             gain = delta.clip(lower=0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
             loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
             df["rsi"] = 100 - (100 / (1 + (gain / loss)))
             last_rsi = df["rsi"].iloc[-1]
             
-            try:
-                current_adx = float(ta.trend.ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14, fillna=True).adx().iloc[-1])
+            try: current_adx = float(ta.trend.ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14, fillna=True).adx().iloc[-1])
             except: current_adx = 0.0
 
-            score = 0.0
-            signal_type = "🎯 HIGH PROBABILITY"
+            # 🟢 البداية من سكور 20 لتوزيع النسب باحترافية
+            score = 20.0
+            tags = [] # قائمة لتجميع نوع الحركات
 
-            # 1. Z-Score
             current_z, vol_mean, vol_std = calculate_volume_zscore(df, window=720)
             
-            # تخزين الذاكرة في قاعدة البيانات فوراً
             pool = dp['db_pool']
             async with pool.acquire() as conn:
                 await conn.execute("""
                     INSERT INTO market_memory (symbol, vol_mean, vol_stddev, z_score, last_updated)
                     VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
                     ON CONFLICT (symbol) DO UPDATE 
-                    SET vol_mean = EXCLUDED.vol_mean, 
-                        vol_stddev = EXCLUDED.vol_stddev, 
-                        z_score = EXCLUDED.z_score, 
-                        last_updated = CURRENT_TIMESTAMP
+                    SET vol_mean = EXCLUDED.vol_mean, vol_stddev = EXCLUDED.vol_stddev, z_score = EXCLUDED.z_score, last_updated = CURRENT_TIMESTAMP
                 """, symbol, vol_mean, vol_std, current_z)
 
+            # 1. فلتر الفوليوم
             if current_z >= 4.0:
-                score += 40.0
-                signal_type = "🚨 INSTITUTIONAL ANOMALY (Z > 4)"
+                score += 20.0
+                tags.append("Z_Anom")
             elif current_z >= 3.0:
-                score += 25.0
-                signal_type = "🐋 WHALE ENTRY (Z > 3)"
+                score += 12.0
+                tags.append("Z_High")
             elif current_z >= 2.0:
-                score += 10.0
-            elif current_z < 0:
-                return None 
+                score += 5.0
+            elif current_z < 0: return None 
 
-            # 2. السيولة الخفية
+            # 2. فلتر CVD
             cvd_boost, cvd_signal = detect_smart_money_absorption(df)
             score += cvd_boost
-            if cvd_signal: signal_type = cvd_signal
+            if cvd_signal: tags.append(cvd_signal)
 
-            # 3. سوق العقود الآجلة
+            # 3. فلتر المشتقات
             old_price_val = df["close"].iloc[-3] if len(df) > 3 else df["open"].iloc[0]
             futures_boost, futures_signal = await get_futures_liquidity(symbol, client, price, old_price_val)
             score += futures_boost
-            if futures_signal: signal_type = futures_signal
+            if futures_signal: tags.append(futures_signal)
 
-            # --- المؤشرات الكلاسيكية الداعمة ---
+            # 4. المؤشرات الكلاسيكية
             sma20 = df["close"].rolling(20).mean()
             std20 = df["close"].rolling(20).std(ddof=0)
             df["upper_band"] = sma20 + 2*std20
             df["lower_band"] = sma20 - 2*std20
-            df["bb_width"] = (df["upper_band"] - df["lower_band"]) / sma20
-            squeeze_pct = df["bb_width"].iloc[-1]
+            squeeze_pct = (df["upper_band"].iloc[-1] - df["lower_band"].iloc[-1]) / sma20.iloc[-1]
             
-            if squeeze_pct < 0.05: score += 20.0
+            if squeeze_pct < 0.05: 
+                score += 10.0
+                tags.append("Squeeze")
             
             ema200_val = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else df["close"].ewm(span=50).mean().iloc[-1]
             if price < ema200_val and last_rsi > 30 and df["rsi"].iloc[-10:-1].min() < 30:
-                score += 15.0 
+                score += 10.0 
+                tags.append("RSI_Div")
 
-            # 🌐 الفلتر النهائي: التحقق العميق (إذا السكور مبدئياً قوي فقط)
+            # 5. الفحص العميق (Order Flow + Global)
             if score >= 50.0: 
-                # أ. كشف الجدران الوهمية
                 depth_data = await analyze_orderbook_depth(symbol, client)
                 if depth_data:
                     if depth_data['spoofing_risk']:
-                        score -= 40.0 
-                        signal_type = "⚠️ SPOOFING DETECTED"
+                        score -= 30.0 
+                        tags.append("Spoofing")
                     elif depth_data['imbalance'] > 0.4:
-                        score += 15.0
+                        score += 10.0
+                        tags.append("OB_Buy")
 
-                # ب. الأوردر فلو اللحظي
-                print(f"🕵️‍♂️ جاري فحص تدفق الأوامر اللحظي لـ {symbol}...")
                 of_analyzer = OrderFlowAnalyzer(symbol)
                 await of_analyzer.start_trade_stream(duration=10)
-                
                 if of_analyzer.delta > (price * 1000): 
-                    score += 20.0
-                    signal_type += " + 🟢 AGGRESSIVE BUYING"
+                    score += 15.0
+                    tags.append("Aggressive_Buy")
                 elif of_analyzer.delta < -(price * 1000): 
-                    score -= 30.0
+                    score -= 20.0
 
-                # ج. السيولة في باقي المنصات
                 global_ob_pressure = await get_aggregated_orderbook(client, symbol)
                 global_alt_volume = await verify_global_liquidity(symbol, client)
-                
-                if global_ob_pressure >= 1.5:
-                    score += min((global_ob_pressure - 1) * 8, 20.0)
-                elif global_ob_pressure < 0.8:
-                    score -= 20.0
-                if global_alt_volume > 100000:
-                    score += 15.0
-                    if signal_type == "🎯 HIGH PROBABILITY":
-                        signal_type = "🌍 GLOBAL SYNC BREAKOUT"
+                if global_ob_pressure >= 1.5: score += 10.0
+                elif global_ob_pressure < 0.8: score -= 15.0
+                if global_alt_volume > 100000: score += 10.0
 
-            # 🟢 تعديل السكور النهائي بناءً على حالة السوق (Macro Regime)
+            # 6. الماكرو
             if isinstance(market_regime, dict):
-                if market_regime['trend'] == "Trending_Bear" and "BREAKOUT" in signal_type:
-                    score -= 25.0
+                if market_regime['trend'] == "Trending_Bear" and ("Z_Anom" in tags or "OI_Rising" in tags):
+                    score -= 15.0
                 elif market_regime['trend'] == "Trending_Bull":
-                    score += 10.0
+                    score += 5.0
 
-            score = round(max(0.0, min(score, 100.0)), 1)
+            # 🟢 ضبط السكور ليكون مستحيلاً وصوله 100 (أقصى شيء بالواقع 95-97)
+            score = round(max(0.0, min(score, 98.5)), 1)
             
+            # 🟢 محرك تسمية الإشارة الذكي (Short & Punchy Signal Names)
+            final_signal = "فرصة عالية الاحتمال 🎯"
+            if "Fake_Pump" in tags or "Spoofing" in tags or "Short_Covering" in tags:
+                return None # طرد العملات المخادعة تماماً من الرادار
+            elif "Whale_CVD" in tags and "Aggressive_Buy" in tags: final_signal = "تجميع حيتان عنيف 🐋"
+            elif "Short_Squeeze" in tags: final_signal = "عصر شورت (Short Squeeze) 🔥"
+            elif "Z_Anom" in tags and "OI_Rising" in tags: final_signal = "انفجار مشتقات (Derivatives Pump) 🚀"
+            elif "Squeeze" in tags and "OB_Buy" in tags: final_signal = "اختراق سيولة (Liquidity Breakout) ⚡"
+            elif "Whale_CVD" in tags: final_signal = "تجميع مؤسساتي هادئ 🧲"
+            elif "Z_Anom" in tags or "Z_High" in tags: final_signal = "دخول سيولة ذكية 💸"
+
             avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
             avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
             current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
 
-            # إرجاع النتيجة إذا نجحت العملة
+            # إرجاع النتيجة إذا نجحت العملة (سكور 75 يعتبر الآن ممتاز جداً وصعب الوصول له)
             if score >= 75.0:  
                 return {
                     "symbol": symbol, "price": price, "score": score,
@@ -770,11 +784,10 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     "macd": current_z, 
                     "vol_ratio": round(current_vol_ratio, 2),
                     "ob_pressure": round(locals().get('global_ob_pressure', 1.0), 2),
-                    "signal_type": signal_type
+                    "signal_type": final_signal
                 }
             return None 
         except Exception:
-            # تم حذف رسالة الخطأ هنا عشان اللوج يضل نظيف من العملات الميتة
             return None
 
 
