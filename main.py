@@ -792,13 +792,14 @@ async def analyze_radar_coin(c, client, market_regime, sem):
 
 
 async def ai_opportunity_radar(pool):
-    print("🚀 تم تشغيل الرادار الشامل (وضع صيد القيعان - بايننس فقط)...")
+    print("🚀 تم تشغيل الرادار الشامل (وضع صيد القيعان)...")
     sem = asyncio.Semaphore(5)
     
     while True:
         try:
-            print("🔍 جاري جلب أزواج USDT من بايننس للبحث عن الجواهر المنسية...")
-            STABLE_COINS = {"USDT","USDC","BUSD","DAI","TUSD","FDUSD", "USDP"}
+            print("🔍 جاري جلب 1000 عملة للبحث عن الجواهر المنسية...")
+            headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
+            STABLE_COINS = {"USDT","USDC","BUSD","DAI","TUSD","FDUSD"}
 
             async with pool.acquire() as conn:
                 records = await conn.fetch("""
@@ -808,42 +809,26 @@ async def ai_opportunity_radar(pool):
                 ignored_symbols = {r['symbol'] for r in records}
 
             async with httpx.AsyncClient(timeout=30) as client:
+                # 🟢 التعديل هنا: جلب بيانات الماكرو الجديدة بدل البوليان القديم
                 market_regime = await detect_market_regime(client)
                 
-                # جلب بيانات كل العملات من بايننس مباشرة (يغنينا عن CMC)
-                res = await client.get("https://api.binance.com/api/v3/ticker/24hr")
+                res = await client.get(
+                    "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
+                    headers=headers, params={"limit": "1000"} 
+                )
                 
                 if res.status_code != 200:
-                    await bot.send_message(ADMIN_USER_ID, "❌ فشل الاتصال بـ Binance API. سيتم إعادة المحاولة...")
+                    await bot.send_message(ADMIN_USER_ID, "❌ فشل الاتصال بـ CoinMarketCap. سيتم إعادة المحاولة...")
                     await asyncio.sleep(60)
                     continue
                 
-                data = res.json()
-                coins = []
-                
-                for c in data:
-                    sym = c["symbol"]
-                    # نأخذ أزواج الـ USDT فقط
-                    if not sym.endswith("USDT"): continue
-                    
-                    base_coin = sym.replace("USDT", "")
-                    if base_coin in STABLE_COINS: continue
-                    if base_coin in ignored_symbols: continue
-                    
-                    vol_usd = float(c["quoteVolume"])
-                    pct_change = float(c["priceChangePercent"])
-                    price = float(c["lastPrice"])
-                    
-                    # الفلترة الأساسية: فوليوم فوق مليون وتغير سعري أكبر من 0.2
-                    if vol_usd >= 200_000 and abs(pct_change) >= 0.2:
-                        # تجهيز الداتا بنفس الهيكل اللي تفهمه دالة analyze_radar_coin
-                        coin_mock = {
-                            "symbol": base_coin,
-                            "quote": {"USD": {"price": price}}
-                        }
-                        coins.append(coin_mock)
-
-                print(f"✅ تم تصفية {len(coins)} عملة من بايننس مطابقة للشروط المبدئية. جاري التحليل العميق...")
+                coins = [
+                    c for c in res.json()["data"] 
+                    if c["symbol"] not in STABLE_COINS 
+                    and c["symbol"] not in ignored_symbols
+                    and c["quote"]["USD"]["volume_24h"] >= 1_000_000 
+                    and abs(c["quote"]["USD"]["percent_change_24h"]) >= 0.2
+                ]
 
                 tasks = [analyze_radar_coin(c, client, market_regime, sem) for c in coins]
                 results = await asyncio.gather(*tasks)
@@ -852,8 +837,8 @@ async def ai_opportunity_radar(pool):
                 valid_signals.sort(key=lambda x: x['score'], reverse=True)
 
                 if not valid_signals:
-                    print("😴 لم يتم العثور على فرص حالياً... إعادة البحث التلقائي بعد 5 دقائق.")
-                    await asyncio.sleep(300)
+                    print("😴 لم يتم العثور على فرص حالياً... إعادة البحث التلقائي بعد 15 دقائق.")
+                    await asyncio.sleep(900)
                     continue
 
                 # تجهيز الرسالة للأدمن لأقوى عملة
