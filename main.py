@@ -585,47 +585,6 @@ async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_
     except Exception: pass
     return 0.0, None
 
-            # --- حساب التغير في الـ Open Interest ---
-            old_oi = float(oi_data[0]["sumOpenInterest"])
-            current_oi = float(oi_data[-1]["sumOpenInterest"])
-            oi_change_pct = (current_oi - old_oi) / old_oi
-
-            # --- حساب التغير في السعر ---
-            price_change_pct = (current_price - old_price) / old_price
-
-            # --- جلب الـ Funding Rate ---
-            funding_rate = float(fund_data.get("lastFundingRate", 0.0))
-
-            score_modifier = 0.0
-            futures_signal = None
-
-            # 💡 القاعدة الذهبية 1: السعر يرتفع + OI يرتفع = أموال حقيقية تدخل (Long Build-up)
-            if price_change_pct > 0.01 and oi_change_pct > 0.02: 
-                score_modifier += 25.0
-                futures_signal = "🚀 TRUE PUMP (OI Rising)"
-            
-            # 💡 القاعدة الذهبية 2: السعر يرتفع + OI ينخفض = إغلاق صفقات مكشوف (Short Covering) -> فخ!
-            elif price_change_pct > 0.01 and oi_change_pct < -0.02:
-                score_modifier -= 30.0 # خصم عنيف لأن هذا صعود كاذب
-                futures_signal = "⚠️ FAKE PUMP (Short Covering)"
-            
-            # 💡 القاعدة الذهبية 3: الفاندنج ريت سلبي جداً -> فرصة انفجار للأعلى (Short Squeeze)
-            # إذا كان الفاندنج أقل من -0.05%، الجميع يراهن على الهبوط، الحيتان ستضرب الستوبات للأعلى
-            if funding_rate < -0.0005: 
-                score_modifier += 20.0
-                if not futures_signal:
-                    futures_signal = "🔥 SHORT SQUEEZE INCOMING"
-
-            # 💡 القاعدة الذهبية 4: الفاندنج ريت إيجابي جداً -> الحيتان ستصرف قريباً (Long Squeeze)
-            elif funding_rate > 0.0005:
-                score_modifier -= 15.0
-
-            return score_modifier, futures_signal
-    except Exception:
-        # العملة قد تكون غير مدرجة في الفيوترز (Spot Only)، نتجاهل الخطأ بصمت
-        pass
-        
-    return 0.0, None
 def calculate_volume_zscore(df, window=720):
     """
     محرك الشذوذ الإحصائي (Volume Z-Score).
