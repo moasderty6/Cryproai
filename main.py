@@ -147,25 +147,36 @@ class OrderFlowAnalyzer:
         self.cumulative_delta = 0.0
         self.is_active = True
 
-    async def start_trade_stream(self, duration=300): # نراقب لـ 5 دقائق فقط لتأكيد الدخول
+    async def start_trade_stream(self, duration=10):
         url = f"wss://stream.binance.com:9443/ws/{self.symbol}usdt@aggTrade"
         start_time = asyncio.get_event_loop().time()
         
-        async with websockets.connect(url) as ws:
-            while self.is_active:
-                if asyncio.get_event_loop().time() - start_time > duration:
-                    break
-                
-                msg = await ws.recv()
-                data = json.loads(msg)
-                
-                amount = float(data['q']) * float(data['p']) # الحجم بالدولار
-                is_buyer_taker = not data['m'] # m=False تعني شراء عدواني
-                
-                if is_buyer_taker:
-                    self.delta += amount
-                else:
-                    self.delta -= amount
+        try:
+            # ping_interval=None تمنع الإزعاج من المنصة للاتصالات القصيرة
+            async with websockets.connect(url, ping_interval=None) as ws:
+                while self.is_active:
+                    elapsed = asyncio.get_event_loop().time() - start_time
+                    if elapsed > duration:
+                        break
+                    
+                    try:
+                        # نستخدم wait_for هنا لتجنب التعليق الأبدي للعملات الميتة
+                        msg = await asyncio.wait_for(ws.recv(), timeout=duration - elapsed)
+                        data = json.loads(msg)
+                        
+                        amount = float(data['q']) * float(data['p']) # الحجم بالدولار
+                        is_buyer_taker = not data['m'] # شراء عدواني
+                        
+                        if is_buyer_taker:
+                            self.delta += amount
+                        else:
+                            self.delta -= amount
+                    except asyncio.TimeoutError:
+                        # العملة هادئة جداً ولا يوجد صفقات حالياً، نخرج بهدوء
+                        break
+        except Exception as e:
+            pass # تجاهل أخطاء الاتصال اللحظية
+
                 
                 # هنا نحسب الـ Absorption (امتصاص البيع)
                 # إذا كان السعر ثابتاً أو يرتفع رغم وجود Delta بيعي ضخم = الحيتان تمتص العروض
@@ -653,61 +664,122 @@ async def analyze_radar_coin(c, client, market_regime, sem):
 
             # 1. Z-Score
             current_z, vol_mean, vol_std = calculate_volume_zscore(df, window=720)
-            if current_z >= 4.0:
-                score += 35.0
-                signal_type = "🚨 INSTITUTIONAL ANOMALY (Z > 4)"
-            elif current_z >= 2.0:
-                score += 15.0
+            
+            # تخزين الذاكرة في قاعدة البيانات فوراً
+            pool = dp['db_pool']
+            async with pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO market_memory (symbol, vol_mean, vol_stddev, z_score, last_updated)
+                    VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+                    ON CONFLICT (symbol) DO UPDATE 
+                    SET vol_mean = EXCLUDED.vol_mean, 
+                        vol_stddev = EXCLUDED.vol_stddev, 
+                        z_score = EXCLUDED.z_score, 
+                        last_updated = CURRENT_TIMESTAMP
+                """, symbol, vol_mean, vol_std, current_z)
 
-            # 2. Futures Data
-            futures_boost, futures_signal = await get_futures_liquidity(symbol, client, price, df["close"].iloc[-3])
+            if current_z >= 4.0:
+                score += 40.0
+                signal_type = "🚨 INSTITUTIONAL ANOMALY (Z > 4)"
+            elif current_z >= 3.0:
+                score += 25.0
+                signal_type = "🐋 WHALE ENTRY (Z > 3)"
+            elif current_z >= 2.0:
+                score += 10.0
+            elif current_z < 0:
+                return None 
+
+            # 2. السيولة الخفية
+            cvd_boost, cvd_signal = detect_smart_money_absorption(df)
+            score += cvd_boost
+            if cvd_signal: signal_type = cvd_signal
+
+            # 3. سوق العقود الآجلة
+            old_price_val = df["close"].iloc[-3] if len(df) > 3 else df["open"].iloc[0]
+            futures_boost, futures_signal = await get_futures_liquidity(symbol, client, price, old_price_val)
             score += futures_boost
             if futures_signal: signal_type = futures_signal
 
-            # 🟢 3. ربط الـ Order Flow (تحليل مباشر لمدة 10 ثواني)
-            print(f"🕵️‍♂️ جاري فحص تدفق الأوامر اللحظي لـ {symbol}...")
-            of_analyzer = OrderFlowAnalyzer(symbol)
-            # نشغله لـ 10 ثواني فقط كعينة تأكيدية
-            await asyncio.wait_for(of_analyzer.start_trade_stream(duration=10), timeout=12.0)
+            # --- المؤشرات الكلاسيكية الداعمة ---
+            sma20 = df["close"].rolling(20).mean()
+            std20 = df["close"].rolling(20).std(ddof=0)
+            df["upper_band"] = sma20 + 2*std20
+            df["lower_band"] = sma20 - 2*std20
+            df["bb_width"] = (df["upper_band"] - df["lower_band"]) / sma20
+            squeeze_pct = df["bb_width"].iloc[-1]
             
-            if of_analyzer.delta > (price * 1000): # شراء عدواني قوي
-                score += 20.0
-                signal_type += " + 🟢 AGGRESSIVE BUYING"
-            elif of_analyzer.delta < -(price * 1000): # بيع عدواني (تخريج)
-                score -= 30.0
+            if squeeze_pct < 0.05: score += 20.0
+            
+            ema200_val = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else df["close"].ewm(span=50).mean().iloc[-1]
+            if price < ema200_val and last_rsi > 30 and df["rsi"].iloc[-10:-1].min() < 30:
+                score += 15.0 
 
-            # 🟢 4. كشف الـ Spoofing (الجدران الوهمية)
-            depth_data = await analyze_orderbook_depth(symbol, client)
-            if depth_data:
-                if depth_data['spoofing_risk']:
-                    score -= 40.0 # فخ، نهرب!
-                    signal_type = "⚠️ SPOOFING DETECTED"
-                elif depth_data['imbalance'] > 0.4:
-                    score += 15.0 # دعم حقيقي قوي
+            # 🌐 الفلتر النهائي: التحقق العميق (إذا السكور مبدئياً قوي فقط)
+            if score >= 50.0: 
+                # أ. كشف الجدران الوهمية
+                depth_data = await analyze_orderbook_depth(symbol, client)
+                if depth_data:
+                    if depth_data['spoofing_risk']:
+                        score -= 40.0 
+                        signal_type = "⚠️ SPOOFING DETECTED"
+                    elif depth_data['imbalance'] > 0.4:
+                        score += 15.0
 
-            # 🟢 5. تعديل السكور النهائي بناءً على حالة السوق (Macro Regime)
-            if market_regime['trend'] == "Trending_Bear" and "BREAKOUT" in signal_type:
-                score -= 25.0 # لا تشتري اختراقات في سوق هابط
-            elif market_regime['trend'] == "Trending_Bull":
-                score += 10.0 # السوق يدعم الصعود
+                # ب. الأوردر فلو اللحظي
+                print(f"🕵️‍♂️ جاري فحص تدفق الأوامر اللحظي لـ {symbol}...")
+                of_analyzer = OrderFlowAnalyzer(symbol)
+                await of_analyzer.start_trade_stream(duration=10)
+                
+                if of_analyzer.delta > (price * 1000): 
+                    score += 20.0
+                    signal_type += " + 🟢 AGGRESSIVE BUYING"
+                elif of_analyzer.delta < -(price * 1000): 
+                    score -= 30.0
+
+                # ج. السيولة في باقي المنصات
+                global_ob_pressure = await get_aggregated_orderbook(client, symbol)
+                global_alt_volume = await verify_global_liquidity(symbol, client)
+                
+                if global_ob_pressure >= 1.5:
+                    score += min((global_ob_pressure - 1) * 8, 20.0)
+                elif global_ob_pressure < 0.8:
+                    score -= 20.0
+                if global_alt_volume > 100000:
+                    score += 15.0
+                    if signal_type == "🎯 HIGH PROBABILITY":
+                        signal_type = "🌍 GLOBAL SYNC BREAKOUT"
+
+            # 🟢 تعديل السكور النهائي بناءً على حالة السوق (Macro Regime)
+            if isinstance(market_regime, dict):
+                if market_regime['trend'] == "Trending_Bear" and "BREAKOUT" in signal_type:
+                    score -= 25.0
+                elif market_regime['trend'] == "Trending_Bull":
+                    score += 10.0
 
             score = round(max(0.0, min(score, 100.0)), 1)
+            
+            avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
+            avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
+            current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
 
-            # إذا نجح الاختبار الصارم
+            # إرجاع النتيجة إذا نجحت العملة
             if score >= 75.0:  
-                # ... (نفس كود إرسال رسالة الأدمن وتخزينها في radar_pending_approvals كما هو لديك)
-                # سأختصره هنا لتوضيح الربط، أنت تملك هذا الجزء مسبقاً في كودك.
-                print(f"🔥 فرصة مؤكدة: {symbol} بسكور {score}")
-                # [استمر بنفس كودك الخاص بطلب Groq وإرسال الأزرار للأدمن]
-                
-        except Exception as e:
-            print(f"Radar Error for {c.get('symbol')}: {e}")
+                return {
+                    "symbol": symbol, "price": price, "score": score,
+                    "rsi": round(last_rsi, 2), "adx": round(current_adx, 2),
+                    "macd": current_z, 
+                    "vol_ratio": round(current_vol_ratio, 2),
+                    "ob_pressure": round(locals().get('global_ob_pressure', 1.0), 2),
+                    "signal_type": signal_type
+                }
+            return None 
+        except Exception:
+            # تم حذف رسالة الخطأ هنا عشان اللوج يضل نظيف من العملات الميتة
             return None
+
 
 async def ai_opportunity_radar(pool):
     print("🚀 تم تشغيل الرادار الشامل (وضع صيد القيعان)...")
-    
-    # 🛡️ الأمان أولاً: 5 طلبات متزامنة فقط بدلاً من 15 لحماية السيرفر من الحظر
     sem = asyncio.Semaphore(5)
     
     try:
@@ -723,26 +795,27 @@ async def ai_opportunity_radar(pool):
             ignored_symbols = {r['symbol'] for r in records}
 
         async with httpx.AsyncClient(timeout=30) as client:
-            is_btc_bullish = await get_btc_trend(client)
+            # 🟢 التعديل هنا: جلب بيانات الماكرو الجديدة بدل البوليان القديم
+            market_regime = await detect_market_regime(client)
+            
             res = await client.get(
                 "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
-                headers=headers, params={"limit": "1000"} # 🎯 مسح 1000 عملة
+                headers=headers, params={"limit": "1000"} 
             )
             
             if res.status_code != 200:
                 await bot.send_message(ADMIN_USER_ID, "❌ فشل الاتصال بـ CoinMarketCap.")
                 return
             
-            # 🎯 فلترة لاصطياد الانفجارات (فوليوم مليون دولار كافي جداً)
             coins = [
                 c for c in res.json()["data"] 
                 if c["symbol"] not in STABLE_COINS 
                 and c["symbol"] not in ignored_symbols
-                and c["quote"]["USD"]["volume_24h"] >= 1_000_000 # تم تخفيض الفوليوم لصيد العملات قبل أن تطير
+                and c["quote"]["USD"]["volume_24h"] >= 1_000_000 
                 and abs(c["quote"]["USD"]["percent_change_24h"]) >= 0.2
             ]
 
-            tasks = [analyze_radar_coin(c, client, is_btc_bullish, sem) for c in coins]
+            tasks = [analyze_radar_coin(c, client, market_regime, sem) for c in coins]
             results = await asyncio.gather(*tasks)
             
             valid_signals = [r for r in results if r is not None]
@@ -753,11 +826,12 @@ async def ai_opportunity_radar(pool):
                 await bot.send_message(ADMIN_USER_ID, "😴 <b>مسح مكتمل:</b>\nالسوق لا يعطي إشارات تجميع واضحة حالياً، أو أن السيولة معدومة. تم تأجيل الصيد.", parse_mode=ParseMode.HTML)
                 return
 
+            # تجهيز الرسالة للأدمن لأقوى عملة
             best_meta = valid_signals[0]
             best_score = best_meta['score']
             symbol = best_meta['symbol']
             price = best_meta['price']
-            signal = best_meta.get('signal_type', "🎯 BOTTOM SNIPED") # أخذ الإشارة الدقيقة من الدالة
+            signal = best_meta.get('signal_type', "🎯 BOTTOM SNIPED") 
 
             async with pool.acquire() as conn:
                 await conn.execute("""
