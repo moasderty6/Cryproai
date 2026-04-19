@@ -1209,39 +1209,46 @@ from aiogram.filters import Command
 # --- 1. دالة المعالجة المعزولة (تعمل في الخلفية بدون تعطيل البوت) ---
 def process_backtest(data, symbol):
     """
-    هذه الدالة تقوم بالعملية الحسابية الثقيلة للباك تيست.
+    محرك الباك تيست الذكي: يحاكي شروط الرادار (Z-Score + CVD) 
+    وليس مجرد تقاطع متوسطات غبي.
     """
-    df = pd.DataFrame(data).iloc[:, :6]
-    df.columns = ["timestamp", "open", "high", "low", "close", "volume"]
+    # 1. تجهيز البيانات واستخراج فوليوم الحيتان
+    df = pd.DataFrame(data).iloc[:, :7]
+    df.columns = ["timestamp", "open", "high", "low", "close", "volume", "taker_buy_vol"]
     
     for col in df.columns:
         df[col] = pd.to_numeric(df[col], errors='coerce')
 
-    # محاكاة مؤشرات الرادار (نسخة مبسطة من كودك)
-    df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
+    # 2. حساب مؤشرات الرادار الحقيقية
+    # أ) سيولة الحيتان (CVD - Cumulative Volume Delta)
+    df["taker_sell_vol"] = df["volume"] - df["taker_buy_vol"]
+    df["delta"] = df["taker_buy_vol"] - df["taker_sell_vol"]
+    df["cvd"] = df["delta"].cumsum() 
+
+    # ب) محرك الشذوذ الإحصائي (Volume Z-Score)
+    rolling_mean = df["volume"].rolling(window=720, min_periods=50).mean()
+    rolling_std = df["volume"].rolling(window=720, min_periods=50).std(ddof=0)
+    df["z_score"] = (df["volume"] - rolling_mean) / rolling_std
+    df["z_score"] = df["z_score"].fillna(0)
+
+    # ج) مؤشرات الاتجاه والزخم
     df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
-    
     rsi_ind = ta.momentum.RSIIndicator(df['close'], window=14)
     df['rsi'] = rsi_ind.rsi()
-    
-    atr_ind = ta.volatility.AverageTrueRange(df['high'], df['low'], df['close'], window=14)
-    df['atr'] = atr_ind.average_true_range()
 
-    # محاكاة شروط الدخول (يمكنك تعديلها لاحقاً لتطابق الرادار تماماً)
-    df['buy_signal'] = (df['ema20'] > df['ema50']) & (df['rsi'] < 40)
-    
-    # تحديد الهدف والوقف باستخدام ATR (مكافأة المخاطرة 1:1.5)
-    df['tp'] = df['close'] + (df['atr'] * 2.0)
-    df['sl'] = df['close'] - (df['atr'] * 1.5)
+    # 3. شروط دخول الرادار (محاكاة قناص القيعان)
+    # ندخل إذا: شذوذ فوليوم قوي (Z>2.5) + شراء حيتان إيجابي + ليس في قمة (RSI<60) + ترند صاعد
+    df['smart_buy_signal'] = (df['z_score'] >= 2.5) & (df['delta'] > 0) & (df['rsi'] < 60) & (df['close'] > df['ema50'])
 
-    # محرك التداول
     in_trade = False
     entry_price = 0
     sl = 0
     tp = 0
     trades = []
 
-    for i in range(1, len(df)):
+    # 4. محرك التداول الزمني
+    # نبدأ من 100 لضمان حساب المتوسطات بشكل صحيح
+    for i in range(100, len(df)):
         current = df.iloc[i]
         
         if in_trade:
@@ -1254,16 +1261,23 @@ def process_backtest(data, symbol):
                 trades.append({"type": "Win", "pnl": (tp - entry_price) / entry_price})
                 in_trade = False
         else:
-            if current['buy_signal']:
+            if current['smart_buy_signal']:
                 in_trade = True
                 entry_price = current['close']
-                sl = current['sl']
-                tp = current['tp']
+                
+                # 🎯 محاكاة ذكية للـ VPVR و الدعم والمقاومة:
+                # الوقف: نضعه تحت أدنى قاع في آخر 24 شمعة (دعم حقيقي) وليس مسافة ثابتة
+                recent_lows = df['low'].iloc[i-24:i]
+                sl = recent_lows.min() * 0.99 # تحت القاع بـ 1% كحماية
+                
+                # الهدف: بما أن الرادار يستهدف الانفجارات، نحسب الهدف بناءً على المخاطرة (Risk:Reward 1:2)
+                risk_amount = entry_price - sl
+                tp = entry_price + (risk_amount * 2.5) # نطمح لعائد 2.5 ضعف المخاطرة
 
-    # إعداد التقرير
+    # 5. إعداد التقرير المتقدم
     total_trades = len(trades)
     if total_trades == 0:
-        return f"⚠️ لم يتم العثور على أي صفقات لـ {symbol} بهذه الشروط."
+        return f"⚠️ <b>لا يوجد فرص تجميع واضحة (No Signals)</b>\nشروط الرادار الصارمة (شذوذ الفوليوم وتجميع الحيتان) لم تتحقق على عملة {symbol} في هذه الفترة."
 
     winning_trades = len([t for t in trades if t["type"] == "Win"])
     losing_trades = total_trades - winning_trades
@@ -1272,24 +1286,26 @@ def process_backtest(data, symbol):
     gross_profit = sum(t["pnl"] for t in trades if t["type"] == "Win") * 100
     gross_loss = abs(sum(t["pnl"] for t in trades if t["type"] == "Loss")) * 100
     net_pnl = gross_profit - gross_loss
-    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 999.0
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 99.9
 
     report = (
-        f"📊 <b>تقرير الاختبار العكسي (Backtest)</b>\n"
+        f"📊 <b>تقرير محاكاة الرادار (Smart Backtest)</b>\n"
         f"━━━━━━━━━━━━━━\n"
         f"💎 العملة: <b>{symbol}</b>\n"
         f"⏱️ الفريم: 1 ساعة | آخر {len(df)} شمعة\n"
+        f"⚙️ الخوارزمية: <code>Volume Z-Score + CVD Tracking</code>\n"
         f"━━━━━━━━━━━━━━\n"
-        f"🔹 إجمالي الصفقات: <b>{total_trades}</b>\n"
-        f"✅ صفقات رابحة: <b>{winning_trades}</b>\n"
-        f"❌ صفقات خاسرة: <b>{losing_trades}</b>\n"
-        f"🏆 نسبة النجاح: <b>{win_rate:.1f}%</b>\n"
+        f"🔹 إجمالي إشارات الرادار: <b>{total_trades}</b>\n"
+        f"✅ ضربت الهدف (TP): <b>{winning_trades}</b>\n"
+        f"❌ ضربت الوقف (SL): <b>{losing_trades}</b>\n"
+        f"🏆 دقة الرادار: <b>{win_rate:.1f}%</b>\n"
         f"📈 عامل الربح (PF): <b>{profit_factor:.2f}</b>\n"
-        f"💰 صافي الربح: <b>{net_pnl:+.2f}%</b>\n"
+        f"💰 صافي العائد المتوقع: <b>{net_pnl:+.2f}%</b>\n"
         f"━━━━━━━━━━━━━━\n"
-        f"<i>* تم حساب النتائج ببيانات السوق الحقيقية</i>"
+        f"<i>* تم محاكاة دخول الرادار بناءً على شذوذ السيولة (Z-Score) وتدفق أوامر الشراء العنيف (Taker Buy Delta)، مع تحديد الوقف أسفل قيعان السيولة (Swing Lows).</i>"
     )
     return report
+
 
 # --- 2. أمر البوت للأدمن ---
 @dp.message(Command("bt"))
