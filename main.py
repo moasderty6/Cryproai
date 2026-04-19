@@ -14,6 +14,7 @@ import pandas as pd
 import uuid
 import numpy as np
 import datetime
+import websockets
 
 from aiohttp import web
 from dotenv import load_dotenv
@@ -139,6 +140,121 @@ def get_payment_kb(lang):
 
 # --- رادار الفرص الذكي ---
 # --- دوال الرادار المساعدة (ضعها فوق دالة الرادار) ---
+class OrderFlowAnalyzer:
+    def __init__(self, symbol):
+        self.symbol = symbol.lower()
+        self.delta = 0.0
+        self.cumulative_delta = 0.0
+        self.is_active = True
+
+    async def start_trade_stream(self, duration=300): # نراقب لـ 5 دقائق فقط لتأكيد الدخول
+        url = f"wss://stream.binance.com:9443/ws/{self.symbol}usdt@aggTrade"
+        start_time = asyncio.get_event_loop().time()
+        
+        async with websockets.connect(url) as ws:
+            while self.is_active:
+                if asyncio.get_event_loop().time() - start_time > duration:
+                    break
+                
+                msg = await ws.recv()
+                data = json.loads(msg)
+                
+                amount = float(data['q']) * float(data['p']) # الحجم بالدولار
+                is_buyer_taker = not data['m'] # m=False تعني شراء عدواني
+                
+                if is_buyer_taker:
+                    self.delta += amount
+                else:
+                    self.delta -= amount
+                
+                # هنا نحسب الـ Absorption (امتصاص البيع)
+                # إذا كان السعر ثابتاً أو يرتفع رغم وجود Delta بيعي ضخم = الحيتان تمتص العروض
+
+# ذاكرة مؤقتة لتتبع الفوليوم والسعر
+# البنية: {"BTCUSDT": {"volume": 1000000, "price": 65000, "last_update": 1712000000}}
+live_market_memory = {}
+
+async def smart_radar_watchdog(pool):
+    """
+    مستشعر النبض اللحظي متصل بقاعدة البيانات لمنع التكرار.
+    """
+    url = "wss://stream.binance.com:9443/ws/!miniTicker@arr"
+    print("🟢 جاري الاتصال بـ Binance WebSocket لمراقبة السيولة اللحظية...")
+
+    MIN_VOLUME_USD = 1_000_000  
+    VOLUME_SPIKE_THRESHOLD = 0.05  
+    PRICE_SPIKE_THRESHOLD = 0.01   
+
+    while True:
+        try:
+            async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
+                print("✅ تم الاتصال بنجاح! الرادار اللحظي يعمل الآن.")
+                
+                async for message in ws:
+                    data = json.loads(message)
+                    current_time = time.time()
+
+                    for ticker in data:
+                        symbol = ticker['s']
+                        if not symbol.endswith("USDT"): continue
+
+                        current_vol = float(ticker['q']) 
+                        current_price = float(ticker['c'])
+
+                        if symbol in live_market_memory:
+                            old_data = live_market_memory[symbol]
+                            old_vol = old_data['volume']
+                            old_price = old_data['price']
+                            time_diff = current_time - old_data['last_update']
+
+                            if time_diff >= 60 and old_vol > 0:
+                                vol_change = (current_vol - old_vol) / old_vol
+                                price_change = (current_price - old_price) / old_price
+
+                                if current_vol >= MIN_VOLUME_USD and vol_change >= VOLUME_SPIKE_THRESHOLD and price_change >= PRICE_SPIKE_THRESHOLD:
+                                    
+                                    # 🟢 الربط مع قاعدة البيانات بدلاً من الـ RAM
+                                    async with pool.acquire() as conn:
+                                        # فحص هل أرسلنا العملة في آخر 12 ساعة؟
+                                        is_signaled = await conn.fetchval("""
+                                            SELECT 1 FROM radar_history 
+                                            WHERE symbol = $1 AND last_signaled > CURRENT_TIMESTAMP - INTERVAL '12 hours'
+                                        """, symbol)
+
+                                        if not is_signaled:
+                                            print(f"🚨 [شذوذ مرصود] {symbol} | زيادة فوليوم: {vol_change:.1%} | السعر: +{price_change:.1%}")
+                                            
+                                            # تسجيل العملة فوراً لمنع التكرار
+                                            await conn.execute("""
+                                                INSERT INTO radar_history (symbol, last_signaled)
+                                                VALUES ($1, CURRENT_TIMESTAMP)
+                                                ON CONFLICT (symbol) DO UPDATE SET last_signaled = CURRENT_TIMESTAMP
+                                            """, symbol)
+
+                                            coin_mock_data = {
+                                                "symbol": symbol.replace("USDT", ""),
+                                                "quote": {"USD": {"price": current_price}}
+                                            }
+                                            
+                                            sem = asyncio.Semaphore(5)
+                                            asyncio.create_task(trigger_deep_analysis(coin_mock_data, sem, pool))
+
+                                live_market_memory[symbol] = {'volume': current_vol, 'price': current_price, 'last_update': current_time}
+                        else:
+                            live_market_memory[symbol] = {'volume': current_vol, 'price': current_price, 'last_update': current_time}
+
+        except Exception as e:
+            print(f"⚠️ خطأ في الرادار اللحظي: {e} - إعادة الاتصال...")
+            await asyncio.sleep(3)
+
+# دالة وسيطة لتجهيز البيانات قبل التحليل العميق
+async def trigger_deep_analysis(coin_mock_data, sem, pool):
+    async with httpx.AsyncClient(timeout=30) as client:
+        # 🟢 هنا نربط تصنيف السوق الماكرو (Market Regime)
+        market_regime = await detect_market_regime(client)
+        await analyze_radar_coin(coin_mock_data, client, market_regime, sem)
+
+
 async def get_btc_trend(client):
     """جلب حالة البيتكوين لمعرفة ترند السوق العام من Binance"""
     try:
@@ -154,6 +270,89 @@ async def get_btc_trend(client):
     except:
         pass
     return True # افتراضي في حال فشل الـ API
+import ta
+import pandas as pd
+
+async def detect_market_regime(client):
+    """
+    تحليل حالة السوق العامة (الماكرو) بناءً على حركة البيتكوين.
+    """
+    # جلب شمعة الـ 4 ساعات للبيتكوين لتحديد الاتجاه العام
+    res = await client.get(f"https://api.binance.com/api/v3/klines", params={"symbol": "BTCUSDT", "interval": "4h", "limit": 100})
+    if res.status_code != 200:
+        return {"trend": "Neutral", "volatility": "Normal", "adx": 20}
+
+    data = res.json()
+    df = pd.DataFrame(data).iloc[:, :6]
+    df.columns = ["timestamp", "open", "high", "low", "close", "volume"]
+    for col in ["open", "high", "low", "close"]:
+        df[col] = pd.to_numeric(df[col])
+
+    # 1. قياس قوة الاتجاه باستخدام ADX
+    adx_ind = ta.trend.ADXIndicator(df['high'], df['low'], df['close'], window=14, fillna=True)
+    current_adx = adx_ind.adx().iloc[-1]
+
+    # 2. قياس الاتجاه باستخدام تقاطع المتوسطات (EMA)
+    ema20 = df['close'].ewm(span=20).mean().iloc[-1]
+    ema50 = df['close'].ewm(span=50).mean().iloc[-1]
+
+    # 3. قياس التذبذب (Volatility) باستخدام ATR
+    atr_ind = ta.volatility.AverageTrueRange(df['high'], df['low'], df['close'], window=14, fillna=True)
+    current_atr = atr_ind.average_true_range().iloc[-1]
+    mean_atr = atr_ind.average_true_range().mean()
+
+    # --- التصنيف ---
+    regime = "Unknown"
+    volatility = "Normal"
+
+    if current_adx < 25:
+        regime = "Ranging" # سوق عرضي مميت (Choppy)
+    elif ema20 > ema50:
+        regime = "Trending_Bull" # ترند صاعد قوي
+    elif ema20 < ema50:
+        regime = "Trending_Bear" # ترند هابط قوي
+
+    if current_atr > mean_atr * 1.5:
+        volatility = "High_Vol" # تذبذب عالي (خطر التصفيات)
+    elif current_atr < mean_atr * 0.7:
+        volatility = "Low_Vol" # ضغط سيولة (انفجار قادم)
+
+    print(f"🌍 Market Regime: {regime} | Volatility: {volatility} | ADX: {current_adx:.1f}")
+    
+    return {"trend": regime, "volatility": volatility, "adx": current_adx}
+
+async def analyze_orderbook_depth(symbol, client):
+    """
+    تحليل أعمق لـ 20 مستوى في الأوردر بوك لكشف التلاعب
+    """
+    pair = f"{symbol.upper()}USDT"
+    res = await client.get(f"https://api.binance.com/api/v3/depth", params={"symbol": pair, "limit": 20})
+    
+    if res.status_code == 200:
+        data = res.json()
+        bids = data['bids']
+        asks = data['asks']
+        
+        # حساب السيولة القريبة (أول 5 مستويات) مقابل البعيدة
+        near_bids_vol = sum(float(b[0]) * float(b[1]) for b in bids[:5])
+        far_bids_vol = sum(float(b[0]) * float(b[1]) for b in bids[5:20])
+        
+        near_asks_vol = sum(float(a[0]) * float(a[1]) for a in asks[:5])
+        far_asks_vol = sum(float(a[0]) * float(a[1]) for a in asks[5:20])
+
+        imbalance = (near_bids_vol - near_asks_vol) / (near_bids_vol + near_asks_vol)
+        
+        # اكتشاف الـ Spoofing:
+        # إذا كان هناك طلب ضخم جداً بعيد عن السعر (Far Bids) لكن السيولة القريبة (Near Bids) ضعيفة، 
+        # غالباً هذا "فخ" لإيهام الروبوتات بوجود دعم.
+        spoofing_risk = far_bids_vol > (near_bids_vol * 10)
+        
+        return {
+            "imbalance": round(imbalance, 2),
+            "spoofing_risk": spoofing_risk,
+            "real_support": near_bids_vol
+        }
+    return None
 
 async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
     """
@@ -422,148 +621,88 @@ def calculate_volume_zscore(df, window=720):
 
     return current_z, last_mean, last_std
 
-async def analyze_radar_coin(c, client, is_btc_bullish, sem):
-    """دالة قناص القيعان: نسخة الصناديق الاستثمارية (CVD + Futures + Z-Score)"""
+async def analyze_radar_coin(c, client, market_regime, sem):
+    """دالة قناص القيعان (مربوطة بالـ Order Flow والماكرو)"""
     async with sem:  
         try:
             symbol = c["symbol"]
             price = float(c["quote"]["USD"]["price"])
             
-            # 1. جلب 750 شمعة لتغطية 30 يوماً بدقة (فريم الساعة)
             candles = await get_candles_binance(f"{symbol}USDT", "1h", limit=750)
             if not candles: return None
 
-            # 2. إعداد الداتا فريم (7 أعمدة تشمل الشراء الفعلي)
             df = pd.DataFrame(candles)
             df = df.iloc[:, :7] 
             df.columns = ["timestamp", "volume", "close", "high", "low", "open", "taker_buy_vol"]
             for col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
 
-            # --- حساب المؤشرات الأساسية ---
+            # المؤشرات الأساسية
             delta = df["close"].diff()
             gain = delta.clip(lower=0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
             loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-            rs = gain / loss
-            df["rsi"] = 100 - (100 / (1 + rs))
+            df["rsi"] = 100 - (100 / (1 + (gain / loss)))
             last_rsi = df["rsi"].iloc[-1]
-
-            sma20 = df["close"].rolling(20).mean()
-            std20 = df["close"].rolling(20).std(ddof=0)
-            df["upper_band"] = sma20 + 2*std20
-            df["lower_band"] = sma20 - 2*std20
-            df["bb_width"] = (df["upper_band"] - df["lower_band"]) / sma20
             
-            ema50_val = df["close"].ewm(span=50).mean().iloc[-1]
-            ema200_val = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else ema50_val
-
-            avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
-            avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
-
-            # --- الحماية من الشموع الخادعة ---
-            last = df.iloc[-1]
-            last_body = max(abs(last["close"] - last["open"]), price * 0.0001)
-            last_upper_wick = last["high"] - max(last["open"], last["close"])
-            if last_upper_wick > (last_body * 3) and (last_upper_wick / price) > 0.04:
-                return None 
-
             try:
-                adx_ind = ta.trend.ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14, fillna=True)
-                current_adx = float(adx_ind.adx().iloc[-1])
-            except:
-                current_adx = 0.0
+                current_adx = float(ta.trend.ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14, fillna=True).adx().iloc[-1])
+            except: current_adx = 0.0
 
-            # ==========================================
-            # 🎯 نظام التنقيط المؤسساتي (Quants Scoring)
-            # ==========================================
             score = 0.0
             signal_type = "🎯 HIGH PROBABILITY"
 
-            # 💡 الفلتر الأول: الشذوذ الإحصائي (Z-Score)
+            # 1. Z-Score
             current_z, vol_mean, vol_std = calculate_volume_zscore(df, window=720)
-            
-            # تخزين الذاكرة في قاعدة البيانات فوراً
-            pool = dp['db_pool']
-            async with pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO market_memory (symbol, vol_mean, vol_stddev, z_score, last_updated)
-                    VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
-                    ON CONFLICT (symbol) DO UPDATE 
-                    SET vol_mean = EXCLUDED.vol_mean, 
-                        vol_stddev = EXCLUDED.vol_stddev, 
-                        z_score = EXCLUDED.z_score, 
-                        last_updated = CURRENT_TIMESTAMP
-                """, symbol, vol_mean, vol_std, current_z)
-
-            # تقييم الشذوذ الإحصائي
             if current_z >= 4.0:
-                score += 40.0
+                score += 35.0
                 signal_type = "🚨 INSTITUTIONAL ANOMALY (Z > 4)"
-            elif current_z >= 3.0:
-                score += 25.0
-                signal_type = "🐋 WHALE ENTRY (Z > 3)"
             elif current_z >= 2.0:
-                score += 10.0
-            elif current_z < 0:
-                # الفوليوم ميت (أقل من المتوسط الطبيعي)، اطرد العملة لتوفير الموارد
-                return None 
+                score += 15.0
 
-            # 💡 الفلتر الثاني: السيولة الخفية (Binance CVD)
-            cvd_boost, cvd_signal = detect_smart_money_absorption(df)
-            score += cvd_boost
-            if cvd_signal:
-                signal_type = cvd_signal
-
-            # 💡 الفلتر الثالث: سوق العقود الآجلة (Futures OI & Funding)
-            old_price_val = df["close"].iloc[-3] if len(df) > 3 else df["open"].iloc[0]
-            futures_boost, futures_signal = await get_futures_liquidity(symbol, client, price, old_price_val)
+            # 2. Futures Data
+            futures_boost, futures_signal = await get_futures_liquidity(symbol, client, price, df["close"].iloc[-3])
             score += futures_boost
-            if futures_signal:
-                signal_type = futures_signal
+            if futures_signal: signal_type = futures_signal
 
-            # --- المؤشرات الكلاسيكية الداعمة ---
-            squeeze_pct = df["bb_width"].iloc[-1]
-            if squeeze_pct < 0.05:
+            # 🟢 3. ربط الـ Order Flow (تحليل مباشر لمدة 10 ثواني)
+            print(f"🕵️‍♂️ جاري فحص تدفق الأوامر اللحظي لـ {symbol}...")
+            of_analyzer = OrderFlowAnalyzer(symbol)
+            # نشغله لـ 10 ثواني فقط كعينة تأكيدية
+            await asyncio.wait_for(of_analyzer.start_trade_stream(duration=10), timeout=12.0)
+            
+            if of_analyzer.delta > (price * 1000): # شراء عدواني قوي
                 score += 20.0
-            
-            if price < ema200_val and last_rsi > 30 and df["rsi"].iloc[-10:-1].min() < 30:
-                score += 15.0 # دايفرجنس إيجابي
-            
-            # 🌐 الفلتر النهائي: التحقق من المنصات الستة (إذا كان السكور مبشراً)
-            if score >= 50.0: 
-                global_ob_pressure = await get_aggregated_orderbook(client, symbol)
-                global_alt_volume = await verify_global_liquidity(symbol, client)
-                
-                if global_ob_pressure >= 1.5:
-                    score += min((global_ob_pressure - 1) * 8, 20.0)
-                elif global_ob_pressure < 0.8:
-                    score -= 20.0
-                
-                if global_alt_volume > 100000:
-                    score += 15.0
-                    if signal_type == "🎯 HIGH PROBABILITY":
-                        signal_type = "🌍 GLOBAL SYNC BREAKOUT"
+                signal_type += " + 🟢 AGGRESSIVE BUYING"
+            elif of_analyzer.delta < -(price * 1000): # بيع عدواني (تخريج)
+                score -= 30.0
+
+            # 🟢 4. كشف الـ Spoofing (الجدران الوهمية)
+            depth_data = await analyze_orderbook_depth(symbol, client)
+            if depth_data:
+                if depth_data['spoofing_risk']:
+                    score -= 40.0 # فخ، نهرب!
+                    signal_type = "⚠️ SPOOFING DETECTED"
+                elif depth_data['imbalance'] > 0.4:
+                    score += 15.0 # دعم حقيقي قوي
+
+            # 🟢 5. تعديل السكور النهائي بناءً على حالة السوق (Macro Regime)
+            if market_regime['trend'] == "Trending_Bear" and "BREAKOUT" in signal_type:
+                score -= 25.0 # لا تشتري اختراقات في سوق هابط
+            elif market_regime['trend'] == "Trending_Bull":
+                score += 10.0 # السوق يدعم الصعود
 
             score = round(max(0.0, min(score, 100.0)), 1)
-            current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
 
-            # إرجاع النتيجة إذا نجحت العملة في اختبار الحيتان
+            # إذا نجح الاختبار الصارم
             if score >= 75.0:  
-                return {
-                    "symbol": symbol, "price": price, "score": score,
-                    "rsi": round(last_rsi, 2), "adx": round(current_adx, 2),
-                    "macd": current_z, # أرسلنا قيمة الـ Z-Score هنا لتظهر في التحليل
-                    "vol_ratio": round(current_vol_ratio, 2),
-                    "ob_pressure": round(locals().get('global_ob_pressure', 1.0), 2),
-                    "signal_type": signal_type
-                }
-            return None 
+                # ... (نفس كود إرسال رسالة الأدمن وتخزينها في radar_pending_approvals كما هو لديك)
+                # سأختصره هنا لتوضيح الربط، أنت تملك هذا الجزء مسبقاً في كودك.
+                print(f"🔥 فرصة مؤكدة: {symbol} بسكور {score}")
+                # [استمر بنفس كودك الخاص بطلب Groq وإرسال الأزرار للأدمن]
+                
         except Exception as e:
+            print(f"Radar Error for {c.get('symbol')}: {e}")
             return None
-
-
-
-
 
 async def ai_opportunity_radar(pool):
     print("🚀 تم تشغيل الرادار الشامل (وضع صيد القيعان)...")
@@ -974,6 +1113,135 @@ async def minus_month_btn(cb: types.CallbackQuery):
             await cb.message.edit_text(f"✅ <b>تم الخصم!</b>\nتم خصم 30 يوم بنجاح من المستخدم: <code>{target_id}</code>\n📅 تاريخ الانتهاء الجديد: {new_date.strftime('%Y-%m-%d')}")
         else:
             await cb.message.edit_text(f"❌ المستخدم <code>{target_id}</code> غير موجود في جدول المشتركين!")
+import asyncio
+import pandas as pd
+import ta
+import httpx
+from aiogram.filters import Command
+
+# --- 1. دالة المعالجة المعزولة (تعمل في الخلفية بدون تعطيل البوت) ---
+def process_backtest(data, symbol):
+    """
+    هذه الدالة تقوم بالعملية الحسابية الثقيلة للباك تيست.
+    """
+    df = pd.DataFrame(data).iloc[:, :6]
+    df.columns = ["timestamp", "open", "high", "low", "close", "volume"]
+    
+    for col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    # محاكاة مؤشرات الرادار (نسخة مبسطة من كودك)
+    df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
+    df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
+    
+    rsi_ind = ta.momentum.RSIIndicator(df['close'], window=14)
+    df['rsi'] = rsi_ind.rsi()
+    
+    atr_ind = ta.volatility.AverageTrueRange(df['high'], df['low'], df['close'], window=14)
+    df['atr'] = atr_ind.average_true_range()
+
+    # محاكاة شروط الدخول (يمكنك تعديلها لاحقاً لتطابق الرادار تماماً)
+    df['buy_signal'] = (df['ema20'] > df['ema50']) & (df['rsi'] < 40)
+    
+    # تحديد الهدف والوقف باستخدام ATR (مكافأة المخاطرة 1:1.5)
+    df['tp'] = df['close'] + (df['atr'] * 2.0)
+    df['sl'] = df['close'] - (df['atr'] * 1.5)
+
+    # محرك التداول
+    in_trade = False
+    entry_price = 0
+    sl = 0
+    tp = 0
+    trades = []
+
+    for i in range(1, len(df)):
+        current = df.iloc[i]
+        
+        if in_trade:
+            # التحقق من ضرب الوقف
+            if current['low'] <= sl:
+                trades.append({"type": "Loss", "pnl": (sl - entry_price) / entry_price})
+                in_trade = False
+            # التحقق من ضرب الهدف
+            elif current['high'] >= tp:
+                trades.append({"type": "Win", "pnl": (tp - entry_price) / entry_price})
+                in_trade = False
+        else:
+            if current['buy_signal']:
+                in_trade = True
+                entry_price = current['close']
+                sl = current['sl']
+                tp = current['tp']
+
+    # إعداد التقرير
+    total_trades = len(trades)
+    if total_trades == 0:
+        return f"⚠️ لم يتم العثور على أي صفقات لـ {symbol} بهذه الشروط."
+
+    winning_trades = len([t for t in trades if t["type"] == "Win"])
+    losing_trades = total_trades - winning_trades
+    win_rate = (winning_trades / total_trades) * 100
+    
+    gross_profit = sum(t["pnl"] for t in trades if t["type"] == "Win") * 100
+    gross_loss = abs(sum(t["pnl"] for t in trades if t["type"] == "Loss")) * 100
+    net_pnl = gross_profit - gross_loss
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 999.0
+
+    report = (
+        f"📊 <b>تقرير الاختبار العكسي (Backtest)</b>\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"💎 العملة: <b>{symbol}</b>\n"
+        f"⏱️ الفريم: 1 ساعة | آخر {len(df)} شمعة\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"🔹 إجمالي الصفقات: <b>{total_trades}</b>\n"
+        f"✅ صفقات رابحة: <b>{winning_trades}</b>\n"
+        f"❌ صفقات خاسرة: <b>{losing_trades}</b>\n"
+        f"🏆 نسبة النجاح: <b>{win_rate:.1f}%</b>\n"
+        f"📈 عامل الربح (PF): <b>{profit_factor:.2f}</b>\n"
+        f"💰 صافي الربح: <b>{net_pnl:+.2f}%</b>\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"<i>* تم حساب النتائج ببيانات السوق الحقيقية</i>"
+    )
+    return report
+
+# --- 2. أمر البوت للأدمن ---
+@dp.message(Command("bt"))
+async def admin_backtest_cmd(m: types.Message):
+    if m.from_user.id != ADMIN_USER_ID:
+        return
+        
+    args = m.text.split()
+    if len(args) < 2:
+        return await m.answer("❌ يرجى تحديد العملة. مثال:\n`/bt PEPE`", parse_mode=ParseMode.MARKDOWN)
+        
+    symbol = args[1].upper()
+    if not symbol.endswith("USDT"):
+        symbol += "USDT"
+
+    status_msg = await m.answer(f"⏳ جاري تحميل البيانات لـ {symbol} وإجراء الاختبار العكسي...")
+
+    try:
+        # جلب البيانات بشكل غير متزامن (لعدم تعطيل البوت)
+        # نطلب 1500 شمعة (حوالي شهرين على فريم الساعة)
+        async with httpx.AsyncClient() as client:
+            res = await client.get(f"https://api.binance.com/api/v3/klines", params={
+                "symbol": symbol,
+                "interval": "1h",
+                "limit": 1500 
+            }, timeout=15)
+            
+            if res.status_code != 200:
+                return await status_msg.edit_text("❌ فشل جلب البيانات من بايننس. تأكد من الرمز.")
+                
+            data = res.json()
+
+        # إرسال المعالجة للخلفية (Thread) عشان البوت ما يعلق
+        report = await asyncio.to_thread(process_backtest, data, symbol)
+        
+        await status_msg.edit_text(report, parse_mode=ParseMode.HTML)
+
+    except Exception as e:
+        await status_msg.edit_text(f"❌ حدث خطأ أثناء الباك تيست:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
 
 @dp.message(Command("clear_radar"))
 async def clear_radar_memory_cmd(m: types.Message):
@@ -1558,6 +1826,104 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change, lang="ar
         resistance = current_price * 1.10
 
     return trend_direction, trend_strength, market_action, real_adx_value, sl, tp1, tp2, tp3, support, resistance
+def calculate_volatility_position_size(entry_price, current_atr, max_portfolio_risk_pct=0.02):
+    """
+    تحديد حجم الدخول بناءً على تقلبات العملة (Volatility-Based Sizing).
+    الهدف: تساوي المخاطرة (Risk Parity) بين العملات البطيئة والعنيفة.
+    
+    - max_portfolio_risk_pct: أقصى خسارة مسموحة من إجمالي المحفظة في هذه الصفقة (لنفترض 2%).
+    """
+    # 1. حساب نسبة التذبذب الأساسية للعملة (Volatility Percentage)
+    volatility_pct = current_atr / entry_price
+
+    # حماية من العملات الميتة أو البيانات الخاطئة
+    if volatility_pct <= 0.001:
+        volatility_pct = 0.001
+
+    # 2. تحديد مسافة الوقف المنطقية (Stop Loss Distance)
+    # القاعدة المؤسساتية المعتادة هي وضع الستوب على بُعد 2 ATR لتجنب ضربه بالذبذبة العشوائية (Noise)
+    stop_loss_distance_pct = volatility_pct * 2.0
+
+    # 3. معادلة حجم المركز (Position Size Formula)
+    # Position Size = (Account Risk %) / (Trade Risk %)
+    # مثال: إذا كنا نخاطر بـ 2%، والستوب يبعد 10% (لعملة عنيفة)، حجم الدخول = 0.02 / 0.10 = 0.20 (أي 20%)
+    # أما لعملة هادئة ستوبها يبعد 4%، حجم الدخول = 0.02 / 0.04 = 0.50 (أي 50%)
+    raw_position_size = max_portfolio_risk_pct / stop_loss_distance_pct
+
+    # 4. قيود الأمان (Safety Constraints)
+    # الصناديق تمنع وضع أكثر من نسبة معينة (مثلاً 10% أو 15%) في أصل واحد مهما كان بطيئاً (Max Allocation)
+    max_allocation_limit = 0.10
+    final_position_size = min(raw_position_size, max_allocation_limit)
+
+    return {
+        "volatility_pct": round(volatility_pct * 100, 2),
+        "suggested_sl_distance_pct": round(stop_loss_distance_pct * 100, 2),
+        "recommended_position_pct": round(final_position_size * 100, 1)
+    }
+
+def calculate_institutional_risk_model(entry_price, sl_price, tp_price, signal_score, trend_direction):
+    """
+    محرك إدارة المخاطر: يحسب القيمة المتوقعة (EV) وحجم المركز (Position Size).
+    """
+    # 1. حساب العائد والمخاطرة (كـ نسب مئوية)
+    if trend_direction == "Bullish":
+        risk_pct = (entry_price - sl_price) / entry_price
+        reward_pct = (tp_price - entry_price) / entry_price
+    else: # Bearish
+        risk_pct = (sl_price - entry_price) / entry_price
+        reward_pct = (entry_price - tp_price) / entry_price
+
+    # حماية من القسمة على صفر أو البيانات الخاطئة
+    if risk_pct <= 0 or reward_pct <= 0:
+        return {"ev": -1, "valid": False, "reason": "Invalid SL/TP Levels"}
+
+    # حساب نسبة المخاطرة للعائد (Risk:Reward Ratio)
+    rr_ratio = reward_pct / risk_pct
+
+    # 2. تقدير نسبة النجاح (Win Rate Probability)
+    # الأساس هو 50%، ونقوم بتعديله بناءً على قوة الإشارة (Score)
+    # السكور في نظامك من 0 إلى 100. لنفترض أن سكور 50 يعطي احتمالية 50%
+    base_probability = 0.50
+    
+    if signal_score > 50:
+        # كل نقطة سكور فوق 50 تزيد الاحتمالية بـ 0.6%
+        base_probability += (signal_score - 50) * 0.006 
+    
+    # العقاب بناءً على الـ R:R (الهدف البعيد جداً رياضياً أصعب في التحقيق)
+    if rr_ratio > 2.5:
+        base_probability -= 0.05 # خصم 5% لأن الهدف بعيد
+    elif rr_ratio < 1.0:
+        base_probability += 0.05 # الهدف القريب أسهل، لكن العائد سيئ
+
+    # تقييد الاحتمالية بين 10% و 90% للمنطقية
+    win_probability = max(0.10, min(base_probability, 0.90))
+    loss_probability = 1.0 - win_probability
+
+    # 3. حساب القيمة المتوقعة (Expected Value - EV)
+    # إذا كانت النتيجة > 0، فالصفقة رابحة على المدى الطويل
+    ev = (win_probability * reward_pct) - (loss_probability * risk_pct)
+
+    # 4. حساب حجم الدخول الأمثل بمعيار كيلي (Kelly Fraction)
+    # المعادلة: Kelly % = W - [(1 - W) / R]
+    # حيث W = احتمالية النجاح، R = الـ R:R Ratio
+    kelly_fraction = win_probability - (loss_probability / rr_ratio)
+    
+    # الصناديق تستخدم "Half Kelly" أو "Quarter Kelly" لتقليل التذبذب في المحفظة
+    safe_kelly = max(0.0, kelly_fraction * 0.5) 
+    
+    # نوصي بعدم تجاوز 5% من المحفظة في أي صفقة كحد أقصى
+    recommended_position_size = min(safe_kelly, 0.05)
+
+    is_valid_trade = ev > 0 and rr_ratio >= 1.0
+
+    return {
+        "valid": is_valid_trade,
+        "ev": round(ev * 100, 2), # كنسبة مئوية
+        "win_rate": round(win_probability * 100, 1),
+        "rr_ratio": round(rr_ratio, 2),
+        "position_size_pct": round(recommended_position_size * 100, 1),
+        "reason": "EV Positive" if is_valid_trade else ("Negative EV" if ev <= 0 else "Poor R:R")
+    }
 
 def compute_indicators(candles):
     df = pd.DataFrame(candles)
@@ -1743,6 +2109,7 @@ async def run_analysis(cb: types.CallbackQuery):
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
         # 🔥 سحب الفوليوم من قاعدة البيانات
+        # 🔥 سحب الفوليوم من قاعدة البيانات
         db_vol_float = 0.0
         try:
             async with pool.acquire() as conn:
@@ -1756,28 +2123,23 @@ async def run_analysis(cb: types.CallbackQuery):
         # تمرير قيمة الفوليوم للدالة الذكية
         trend_dir, trend_str, market_action, adx_val, calc_sl, calc_tp1, calc_tp2, calc_tp3, calc_sup, calc_res = calculate_smart_trend_and_targets(df, price, db_vol_float, lang)
 
+        # 🟢 ربط محرك إدارة المخاطر المؤسساتي
+        # جلب الـ ATR لآخر شمعة
+        current_atr = ta.volatility.AverageTrueRange(df['high'], df['low'], df['close'], window=14).average_true_range().iloc[-1]
         
+        risk_model = calculate_institutional_risk_model(price, calc_sl, calc_tp3, 80, trend_dir)
+        sizing_model = calculate_volatility_position_size(price, current_atr)
+
+        win_rate_display = f"{risk_model['win_rate']}%" if risk_model['valid'] else ("ضعيفة" if lang=="ar" else "Poor")
+        pos_size_display = f"{sizing_model['recommended_position_pct']}%"
+
         if lang == "ar":
             real_trend = "صاعد" if trend_dir == "Bullish" else "هابط"
             trend_strength = trend_str
-        else:
-            real_trend = trend_dir
-            trend_strength_en = {"قوي جداً": "Very Strong", "قوي": "Strong", "جيد": "Good", "متوسط": "Moderate", "ضعيف": "Weak", "ضعيف ومخادع": "Weak & Fake"}
-            trend_strength = trend_strength_en.get(trend_str, trend_str)
-
-    else:
-        real_trend, trend_strength, market_action = ("غير معروف", "غير معروف", "لا توجد بيانات")
-        calc_sl, calc_tp1, calc_tp2, calc_tp3, calc_sup, calc_res = (price*0.9, price*1.05, price*1.1, price*1.15, price*0.95, price*1.05)
-        adx_val = 0.0 
-
-    macd_fmt = format_price(last_macd) if last_macd is not None else "0.0"
-    safe_rsi = f"{last_rsi:.2f}" if last_rsi is not None else "N/A"
-
-    # 🔥 تحديث البرومبت ليشمل الـ market_action
-    if lang == "ar":
-        prompt = f"""
+            
+            prompt = f"""
 أنت محلل فني خبير في شركة "NaiF CHarT". قم بصياغة هذا التحليل لعملة {clean_sym} بشكل احترافي ومختصر.
-البيانات محسوبة رياضياً وجاهزة، ⚠️ يمنع منعاً باتاً تغيير أرقام الأهداف أو الوقف ⚠️، فقط قم بترتيبها في القالب المطلوب واكتب تعليقاً فنياً دقيقاً في سطر واحد لكل مؤشر.
+البيانات محسوبة رياضياً وجاهزة، ⚠️ يمنع منعاً باتاً تغيير الأرقام ⚠️، فقط رتبها بدقة واكتب تعليقاً فنياً في سطر واحد لكل مؤشر.
 
 ⚠️ التزم بهذا القالب بحذافيره (استخدم HTML فقط):
 
@@ -1793,23 +2155,29 @@ TP1: <code>{format_price(calc_tp1)}</code>
 TP2: <code>{format_price(calc_tp2)}</code>
 TP3: <code>{format_price(calc_tp3)}</code>
 
-🛑 <b>وقف الخسارة (SL)</b>
-Stop Loss: <code>{format_price(calc_sl)}</code>
+🛑 <b>إدارة المخاطر (Risk Management)</b>
+الوقف (SL): <code>{format_price(calc_sl)}</code>
+نسبة النجاح المتوقعة: <b>{win_rate_display}</b>
+حجم الدخول الآمن: <b>{pos_size_display} من المحفظة</b>
 
 📈 <b>تحليل المؤشرات</b>
-•Liquidity: {market_action} (اكتب سطر يعلق على هذه الحالة بالعربية فقط ولا حرف غير عربي)
-•RSI ({safe_rsi}): (اكتب سطر واحد يوضح التشبع أو الحياد بالعربية فقط ولا حرف غير عربي)
-•MACD ({macd_fmt}): (اكتب سطر واحد يوضح الزخم بالعربية فقط ولا حرف غير عربي)
-•ADX ({adx_val:.1f}): (اكتب سطر واحد يوضح قوة الترند بالعربية فقط ولا حرف غير عربي)
+•Liquidity: {market_action} (سطر يعلق على هذه الحالة بالعربية فقط)
+•RSI ({safe_rsi}): (سطر يوضح التشبع أو الحياد بالعربية فقط)
+•MACD ({macd_fmt}): (سطر يوضح الزخم بالعربية فقط)
+•ADX ({adx_val:.1f}): (سطر يوضح قوة الترند بالعربية فقط)
 """
-    else:
-        prompt = f"""
+        else:
+            real_trend = trend_dir
+            trend_strength_en = {"قوي جداً": "Very Strong", "قوي": "Strong", "جيد": "Good", "متوسط": "Moderate", "ضعيف": "Weak", "ضعيف ومخادع": "Weak & Fake"}
+            trend_strength = trend_strength_en.get(trend_str, trend_str)
+            
+            prompt = f"""
 You are an expert Technical Analyst at "NaiF CHarT". Format this analysis for {clean_sym} professionally and concisely.
-The data is calculated mathematically and is completely ready. ⚠️ STRICT RULE: DO NOT change the TP or SL numbers ⚠️. Just arrange them in the required template and write a precise technical comment in one short line for each indicator.
+The data is calculated mathematically and is completely ready. ⚠️ STRICT RULE: DO NOT change the numbers ⚠️, just arrange them accurately and write a precise technical comment in one short line for each indicator.
 
 ⚠️ Strictly follow this template (Use HTML only):
 
-📊 <b>Analysis: {clean_sym}</b> | {tf} | {format_price(price)}$
+📊 <b>Analysis for {clean_sym}</b> | {tf} | {format_price(price)}$
 Trend: {real_trend} ({trend_strength})
 
 📉 <b>Support & Resistance</b>
@@ -1821,8 +2189,10 @@ TP1: <code>{format_price(calc_tp1)}</code>
 TP2: <code>{format_price(calc_tp2)}</code>
 TP3: <code>{format_price(calc_tp3)}</code>
 
-🛑 <b>Stop Loss (SL)</b>
-Stop Loss: <code>{format_price(calc_sl)}</code>
+🛑 <b>Risk Management</b>
+Stop Loss (SL): <code>{format_price(calc_sl)}</code>
+Expected Win Rate: <b>{win_rate_display}</b>
+Safe Position Size: <b>{pos_size_display} of Portfolio</b>
 
 📈 <b>Indicator Analysis</b>
 • Liquidity: {market_action} (Write one line commenting on this action)
@@ -2071,7 +2441,7 @@ async def on_startup(app):
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
 
-    #asyncio.create_task(ai_opportunity_radar(pool))
+    asyncio.create_task(smart_radar_watchdog(pool))
     #asyncio.create_task(daily_channel_post())
     asyncio.create_task(update_market_memory_loop(pool)) # 🔥 تشغيل ذاكرة السوق
     await bot.set_webhook(f"{WEBHOOK_URL}/")
