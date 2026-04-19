@@ -2224,12 +2224,14 @@ async def run_analysis(cb: types.CallbackQuery):
         safe_rsi = f"{last_rsi:.2f}" if 'last_rsi' in locals() and last_rsi is not None else "N/A"
 
                 # تجهيز المتغيرات للغتين قبل بناء البرومبت
+                # 🟢 تعريف المتغيرات للغتين معاً قبل البرومبت لتجنب أي خطأ
         if lang == "ar":
             real_trend = "صاعد" if trend_dir == "Bullish" else "هابط"
-            trend_strength_text = trend_str
+            trend_strength = trend_str
         else:
             real_trend = "Bullish" if trend_dir == "Bullish" else "Bearish"
-            trend_strength_text = trend_str
+            trend_strength = trend_str
+
 
     # 🔥 تحديث البرومبت ليشمل الـ market_action
     if lang == "ar":
