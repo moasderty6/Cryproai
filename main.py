@@ -266,26 +266,181 @@ async def update_market_memory_loop(pool):
         # ينام ويحدث البيانات كل 4 ساعات (14400 ثانية)
         await asyncio.sleep(900)
 
-import random
+
+async def verify_global_liquidity(symbol: str, client: httpx.AsyncClient):
+    """
+    التحقق من أن الفوليوم الانفجاري مدعوم من منصات أخرى 
+    (Gate.io, Bybit, OKX) لتأكيد أن التجميع حقيقي وليس وهمياً.
+    """
+    clean_symbol = symbol.replace("_", "").replace("-", "")
+    
+    # تجهيز الروابط (نطلب شمعة اليوم فقط لتقليل الضغط)
+    urls = {
+        "gate": f"https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair={clean_symbol}_USDT&interval=1d&limit=2",
+        "bybit": f"https://api.bybit.com/v5/market/kline?category=spot&symbol={clean_symbol}USDT&interval=D&limit=2",
+        "okx": f"https://www.okx.com/api/v5/market/candles?instId={clean_symbol}-USDT&bar=1D&limit=2"
+    }
+
+    async def fetch_vol(exchange, url):
+        try:
+            res = await client.get(url, timeout=4.0)
+            if res.status_code == 200:
+                data = res.json()
+                if exchange == "gate" and data:
+                    return float(data[0][1]) # الفوليوم في Gate
+                elif exchange == "bybit" and data.get("result", {}).get("list"):
+                    return float(data["result"]["list"][0][5]) # الفوليوم في Bybit
+                elif exchange == "okx" and data.get("data"):
+                    return float(data["data"][0][5]) # الفوليوم في OKX
+        except Exception:
+            pass
+        return 0.0
+
+    tasks = [fetch_vol(ex, url) for ex, url in urls.items()]
+    results = await asyncio.gather(*tasks)
+    
+    total_alt_volume = sum(results)
+    return total_alt_volume
+def detect_smart_money_absorption(df):
+    """
+    اكتشاف التجميع المؤسساتي باستخدام CVD من بيانات بايننس
+    """
+    # 6 هو الاندكس الخاص بـ Taker Buy Volume في بايننس
+    df["taker_buy_vol"] = pd.to_numeric(df["taker_buy_vol"], errors='coerce')
+    df["taker_sell_vol"] = df["volume"] - df["taker_buy_vol"]
+    
+    df["delta"] = df["taker_buy_vol"] - df["taker_sell_vol"]
+    df["cvd"] = df["delta"].cumsum()
+
+    recent = df.tail(20)
+    
+    price_change_pct = (recent["close"].iloc[-1] - recent["close"].iloc[0]) / recent["close"].iloc[0]
+    cvd_change = recent["cvd"].iloc[-1] - recent["cvd"].iloc[0]
+    
+    score_boost = 0.0
+    signal_upgrade = None
+
+    if price_change_pct <= 0.02 and cvd_change > (recent["volume"].mean() * 3):
+        score_boost = 40.0
+        signal_upgrade = "🐋 WHALE ABSORPTION (Global CVD)"
+    elif price_change_pct > 0.05 and cvd_change < 0:
+        score_boost = -30.0
+        signal_upgrade = "🚨 DISTRIBUTION (Fake Pump)"
+
+    return score_boost, signal_upgrade
+async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_price: float, old_price: float):
+    """
+    قراءة بيانات العقود الآجلة (Open Interest & Funding Rate) من بايننس
+    لتحديد ما إذا كانت الحركة مدعومة بأموال جديدة أم مجرد تصفيات (Short/Long Squeeze).
+    """
+    # رابط الـ API الخاص بـ Binance Futures
+    fapi_base = "https://fapi.binance.com"
+    pair = f"{symbol}USDT"
+
+    try:
+        # 1. جلب تاريخ Open Interest لآخر شمعتين على فريم 15 دقيقة
+        oi_url = f"{fapi_base}/futures/data/openInterestHist?symbol={pair}&period=15m&limit=2"
+        
+        # 2. جلب الـ Funding Rate الحالي
+        funding_url = f"{fapi_base}/fapi/v1/premiumIndex?symbol={pair}"
+
+        # تنفيذ الطلبين بالتوازي لتوفير الوقت
+        oi_res, fund_res = await asyncio.gather(
+            client.get(oi_url, timeout=3.0),
+            client.get(funding_url, timeout=3.0)
+        )
+
+        if oi_res.status_code == 200 and fund_res.status_code == 200:
+            oi_data = oi_res.json()
+            fund_data = fund_res.json()
+
+            if len(oi_data) < 2:
+                return 0.0, None # لا توجد بيانات كافية للعملة (غالباً غير موجودة في الفيوترز)
+
+            # --- حساب التغير في الـ Open Interest ---
+            old_oi = float(oi_data[0]["sumOpenInterest"])
+            current_oi = float(oi_data[-1]["sumOpenInterest"])
+            oi_change_pct = (current_oi - old_oi) / old_oi
+
+            # --- حساب التغير في السعر ---
+            price_change_pct = (current_price - old_price) / old_price
+
+            # --- جلب الـ Funding Rate ---
+            funding_rate = float(fund_data.get("lastFundingRate", 0.0))
+
+            score_modifier = 0.0
+            futures_signal = None
+
+            # 💡 القاعدة الذهبية 1: السعر يرتفع + OI يرتفع = أموال حقيقية تدخل (Long Build-up)
+            if price_change_pct > 0.01 and oi_change_pct > 0.02: 
+                score_modifier += 25.0
+                futures_signal = "🚀 TRUE PUMP (OI Rising)"
+            
+            # 💡 القاعدة الذهبية 2: السعر يرتفع + OI ينخفض = إغلاق صفقات مكشوف (Short Covering) -> فخ!
+            elif price_change_pct > 0.01 and oi_change_pct < -0.02:
+                score_modifier -= 30.0 # خصم عنيف لأن هذا صعود كاذب
+                futures_signal = "⚠️ FAKE PUMP (Short Covering)"
+            
+            # 💡 القاعدة الذهبية 3: الفاندنج ريت سلبي جداً -> فرصة انفجار للأعلى (Short Squeeze)
+            # إذا كان الفاندنج أقل من -0.05%، الجميع يراهن على الهبوط، الحيتان ستضرب الستوبات للأعلى
+            if funding_rate < -0.0005: 
+                score_modifier += 20.0
+                if not futures_signal:
+                    futures_signal = "🔥 SHORT SQUEEZE INCOMING"
+
+            # 💡 القاعدة الذهبية 4: الفاندنج ريت إيجابي جداً -> الحيتان ستصرف قريباً (Long Squeeze)
+            elif funding_rate > 0.0005:
+                score_modifier -= 15.0
+
+            return score_modifier, futures_signal
+    except Exception:
+        # العملة قد تكون غير مدرجة في الفيوترز (Spot Only)، نتجاهل الخطأ بصمت
+        pass
+        
+    return 0.0, None
+def calculate_volume_zscore(df, window=720):
+    """
+    محرك الشذوذ الإحصائي (Volume Z-Score).
+    window=720 لأننا نستخدم فريم 1h (24 ساعة * 30 يوم = 720 شمعة).
+    """
+    # حساب المتوسط المتحرك (Mean) للفوليوم لآخر 30 يوم
+    rolling_mean = df["volume"].rolling(window=window, min_periods=100).mean()
+    
+    # حساب الانحراف المعياري (Standard Deviation)
+    rolling_std = df["volume"].rolling(window=window, min_periods=100).std(ddof=0)
+    
+    # تطبيق معادلة Z-Score
+    df["z_score"] = (df["volume"] - rolling_mean) / rolling_std
+    
+    current_z = df["z_score"].iloc[-1]
+    last_mean = rolling_mean.iloc[-1]
+    last_std = rolling_std.iloc[-1]
+    
+    # حماية من القسمة على صفر في العملات الميتة جداً
+    if pd.isna(current_z) or current_z == float('inf'):
+        current_z = 0.0
+
+    return current_z, last_mean, last_std
 
 async def analyze_radar_coin(c, client, is_btc_bullish, sem):
-    """دالة قناص القيعان: تبحث عن التجميع، ابتلاع السيولة، والانضغاط السعري"""
+    """دالة قناص القيعان: نسخة الصناديق الاستثمارية (CVD + Futures + Z-Score)"""
     async with sem:  
         try:
             symbol = c["symbol"]
             price = float(c["quote"]["USD"]["price"])
             
-            candles = await get_candles_binance(f"{symbol}USDT", "1h", limit=500)
+            # 1. جلب 750 شمعة لتغطية 30 يوماً بدقة (فريم الساعة)
+            candles = await get_candles_binance(f"{symbol}USDT", "1h", limit=750)
             if not candles: return None
 
+            # 2. إعداد الداتا فريم (7 أعمدة تشمل الشراء الفعلي)
             df = pd.DataFrame(candles)
-            df = df.iloc[:, :6]
-            df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
-            for col in ["close","high","low","open","volume"]:
+            df = df.iloc[:, :7] 
+            df.columns = ["timestamp", "volume", "close", "high", "low", "open", "taker_buy_vol"]
+            for col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
 
-            # --- حساب المؤشرات داخلياً لسهولة الوصول ---
-            # RSI
+            # --- حساب المؤشرات الأساسية ---
             delta = df["close"].diff()
             gain = delta.clip(lower=0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
             loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
@@ -293,7 +448,6 @@ async def analyze_radar_coin(c, client, is_btc_bullish, sem):
             df["rsi"] = 100 - (100 / (1 + rs))
             last_rsi = df["rsi"].iloc[-1]
 
-            # Bollinger Bands Width (Squeeze)
             sma20 = df["close"].rolling(20).mean()
             std20 = df["close"].rolling(20).std(ddof=0)
             df["upper_band"] = sma20 + 2*std20
@@ -306,12 +460,12 @@ async def analyze_radar_coin(c, client, is_btc_bullish, sem):
             avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
             avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
 
-            # --- الحماية من الشموع الخادعة (الذيول العلوية الطويلة - التصريف) ---
+            # --- الحماية من الشموع الخادعة ---
             last = df.iloc[-1]
-            last_body = abs(last["close"] - last["open"])
+            last_body = max(abs(last["close"] - last["open"]), price * 0.0001)
             last_upper_wick = last["high"] - max(last["open"], last["close"])
             if last_upper_wick > (last_body * 3) and (last_upper_wick / price) > 0.04:
-                return None # تصريف عنيف، تجاهل العملة
+                return None 
 
             try:
                 adx_ind = ta.trend.ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14, fillna=True)
@@ -319,73 +473,95 @@ async def analyze_radar_coin(c, client, is_btc_bullish, sem):
             except:
                 current_adx = 0.0
 
-            # --- 🎯 نظام تنقيط صيد القيعان (Bottom Sniper Scoring) ---
+            # ==========================================
+            # 🎯 نظام التنقيط المؤسساتي (Quants Scoring)
+            # ==========================================
             score = 0.0
             signal_type = "🎯 HIGH PROBABILITY"
 
-            # 1. انضغاط البولينجر (Bollinger Squeeze) - قنبلة موقوتة
+            # 💡 الفلتر الأول: الشذوذ الإحصائي (Z-Score)
+            current_z, vol_mean, vol_std = calculate_volume_zscore(df, window=720)
+            
+            # تخزين الذاكرة في قاعدة البيانات فوراً
+            pool = dp['db_pool']
+            async with pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO market_memory (symbol, vol_mean, vol_stddev, z_score, last_updated)
+                    VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+                    ON CONFLICT (symbol) DO UPDATE 
+                    SET vol_mean = EXCLUDED.vol_mean, 
+                        vol_stddev = EXCLUDED.vol_stddev, 
+                        z_score = EXCLUDED.z_score, 
+                        last_updated = CURRENT_TIMESTAMP
+                """, symbol, vol_mean, vol_std, current_z)
+
+            # تقييم الشذوذ الإحصائي
+            if current_z >= 4.0:
+                score += 40.0
+                signal_type = "🚨 INSTITUTIONAL ANOMALY (Z > 4)"
+            elif current_z >= 3.0:
+                score += 25.0
+                signal_type = "🐋 WHALE ENTRY (Z > 3)"
+            elif current_z >= 2.0:
+                score += 10.0
+            elif current_z < 0:
+                # الفوليوم ميت (أقل من المتوسط الطبيعي)، اطرد العملة لتوفير الموارد
+                return None 
+
+            # 💡 الفلتر الثاني: السيولة الخفية (Binance CVD)
+            cvd_boost, cvd_signal = detect_smart_money_absorption(df)
+            score += cvd_boost
+            if cvd_signal:
+                signal_type = cvd_signal
+
+            # 💡 الفلتر الثالث: سوق العقود الآجلة (Futures OI & Funding)
+            old_price_val = df["close"].iloc[-3] if len(df) > 3 else df["open"].iloc[0]
+            futures_boost, futures_signal = await get_futures_liquidity(symbol, client, price, old_price_val)
+            score += futures_boost
+            if futures_signal:
+                signal_type = futures_signal
+
+            # --- المؤشرات الكلاسيكية الداعمة ---
             squeeze_pct = df["bb_width"].iloc[-1]
             if squeeze_pct < 0.05:
-                score += 35.0
-                signal_type = "🗜️ MAX BB SQUEEZE"
-            elif squeeze_pct < 0.08:
                 score += 20.0
-
-            # 2. اصطياد السيولة (Liquidity Sweep / Spring)
-            # فحص آخر 5 شموع للبحث عن ذيل سفلي طويل جداً ابتلع ستوبات المتداولين
-            recent_5 = df.tail(5)
-            sweep_detected = False
-            for idx, row in recent_5.iterrows():
-                body = max(abs(row["close"] - row["open"]), price * 0.0001)
-                lower_wick = min(row["open"], row["close"]) - row["low"]
-                
-                # ذيل سفلي أطول من الجسم بمرتين ونصف + فوليوم أعلى من المتوسط
-                if lower_wick > (body * 2.5) and row["volume"] > (avg_vol_20 * 1.3):
-                    sweep_detected = True
-                    break
             
-            if sweep_detected:
-                score += 30.0
-                signal_type = "🧹 LIQUIDITY SWEEP"
-
-            # 3. الدايفرجنس الإيجابي (Bullish Divergence Proxy)
-            # السعر تحت EMA200 (قاع)، والـ RSI يخرج من منطقة التشبع البيعي (انعكاس)
-            if price < ema200_val:
-                if last_rsi > 30 and df["rsi"].iloc[-10:-1].min() < 30:
-                    score += 25.0
-                    signal_type = "📉 BULLISH DIVERGENCE"
+            if price < ema200_val and last_rsi > 30 and df["rsi"].iloc[-10:-1].min() < 30:
+                score += 15.0 # دايفرجنس إيجابي
             
-            # 4. التجميع الصامت تحت الرادار
-            if avg_vol_5 > (avg_vol_20 * 1.5) and price < ema50_val and squeeze_pct < 0.15:
-                score += 20.0
-                signal_type = "🐋 SMART MONEY ACCUMULATION"
-
-            # --- الفلتر النهائي: دمج الأوردر بوك (الضغط العالمي) ---
-            if score >= 45.0: 
+            # 🌐 الفلتر النهائي: التحقق من المنصات الستة (إذا كان السكور مبشراً)
+            if score >= 50.0: 
                 global_ob_pressure = await get_aggregated_orderbook(client, symbol)
+                global_alt_volume = await verify_global_liquidity(symbol, client)
                 
-                # إذا كانت هناك طلبات شراء ضخمة مخفية في الأوردر بوك
                 if global_ob_pressure >= 1.5:
-                    score += min((global_ob_pressure - 1) * 8, 25.0)
+                    score += min((global_ob_pressure - 1) * 8, 20.0)
                 elif global_ob_pressure < 0.8:
-                    # جدران بيع وهمية (Spoofing) أو حقيقية، نخصم نقاط
                     score -= 20.0
+                
+                if global_alt_volume > 100000:
+                    score += 15.0
+                    if signal_type == "🎯 HIGH PROBABILITY":
+                        signal_type = "🌍 GLOBAL SYNC BREAKOUT"
 
             score = round(max(0.0, min(score, 100.0)), 1)
             current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
 
-            # نرفع شرط الموافقة إلى 75 بدلاً من 70 لزيادة الدقة
+            # إرجاع النتيجة إذا نجحت العملة في اختبار الحيتان
             if score >= 75.0:  
                 return {
                     "symbol": symbol, "price": price, "score": score,
                     "rsi": round(last_rsi, 2), "adx": round(current_adx, 2),
-                    "macd": 0.0, "vol_ratio": round(current_vol_ratio, 2),
+                    "macd": current_z, # أرسلنا قيمة الـ Z-Score هنا لتظهر في التحليل
+                    "vol_ratio": round(current_vol_ratio, 2),
                     "ob_pressure": round(locals().get('global_ob_pressure', 1.0), 2),
-                    "signal_type": signal_type # إرسال نوع الإشارة الفريد
+                    "signal_type": signal_type
                 }
             return None 
         except Exception as e:
             return None
+
+
 
 
 
@@ -1140,7 +1316,6 @@ def gate_sign(params: dict):
 
 # --- جلب الشموع ---
 async def get_candles_binance(symbol: str, interval: str, limit: int = 500, retries: int = 3):
-    """جلب الشموع من بايننس مع نظام حماية وإعادة محاولة لتجنب الحظر (Rate Limits)"""
     clean_symbol = symbol.replace("_", "") 
     
     async with httpx.AsyncClient() as client:
@@ -1157,11 +1332,17 @@ async def get_candles_binance(symbol: str, interval: str, limit: int = 500, retr
                     formatted_candles = []
                     for c in data:
                         formatted_candles.append([
-                            str(int(c[0] / 1000)), c[5], c[4], c[2], c[3], c[1]
+                            str(int(c[0] / 1000)), # 0: Timestamp
+                            c[5], # 1: Total Volume
+                            c[4], # 2: Close
+                            c[2], # 3: High
+                            c[3], # 4: Low
+                            c[1], # 5: Open
+                            c[9]  # 6: Taker Buy Base Asset Volume (هنا السر: أموال الشراء العدواني)
                         ])
                     return formatted_candles
-                elif res.status_code == 429: # تم تجاوز الحد المسموح
-                    await asyncio.sleep(2 * (attempt + 1)) # انتظر قبل المحاولة القادمة
+                elif res.status_code == 429:
+                    await asyncio.sleep(2 * (attempt + 1))
                 else:
                     return None
             except Exception as e:
@@ -1169,6 +1350,7 @@ async def get_candles_binance(symbol: str, interval: str, limit: int = 500, retr
                     print(f"Error fetching Binance candles for {clean_symbol}: {e}")
                 await asyncio.sleep(1)
         return None
+
 
 
 
@@ -1221,6 +1403,52 @@ def detect_fake_breakout(df):
     if last["high"] > recent_high and last["close"] < recent_high:
         return -20
     return 0
+def detect_nearest_fvg(df, current_price, trend_direction):
+    """
+    محرك اكتشاف فجوات السيولة (Fair Value Gaps - FVG).
+    يبحث عن الفجوات غير المغلقة في آخر 30 شمعة لتحديد الأهداف المغناطيسية للخوارزميات.
+    """
+    # نأخذ آخر 30 شمعة لنبحث عن الفجوات الطازجة
+    recent = df.tail(30).reset_index(drop=True)
+    fvgs = []
+    
+    # فحص كل 3 شموع متتالية
+    for i in range(2, len(recent)):
+        c1_high = recent.loc[i-2, 'high']
+        c1_low = recent.loc[i-2, 'low']
+        c3_high = recent.loc[i, 'high']
+        c3_low = recent.loc[i, 'low']
+        
+        # Bullish FVG (فجوة شرائية)
+        if c1_high < c3_low:
+            fvgs.append({'top': c3_low, 'bottom': c1_high})
+        # Bearish FVG (فجوة بيعية)
+        elif c1_low > c3_high:
+            fvgs.append({'top': c1_low, 'bottom': c3_high})
+
+    if not fvgs:
+        return None
+
+    best_fvg_target = None
+    min_dist = float('inf')
+
+    for fvg in fvgs:
+        mid_fvg = (fvg['top'] + fvg['bottom']) / 2
+        dist = abs(current_price - mid_fvg)
+        
+        # إذا الترند صاعد، المغناطيس هو فجوة مفتوحة أعلى السعر الحالي
+        if trend_direction == "Bullish" and current_price < fvg['bottom']:
+            if dist < min_dist:
+                min_dist = dist
+                best_fvg_target = fvg['bottom'] # حافة الفجوة السفلى هي المغناطيس
+                
+        # إذا الترند هابط، المغناطيس هو فجوة مفتوحة أسفل السعر الحالي
+        elif trend_direction == "Bearish" and current_price > fvg['top']:
+            if dist < min_dist:
+                min_dist = dist
+                best_fvg_target = fvg['top'] # حافة الفجوة العليا هي المغناطيس
+
+    return best_fvg_target
 
 def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
     df['prev_close'] = df['close'].shift(1)
@@ -1234,18 +1462,17 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
         atr = current_price * 0.02 
     atr = min(atr, current_price * 0.10)
 
-    # 🌟 2. حساب المؤشرات الهيكلية (بدون أخطاء رياضية)
+    # 🌟 2. حساب المؤشرات الهيكلية
     ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
     ema50 = df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
     
-    # تأمين حساب EMA200 (إذا لم يكن هناك بيانات كافية، نعتبر الترند الماكرو محايد)
     if len(df) >= 200:
         ema200 = df['close'].ewm(span=200, adjust=False).mean().iloc[-1] 
         macro_bull = current_price > ema200
     else:
-        macro_bull = current_price > ema50 # بديل مؤقت في حال نقص البيانات
+        macro_bull = current_price > ema50
 
-    # 🌟 حساب Anchored VWAP (مربوط ببداية اليوم - المؤسساتي الحقيقي)
+    # 🌟 حساب Anchored VWAP
     df['datetime'] = pd.to_datetime(pd.to_numeric(df['timestamp']), unit='s')
     df['date'] = df['datetime'].dt.date
     df['typical_volume'] = ((df['high'] + df['low'] + df['close']) / 3) * df['volume']
@@ -1301,34 +1528,35 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change):
     elif db_vol_change < 15:
         market_action += " + فوليوم ميت"
 
-    # حساب الأهداف بناءً على ATR
-    min_allowed_price = current_price * 0.000001 
-    if trend_direction == "Bearish":
-        sl = max(current_price * 1.005, current_price + (atr * 1.5)) 
-        tp1 = min(current_price * 0.995, max(min_allowed_price, current_price - (atr * 1.5))) 
-        tp2 = min(tp1 * 0.995, max(min_allowed_price, current_price - (atr * 2.5))) 
-        tp3 = min(tp2 * 0.995, max(min_allowed_price, current_price - (atr * 3.5))) 
-    else:
-        sl = max(min_allowed_price, current_price - (atr * 1.5)) 
-        tp1 = max(current_price * 1.005, current_price + (atr * 1.5)) 
-        tp2 = max(tp1 * 1.005, current_price + (atr * 2.5)) 
-        tp3 = max(tp2 * 1.005, current_price + (atr * 3.5)) 
+    # ==========================================
+    # 🎯 التعديل الجذري: حساب الأهداف بالـ VPVR
+    # ==========================================
+    sl, tp1, tp2, tp3 = calculate_vpvr_levels(df, current_price, trend_direction)
+
+    # 🧲 تشغيل صائد فجوات السيولة (FVG)
+    fvg_target = detect_nearest_fvg(df, current_price, trend_direction)
+    
+    if fvg_target:
+        # تنسيق السعر لتجنب الأرقام الطويلة
+        fvg_display = f"{fvg_target:,.4f}" if fvg_target > 1 else f"{fvg_target:.8f}"
+        market_action += f" 🧲 [هدف مغناطيسي FVG عند: {fvg_display}$]"
 
     try:
         support = df['low'].rolling(window=50, min_periods=1).min().iloc[-1]
         if pd.isna(support) or support <= 0:
-            support = current_price * 0.90 # حماية إضافية
+            support = current_price * 0.90 
     except:
         support = current_price * 0.90
 
     try:
         resistance = df['high'].rolling(window=50, min_periods=1).max().iloc[-1]
         if pd.isna(resistance) or resistance <= 0:
-            resistance = current_price * 1.10 # حماية إضافية
+            resistance = current_price * 1.10 
     except:
         resistance = current_price * 1.10
 
     return trend_direction, trend_strength, market_action, real_adx_value, sl, tp1, tp2, tp3, support, resistance
+
 def compute_indicators(candles):
     df = pd.DataFrame(candles)
     df = df.iloc[:, :6] 
@@ -1366,6 +1594,94 @@ def compute_indicators(candles):
     low_price = recent["low"].min()
 
     return last_rsi, last_macd_diff, last_bb, last_vol, high_price, low_price
+import numpy as np
+
+def calculate_vpvr_levels(df, current_price, trend_direction, num_bins=50):
+    """
+    محرك Volume Profile لحساب الأهداف ووقف الخسارة بناءً على العقد السعرية الفعلية.
+    """
+    try:
+        # 1. تحديد النطاق السعري لآخر فترة
+        min_price = df['low'].min()
+        max_price = df['high'].max()
+
+        # 2. تقسيم النطاق إلى 50 مستوى سعري (Bins)
+        price_bins = np.linspace(min_price, max_price, num_bins)
+        
+        # 3. حساب السعر النموذجي (Typical Price) لكل شمعة
+        df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
+
+        # 4. توزيع الفوليوم على المستويات السعرية
+        df['bin_index'] = np.digitize(df['typical_price'], price_bins) - 1
+        vol_profile = df.groupby('bin_index')['volume'].sum()
+
+        # تجهيز القائمة النهائية للبروفايل
+        profile = []
+        for idx, vol in vol_profile.items():
+            if 0 <= idx < len(price_bins):
+                profile.append({'price': price_bins[idx], 'volume': vol})
+
+        profile_df = pd.DataFrame(profile)
+        if profile_df.empty:
+            raise ValueError("Empty Profile")
+
+        # 5. فصل المستويات السعرية أعلى وأسفل السعر الحالي
+        above_price = profile_df[profile_df['price'] > current_price]
+        below_price = profile_df[profile_df['price'] < current_price]
+
+        # 6. استخراج الأهداف (TP) والستوب (SL)
+        if trend_direction == "Bullish":
+            # الأهداف (TP) هي أكبر 3 عقد سيولة (HVN) فوق السعر الحالي
+            targets = above_price.nlargest(3, 'volume').sort_values('price')
+            tps = targets['price'].tolist()
+
+            # الدعم الرئيسي هو أكبر عقدة تحت السعر
+            support_node = below_price.nlargest(1, 'volume')
+            support_price = support_node['price'].iloc[0] if not support_node.empty else current_price * 0.95
+
+            # وقف الخسارة (SL): نبحث عن منطقة فراغ سيولة (LVN) تحت الدعم مباشرة
+            # حتى يكون الستوب محمي بجدار سيولة (الدعم)
+            lvns_below_support = below_price[below_price['price'] < support_price]
+            if not lvns_below_support.empty:
+                sl_price = lvns_below_support.nsmallest(1, 'volume')['price'].iloc[0]
+            else:
+                sl_price = support_price * 0.98
+
+        else: # Bearish
+            # الأهداف هي أكبر 3 عقد سيولة تحت السعر
+            targets = below_price.nlargest(3, 'volume').sort_values('price', ascending=False)
+            tps = targets['price'].tolist()
+
+            # المقاومة هي أكبر عقدة فوق السعر
+            res_node = above_price.nlargest(1, 'volume')
+            res_price = res_node['price'].iloc[0] if not res_node.empty else current_price * 1.05
+
+            # وقف الخسارة (SL): منطقة فراغ (LVN) فوق المقاومة
+            lvns_above_res = above_price[above_price['price'] > res_price]
+            if not lvns_above_res.empty:
+                sl_price = lvns_above_res.nsmallest(1, 'volume')['price'].iloc[0]
+            else:
+                sl_price = res_price * 1.02
+
+        # تأمين النتائج في حال لم نجد 3 أهداف
+        tp1 = tps[0] if len(tps) > 0 else current_price * (1.02 if trend_direction == "Bullish" else 0.98)
+        tp2 = tps[1] if len(tps) > 1 else tp1 * (1.02 if trend_direction == "Bullish" else 0.98)
+        tp3 = tps[2] if len(tps) > 2 else tp2 * (1.02 if trend_direction == "Bullish" else 0.98)
+
+        # ترتيب الأهداف منطقياً (تصاعدي للشراء، تنازلي للبيع)
+        if trend_direction == "Bullish":
+            tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+            sl_price = min(sl_price, current_price * 0.99) # حماية أخيرة للستوب
+        else:
+            tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
+            sl_price = max(sl_price, current_price * 1.01)
+
+        return sl_price, tp1, tp2, tp3
+
+    except Exception as e:
+        print(f"VPVR Error: {e}")
+        # أهداف احتياطية كلاسيكية في حال فشل الحساب
+        return current_price*0.9, current_price*1.05, current_price*1.1, current_price*1.15
 
 # --- دالة التحليل المعدلة ---
 # --- دالة التحليل المعدلة ---
@@ -1737,6 +2053,10 @@ async def on_startup(app):
                 last_signaled TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+                # ترقية جدول الذاكرة ليعمل بنظام الشذوذ الإحصائي
+        await conn.execute("ALTER TABLE market_memory ADD COLUMN IF NOT EXISTS vol_mean DOUBLE PRECISION DEFAULT 0")
+        await conn.execute("ALTER TABLE market_memory ADD COLUMN IF NOT EXISTS vol_stddev DOUBLE PRECISION DEFAULT 0")
+        await conn.execute("ALTER TABLE market_memory ADD COLUMN IF NOT EXISTS z_score DOUBLE PRECISION DEFAULT 0")
         # 2. إجبار تحديث الجداول القديمة (للمشتركين الحاليين)
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS last_active DATE")
         await conn.execute("ALTER TABLE paid_users ADD COLUMN IF NOT EXISTS expiry_date TIMESTAMP")
