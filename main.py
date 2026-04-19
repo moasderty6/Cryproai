@@ -1696,12 +1696,20 @@ def detect_nearest_fvg(df, current_price, trend_direction):
     return best_fvg_target
 
 def calculate_smart_trend_and_targets(df, current_price, db_vol_change, lang="ar"):
+    
+    # 🟢 الحل الجذري: إجبار تحويل الأعمدة إلى أرقام (Floats) قبل أي عملية حسابية
+    for col in ['high', 'low', 'close', 'open', 'volume']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
 
+    # هنا بيبدأ كودك القديم طبيعي جداً
     df['prev_close'] = df['close'].shift(1)
     df['tr0'] = abs(df['high'] - df['low'])
     df['tr1'] = abs(df['high'] - df['prev_close'])
     df['tr2'] = abs(df['low'] - df['prev_close'])
     df['tr'] = df[['tr0', 'tr1', 'tr2']].max(axis=1)
+    # ... وتكمل باقي الكود ...
+
     atr = df['tr'].rolling(14).mean().iloc[-1]
 
     if pd.isna(atr) or atr == 0:
