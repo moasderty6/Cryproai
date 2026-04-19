@@ -902,6 +902,125 @@ Write a 3-line professional analysis integrating these metrics and explaining th
             print(f"Radar Error: {e}")
             await asyncio.sleep(60)
             continue
+async def analyze_swing_gem(c, client, sem):
+    """محلل الجواهر النائمة: يبحث عن التجميع الطويل والانفجارات القادمة على الفريم اليومي"""
+    async with sem:
+        try:
+            symbol = c["symbol"]
+            price = float(c["quote"]["USD"]["price"])
+            
+            # نسحب شارت اليومي (1d) لتحليل الترند العام والتجميع
+            candles = await get_candles_binance(f"{symbol}USDT", "1d", limit=200)
+            if not candles: return None
+
+            df = pd.DataFrame(candles)
+            df = df.iloc[:, :7]
+            df.columns = ["timestamp", "volume", "close", "high", "low", "open", "taker_buy_vol"]
+            for col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce')
+
+            score = 20.0
+            tags = []
+
+            # 1. فلتر التجميع المميت (Mega Squeeze)
+            sma20 = df["close"].rolling(20).mean()
+            std20 = df["close"].rolling(20).std(ddof=0)
+            upper_band = sma20 + 2*std20
+            lower_band = sma20 - 2*std20
+            squeeze_pct = (upper_band.iloc[-1] - lower_band.iloc[-1]) / sma20.iloc[-1]
+            
+            if squeeze_pct < 0.12: # السعر مضغوط جداً (مثل الزنبرك)
+                score += 30.0
+                tags.append("Mega_Squeeze 🗜️")
+
+            # 2. القرب من دعوم تاريخية (EMA 50)
+            ema50 = df["close"].ewm(span=50).mean().iloc[-1]
+            # السعر يتداول فوق EMA 50 وقريب منه جداً (تأكيد انطلاق)
+            if price > ema50 and (price - ema50) / ema50 < 0.08:
+                score += 15.0
+                tags.append("EMA50_Bounce 📈")
+
+            # 3. جفاف الفوليوم (علامة انتهاء البيع - Wyckoff Spring)
+            vol_sma20 = df["volume"].rolling(20).mean().iloc[-1]
+            current_vol = df["volume"].iloc[-1]
+            if current_vol < vol_sma20 * 0.7: 
+                score += 15.0
+                tags.append("Dry_Volume 🏜️")
+
+            # 4. التجميع المؤسساتي الصامت (Silent Accumulation)
+            recent_df = df.tail(14)
+            buy_vol = recent_df["taker_buy_vol"].sum()
+            sell_vol = recent_df["volume"].sum() - buy_vol
+            if buy_vol > sell_vol * 1.15: # شراء حقيقي يفوق البيع رغم ركود السعر
+                score += 20.0
+                tags.append("Silent_Whales 🐋")
+
+            # 5. الانحراف الإيجابي (RSI Bullish Divergence) المخفي
+            delta = df["close"].diff()
+            gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+            loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+            rsi = 100 - (100 / (1 + (gain / loss)))
+            if rsi.iloc[-1] < 45 and price > df["low"].min():
+                score += 10.0
+                tags.append("RSI_Bottoming 🔋")
+
+            score = round(max(0.0, min(score, 98.5)), 1)
+            
+            # إذا جابت 75، يعني العملة قنبلة موقوتة!
+            if score >= 75.0:
+                return {
+                    "symbol": symbol, "price": price, "score": score,
+                    "squeeze": round(squeeze_pct, 3),
+                    "tags": " | ".join(tags)
+                }
+            return None
+        except Exception:
+            return None
+async def ai_swing_radar(pool):
+    """محرك رادار الجواهر المستقل، لا يتعارض مع الرادار اللحظي"""
+    sem = asyncio.Semaphore(5)
+    headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
+    STABLE_COINS = {"USDT","USDC","BUSD","DAI","TUSD","FDUSD"}
+    
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            res = await client.get(
+                "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
+                headers=headers, params={"limit": "1500"} # نبحث في قاع السوق
+            )
+            
+            if res.status_code == 200:
+                # 🟢 السر هنا: نبحث عن عملات فوليومها بين 300 ألف و 8 مليون فقط!
+                coins = [
+                    c for c in res.json()["data"] 
+                    if c["symbol"] not in STABLE_COINS 
+                    and 300_000 <= c["quote"]["USD"]["volume_24h"] <= 8_000_000
+                ]
+
+                tasks = [analyze_swing_gem(c, client, sem) for c in coins]
+                results = await asyncio.gather(*tasks)
+                
+                valid_signals = [r for r in results if r is not None]
+                valid_signals.sort(key=lambda x: x['score'], reverse=True)
+
+                if valid_signals:
+                    best = valid_signals[0]
+                    msg = (
+                        f"🔭 <b>رادار الجواهر النائمة (Swing Trading)</b>\n"
+                        f"━━━━━━━━━━━━━━\n"
+                        f"💎 العملة: #{best['symbol']}\n"
+                        f"💵 السعر: ${format_price(best['price'])}\n"
+                        f"📊 السكور: <b>{best['score']}/100</b>\n"
+                        f"🗜️ نسبة الضغط: {best['squeeze']} (كلما قل كان أفضل)\n\n"
+                        f"⚡ <b>إشارات التجميع:</b>\n{best['tags']}\n"
+                        f"━━━━━━━━━━━━━━\n"
+                        f"💡 هذه العملة في مرحلة تجميع صامت على الفريم اليومي. مناسبة للتخزين والانفجار القادم!"
+                    )
+                    await bot.send_message(ADMIN_USER_ID, msg, parse_mode=ParseMode.HTML)
+                else:
+                    await bot.send_message(ADMIN_USER_ID, "🔭 لم يجد رادار الجواهر أي عملة تتطابق مع شروط التجميع القاسية حالياً.")
+
+    except Exception as e:
+        print(f"Swing Radar Error: {e}")
 
         # تم تصحيح وقت الانتظار ليكون 6 ساعات بالضبط (6 * 60 * 60)
   # 6 ساعات # انتطار الدورة القادمة
@@ -1019,6 +1138,16 @@ async def ask_groq(prompt, lang="ar"):
     return "⚠️ Error generating analysis. Server is highly loaded."
 
 # --- الأوامر ---
+@dp.message(Command("gem"))
+async def gem_radar_cmd(m: types.Message):
+    if m.from_user.id != ADMIN_USER_ID:
+        return await m.answer("❌ هذا الأمر للأدمن فقط")
+    
+    await m.answer("🔭 <b>تم تفعيل رادار الجواهر النائمة...</b>\nجاري مسح السوق والبحث عن قيعان الفريم اليومي (التجميع المؤسساتي الصامت).", parse_mode=ParseMode.HTML)
+    
+    # تشغيل الرادار كمهمة في الخلفية لمرة واحدة عند طلبك
+    asyncio.create_task(ai_swing_radar(dp['db_pool']))
+
 # --- أزرار موافقة الأدمن على الرادار ---# --- أزرار موافقة الأدمن على الرادار ---
 @dp.callback_query(F.data.startswith("rad_app_"))
 async def approve_radar_signal(cb: types.CallbackQuery):
