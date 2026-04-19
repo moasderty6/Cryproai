@@ -2223,9 +2223,13 @@ async def run_analysis(cb: types.CallbackQuery):
         macd_fmt = format_price(last_macd) if 'last_macd' in locals() and last_macd is not None else "0.0"
         safe_rsi = f"{last_rsi:.2f}" if 'last_rsi' in locals() and last_rsi is not None else "N/A"
 
+                # تجهيز المتغيرات للغتين قبل بناء البرومبت
         if lang == "ar":
             real_trend = "صاعد" if trend_dir == "Bullish" else "هابط"
-            trend_strength = trend_str
+            trend_strength_text = trend_str
+        else:
+            real_trend = "Bullish" if trend_dir == "Bullish" else "Bearish"
+            trend_strength_text = trend_str
 
     # 🔥 تحديث البرومبت ليشمل الـ market_action
     if lang == "ar":
