@@ -1967,7 +1967,7 @@ async def run_analysis(cb: types.CallbackQuery):
         candles = await get_candles_binance(f"{clean_sym}USDT", gate_interval, limit=500)
 
     # 🛑 التغيير الموضعي: جدار حماية يوقف الدالة فوراً إذا مافي شموع كافية
-    if not candles or len(candles) < 15:
+    if not candles or len(candles) < 3:
         if lang == "ar":
             error_msg = f"⚠️ <b>عذراً، بيانات الإطار الزمني غير كافية لعملة {clean_sym} حالياً.</b>\n🔄 يرجى اختيار إطار زمني أقل (مثل 4 ساعات)."
         else:
