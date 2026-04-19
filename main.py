@@ -2139,10 +2139,12 @@ async def run_analysis(cb: types.CallbackQuery):
         if lang == "ar":
             real_trend = "صاعد" if trend_dir == "Bullish" else "هابط"
             trend_strength = trend_str
-            
-            prompt = f"""
+
+    # 🔥 تحديث البرومبت ليشمل الـ market_action
+    if lang == "ar":
+        prompt = f"""
 أنت محلل فني خبير في شركة "NaiF CHarT". قم بصياغة هذا التحليل لعملة {clean_sym} بشكل احترافي ومختصر.
-البيانات محسوبة رياضياً وجاهزة، ⚠️ يمنع منعاً باتاً تغيير الأرقام ⚠️، فقط رتبها بدقة واكتب تعليقاً فنياً في سطر واحد لكل مؤشر.
+البيانات محسوبة رياضياً وجاهزة، ⚠️ يمنع منعاً باتاً تغيير أرقام الأهداف أو الوقف ⚠️، فقط قم بترتيبها في القالب المطلوب واكتب تعليقاً فنياً دقيقاً في سطر واحد لكل مؤشر.
 
 ⚠️ التزم بهذا القالب بحذافيره (استخدم HTML فقط):
 
@@ -2158,29 +2160,23 @@ TP1: <code>{format_price(calc_tp1)}</code>
 TP2: <code>{format_price(calc_tp2)}</code>
 TP3: <code>{format_price(calc_tp3)}</code>
 
-🛑 <b>إدارة المخاطر (Risk Management)</b>
-الوقف (SL): <code>{format_price(calc_sl)}</code>
-نسبة النجاح المتوقعة: <b>{win_rate_display}</b>
-حجم الدخول الآمن: <b>{pos_size_display} من المحفظة</b>
+🛑 <b>وقف الخسارة (SL)</b>
+Stop Loss: <code>{format_price(calc_sl)}</code>
 
 📈 <b>تحليل المؤشرات</b>
-•Liquidity: {market_action} (سطر يعلق على هذه الحالة بالعربية فقط)
-•RSI ({safe_rsi}): (سطر يوضح التشبع أو الحياد بالعربية فقط)
-•MACD ({macd_fmt}): (سطر يوضح الزخم بالعربية فقط)
-•ADX ({adx_val:.1f}): (سطر يوضح قوة الترند بالعربية فقط)
+•Liquidity: {market_action} (اكتب سطر يعلق على هذه الحالة بالعربية فقط ولا حرف غير عربي)
+•RSI ({safe_rsi}): (اكتب سطر واحد يوضح التشبع أو الحياد بالعربية فقط ولا حرف غير عربي)
+•MACD ({macd_fmt}): (اكتب سطر واحد يوضح الزخم بالعربية فقط ولا حرف غير عربي)
+•ADX ({adx_val:.1f}): (اكتب سطر واحد يوضح قوة الترند بالعربية فقط ولا حرف غير عربي)
 """
-        else:
-            real_trend = trend_dir
-            trend_strength_en = {"قوي جداً": "Very Strong", "قوي": "Strong", "جيد": "Good", "متوسط": "Moderate", "ضعيف": "Weak", "ضعيف ومخادع": "Weak & Fake"}
-            trend_strength = trend_strength_en.get(trend_str, trend_str)
-            
-            prompt = f"""
+    else:
+        prompt = f"""
 You are an expert Technical Analyst at "NaiF CHarT". Format this analysis for {clean_sym} professionally and concisely.
-The data is calculated mathematically and is completely ready. ⚠️ STRICT RULE: DO NOT change the numbers ⚠️, just arrange them accurately and write a precise technical comment in one short line for each indicator.
+The data is calculated mathematically and is completely ready. ⚠️ STRICT RULE: DO NOT change the TP or SL numbers ⚠️. Just arrange them in the required template and write a precise technical comment in one short line for each indicator.
 
 ⚠️ Strictly follow this template (Use HTML only):
 
-📊 <b>Analysis for {clean_sym}</b> | {tf} | {format_price(price)}$
+📊 <b>Analysis: {clean_sym}</b> | {tf} | {format_price(price)}$
 Trend: {real_trend} ({trend_strength})
 
 📉 <b>Support & Resistance</b>
@@ -2192,10 +2188,8 @@ TP1: <code>{format_price(calc_tp1)}</code>
 TP2: <code>{format_price(calc_tp2)}</code>
 TP3: <code>{format_price(calc_tp3)}</code>
 
-🛑 <b>Risk Management</b>
-Stop Loss (SL): <code>{format_price(calc_sl)}</code>
-Expected Win Rate: <b>{win_rate_display}</b>
-Safe Position Size: <b>{pos_size_display} of Portfolio</b>
+🛑 <b>Stop Loss (SL)</b>
+Stop Loss: <code>{format_price(calc_sl)}</code>
 
 📈 <b>Indicator Analysis</b>
 • Liquidity: {market_action} (Write one line commenting on this action)
