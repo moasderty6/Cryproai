@@ -1973,19 +1973,31 @@ async def run_analysis(cb: types.CallbackQuery):
         gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
         candles = await get_candles_binance(f"{clean_sym}USDT", gate_interval, limit=500)
 
-
-    # ✅ بداية الإصلاح: إدخال الكود داخل الدالة بالمسافات الصحيحة
-        # (داخل دالة run_analysis بعد تحويل df من الشموع)
-    if candles:
-        last_rsi, last_macd, last_bb, last_vol, _, _ = compute_indicators(candles) 
+    # 🛑 التغيير الموضعي: جدار حماية يوقف الدالة فوراً إذا مافي شموع كافية
+    if not candles or len(candles) < 15:
+        if lang == "ar":
+            error_msg = f"⚠️ <b>عذراً، بيانات الإطار الزمني غير كافية لعملة {clean_sym} حالياً.</b>\n🔄 يرجى اختيار إطار زمني أقل (مثل 4 ساعات)."
+        else:
+            error_msg = f"⚠️ <b>Sorry, insufficient data for {clean_sym} on this timeframe.</b>\n🔄 Please choose a lower timeframe (like 4H)."
         
-        import pandas as pd 
-        df = pd.DataFrame(candles)
-        df = df.iloc[:, :6]
-        df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+        try:
+            return await cb.message.edit_text(error_msg, parse_mode=ParseMode.HTML)
+        except Exception:
+            return await cb.message.answer(error_msg, parse_mode=ParseMode.HTML)
 
-        for col in ["close", "high", "low", "open", "volume"]:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
+    # 🟢 لاحظ هنا: شلنا (if candles:) وكل الأسطر اللي تحتها رجعناها لورا مسافة عشان تصير أساسية بالدالة
+    last_rsi, last_macd, last_bb, last_vol, _, _ = compute_indicators(candles) 
+        
+    import pandas as pd 
+    df = pd.DataFrame(candles)
+    df = df.iloc[:, :6]
+    df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+
+    for col in ["close", "high", "low", "open", "volume"]:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+    # ... (كمل باقي الكود من هنا: سحب الفوليوم من الداتا بيز، وتعريف الـ prompt بدون ما تخليهم جوا if) ...
+
 
         # 🔥 سحب الفوليوم من قاعدة البيانات
         db_vol_float = 0.0
