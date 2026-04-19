@@ -8,3 +8,4 @@ python-binance==1.0.16
 pandas
 numpy
 ta==0.11.0
+websockets
