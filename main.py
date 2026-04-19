@@ -763,8 +763,8 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             
             # 🟢 محرك تسمية الإشارة الذكي (Short & Punchy Signal Names)
             final_signal = "High Probability Setup 🎯"
-            if "Fake_Pump" in tags or "Spoofing" in tags or "Short_Covering" in tags:
-                return None # طرد العملات المخادعة تماماً من الرادار
+            if "Fake_Pump" in tags or "Spoofing_or_Wall" in tags or "Short_Covering" in tags:
+                return None 
             elif "Whale_CVD" in tags and "Aggressive_Buy" in tags: final_signal = "Aggressive Whale Accumulation 🐋"
             elif "Short_Squeeze" in tags: final_signal = "(Short Squeeze) 🔥"
             elif "Z_Anom" in tags and "OI_Rising" in tags: final_signal = "(Derivatives Pump) 🚀"
