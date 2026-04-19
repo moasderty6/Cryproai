@@ -59,6 +59,9 @@ bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTM
 dp = Dispatcher(storage=MemoryStorage())
 user_session_data = {}
 radar_pending_approvals = {}
+# طابور معالجة العملات المنفجرة (لحماية الـ API من الضغط)
+radar_processing_queue = asyncio.Queue()
+
 # ذاكرة لتسجيل العملات التي تم إرسالها اليوم لمنع تكرارها
 daily_signaled_coins = {}
 # --- وظائف قاعدة البيانات ---
@@ -187,7 +190,7 @@ live_market_memory = {}
 
 async def smart_radar_watchdog(pool):
     """
-    مستشعر النبض اللحظي متصل بقاعدة البيانات لمنع التكرار.
+    مستشعر النبض اللحظي (Producer): وظيفته فقط التقاط الشذوذ ورميه في الطابور بسرعة البرق
     """
     url = "wss://stream.binance.com:9443/ws/!miniTicker@arr"
     print("🟢 جاري الاتصال بـ Binance WebSocket لمراقبة السيولة اللحظية...")
@@ -218,45 +221,71 @@ async def smart_radar_watchdog(pool):
                             old_price = old_data['price']
                             time_diff = current_time - old_data['last_update']
 
+                            # فحص الانفجار السعري
                             if time_diff >= 60 and old_vol > 0:
                                 vol_change = (current_vol - old_vol) / old_vol
                                 price_change = (current_price - old_price) / old_price
 
                                 if current_vol >= MIN_VOLUME_USD and vol_change >= VOLUME_SPIKE_THRESHOLD and price_change >= PRICE_SPIKE_THRESHOLD:
                                     
-                                    # 🟢 الربط مع قاعدة البيانات بدلاً من الـ RAM
-                                    async with pool.acquire() as conn:
-                                        # فحص هل أرسلنا العملة في آخر 12 ساعة؟
-                                        is_signaled = await conn.fetchval("""
-                                            SELECT 1 FROM radar_history 
-                                            WHERE symbol = $1 AND last_signaled > CURRENT_TIMESTAMP - INTERVAL '12 hours'
-                                        """, symbol)
-
-                                        if not is_signaled:
-                                            print(f"🚨 [شذوذ مرصود] {symbol} | زيادة فوليوم: {vol_change:.1%} | السعر: +{price_change:.1%}")
-                                            
-                                            # تسجيل العملة فوراً لمنع التكرار
-                                            await conn.execute("""
-                                                INSERT INTO radar_history (symbol, last_signaled)
-                                                VALUES ($1, CURRENT_TIMESTAMP)
-                                                ON CONFLICT (symbol) DO UPDATE SET last_signaled = CURRENT_TIMESTAMP
-                                            """, symbol)
-
-                                            coin_mock_data = {
-                                                "symbol": symbol.replace("USDT", ""),
-                                                "quote": {"USD": {"price": current_price}}
-                                            }
-                                            
-                                            sem = asyncio.Semaphore(5)
-                                            asyncio.create_task(trigger_deep_analysis(coin_mock_data, sem, pool))
-
-                                live_market_memory[symbol] = {'volume': current_vol, 'price': current_price, 'last_update': current_time}
+                                    # إرسال العملة إلى الطابور فوراً للتحليل العميق (بدون انتظار)
+                                    coin_mock_data = {
+                                        "symbol": symbol.replace("USDT", ""),
+                                        "quote": {"USD": {"price": current_price}}
+                                    }
+                                    # نضعها في الطابور ليقوم العامل (Worker) بمعالجتها بهدوء
+                                    await radar_processing_queue.put(coin_mock_data)
+                                    
+                            live_market_memory[symbol] = {'volume': current_vol, 'price': current_price, 'last_update': current_time}
                         else:
                             live_market_memory[symbol] = {'volume': current_vol, 'price': current_price, 'last_update': current_time}
 
         except Exception as e:
             print(f"⚠️ خطأ في الرادار اللحظي: {e} - إعادة الاتصال...")
             await asyncio.sleep(3)
+
+
+async def radar_worker_process(pool):
+    """
+    العامل الصامت (Consumer): يأخذ العملات من الطابور واحدة تلو الأخرى ويحللها بعمق
+    هذا يمنع حظر منصات التداول لك بسبب كثرة الطلبات اللحظية.
+    """
+    sem = asyncio.Semaphore(5) # السماح بـ 5 تحليلات متزامنة فقط
+    
+    # ننتظر قليلاً حتى يعمل البوت
+    await asyncio.sleep(10)
+    print("👷‍♂️ عامل التحليل العميق (Worker) جاهز لمعالجة الإشارات...")
+    
+    async with httpx.AsyncClient(timeout=30) as client:
+        while True:
+            # اسحب عملة من الطابور
+            coin_mock_data = await radar_processing_queue.get()
+            symbol = f"{coin_mock_data['symbol']}USDT"
+            
+            async with pool.acquire() as conn:
+                # فحص هل أرسلنا العملة في آخر 12 ساعة؟
+                is_signaled = await conn.fetchval("""
+                    SELECT 1 FROM radar_history 
+                    WHERE symbol = $1 AND last_signaled > CURRENT_TIMESTAMP - INTERVAL '12 hours'
+                """, symbol)
+
+                if not is_signaled:
+                    print(f"🚨 [تحليل عميق] جاري تشريح {symbol}...")
+                    
+                    await conn.execute("""
+                        INSERT INTO radar_history (symbol, last_signaled)
+                        VALUES ($1, CURRENT_TIMESTAMP)
+                        ON CONFLICT (symbol) DO UPDATE SET last_signaled = CURRENT_TIMESTAMP
+                    """, symbol)
+
+                    # جلب الماكرو اللحظي
+                    market_regime = await detect_market_regime(client)
+                    # إرسالها للتحليل
+                    asyncio.create_task(analyze_radar_coin(coin_mock_data, client, market_regime, sem))
+            
+            # إخبار الطابور أن المهمة انتهت
+            radar_processing_queue.task_done()
+            await asyncio.sleep(1) # استراحة ثانية بين كل تحليل لحماية الـ API
 
 # دالة وسيطة لتجهيز البيانات قبل التحليل العميق
 async def trigger_deep_analysis(coin_mock_data, sem, pool):
@@ -334,36 +363,46 @@ async def detect_market_regime(client):
 
 async def analyze_orderbook_depth(symbol, client):
     """
-    تحليل أعمق لـ 20 مستوى في الأوردر بوك لكشف التلاعب
+    تحليل أعمق لـ 500 مستوى في الأوردر بوك لكشف الجدران المخفية (Iceberg) والتلاعب (Spoofing)
     """
     pair = f"{symbol.upper()}USDT"
-    res = await client.get(f"https://api.binance.com/api/v3/depth", params={"symbol": pair, "limit": 20})
+    # غيرنا الليمت إلى 500 لكشف الأعماق الحقيقية
+    res = await client.get(f"https://api.binance.com/api/v3/depth", params={"symbol": pair, "limit": 500})
     
     if res.status_code == 200:
         data = res.json()
-        bids = data['bids']
-        asks = data['asks']
+        bids = data['bids'] # طلبات الشراء (الدعم)
+        asks = data['asks'] # طلبات البيع (المقاومة)
         
-        # حساب السيولة القريبة (أول 5 مستويات) مقابل البعيدة
-        near_bids_vol = sum(float(b[0]) * float(b[1]) for b in bids[:5])
-        far_bids_vol = sum(float(b[0]) * float(b[1]) for b in bids[5:20])
+        # تقسيم العمق إلى 3 مناطق: قريبة (1-50)، متوسطة (51-200)، بعيدة (201-500)
+        # المنطقة القريبة (السيولة اللحظية الحقيقية التي تحرك السعر الآن)
+        near_bids_vol = sum(float(b[0]) * float(b[1]) for b in bids[:50])
+        near_asks_vol = sum(float(a[0]) * float(a[1]) for a in asks[:50])
         
-        near_asks_vol = sum(float(a[0]) * float(a[1]) for a in asks[:5])
-        far_asks_vol = sum(float(a[0]) * float(a[1]) for a in asks[5:20])
+        # المنطقة البعيدة (هنا يضع الحيتان الأوامر الوهمية Spoofing)
+        far_bids_vol = sum(float(b[0]) * float(b[1]) for b in bids[200:500])
+        far_asks_vol = sum(float(a[0]) * float(a[1]) for a in asks[200:500])
 
-        imbalance = (near_bids_vol - near_asks_vol) / (near_bids_vol + near_asks_vol)
+        # 1. حساب خلل التوازن الحقيقي (Order Book Imbalance) للمنطقة القريبة
+        total_near = near_bids_vol + near_asks_vol
+        imbalance = (near_bids_vol - near_asks_vol) / total_near if total_near > 0 else 0
         
-        # اكتشاف الـ Spoofing:
-        # إذا كان هناك طلب ضخم جداً بعيد عن السعر (Far Bids) لكن السيولة القريبة (Near Bids) ضعيفة، 
-        # غالباً هذا "فخ" لإيهام الروبوتات بوجود دعم.
-        spoofing_risk = far_bids_vol > (near_bids_vol * 10)
+        # 2. كشف الخداع (Spoofing Detection)
+        # إذا كانت الطلبات البعيدة ضخمة جداً (أكبر بـ 5 أضعاف من القريبة) فهذا فخ وهمي لدفع السعر للأسفل ثم سحبها!
+        spoofing_risk = far_bids_vol > (near_bids_vol * 5.0)
         
+        # 3. كشف جدار البيع الخفي (Iceberg Distribution)
+        # إذا كان الدعم القريب قوي جداً، لكن يوجد جدار بيع بعيد أضخم منه، الحوت يصرف بصمت
+        hidden_wall_risk = far_asks_vol > (near_asks_vol * 8.0) and far_asks_vol > (near_bids_vol * 3.0)
+
         return {
-            "imbalance": round(imbalance, 2),
+            "imbalance": round(imbalance, 2), # من 1.0 (شراء كاسح) إلى -1.0 (بيع كاسح)
             "spoofing_risk": spoofing_risk,
+            "hidden_wall": hidden_wall_risk,
             "real_support": near_bids_vol
         }
     return None
+
 
 async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
     """
@@ -685,16 +724,18 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 score += 10.0 
                 tags.append("RSI_Div")
 
-            # 5. الفحص العميق (Order Flow + Global)
+            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)
             if score >= 50.0: 
                 depth_data = await analyze_orderbook_depth(symbol, client)
                 if depth_data:
-                    if depth_data['spoofing_risk']:
-                        score -= 30.0 
-                        tags.append("Spoofing")
+                    # تفاعل الرادار مع الدالة الجديدة
+                    if depth_data['spoofing_risk'] or depth_data['hidden_wall']:
+                        score -= 35.0 # جلد السكور لأنها عملة مخادعة
+                        tags.append("Spoofing_or_Wall")
                     elif depth_data['imbalance'] > 0.4:
-                        score += 10.0
+                        score += 15.0 # مكافأة أعلى لأننا نقرأ 50 مستوى حقيقي الآن
                         tags.append("OB_Buy")
+
 
                 of_analyzer = OrderFlowAnalyzer(symbol)
                 await of_analyzer.start_trade_stream(duration=10)
@@ -2485,6 +2526,7 @@ async def on_startup(app):
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
 
     asyncio.create_task(smart_radar_watchdog(pool))
+    asyncio.create_task(radar_worker_process(pool))
     #asyncio.create_task(daily_channel_post())
     asyncio.create_task(update_market_memory_loop(pool)) # 🔥 تشغيل ذاكرة السوق
     await bot.set_webhook(f"{WEBHOOK_URL}/")
