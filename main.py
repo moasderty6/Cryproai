@@ -143,27 +143,43 @@ def get_payment_kb(lang):
 
 # --- رادار الفرص الذكي ---
 # --- دوال الرادار المساعدة (ضعها فوق دالة الرادار) ---
-async def get_recent_orderflow_delta(symbol, client, limit=500):
-    """
-    بديل سريع وآمن للـ WebSocket: يقرأ آخر 500 صفقة تمت لتحديد الشراء/البيع العدواني
-    """
-    try:
-        res = await client.get(f"{BINANCE_BASE}/trades", params={"symbol": symbol, "limit": limit})
-        if res.status_code == 200:
-            trades = res.json()
-            delta = 0.0
-            for t in trades:
-                amount = float(t['qty']) * float(t['price'])
-                is_buyer_maker = t['isBuyerMaker'] 
-                
-                if not is_buyer_maker: # المشتري هو Taker (شراء ماركت/عدواني)
-                    delta += amount
-                else: # البائع هو Taker (بيع ماركت/عدواني)
-                    delta -= amount
-            return delta
-    except:
-        pass
-    return 0.0
+class OrderFlowAnalyzer:
+    def __init__(self, symbol):
+        self.symbol = symbol.lower()
+        self.delta = 0.0
+        self.cumulative_delta = 0.0
+        self.is_active = True
+
+    async def start_trade_stream(self, duration=10):
+        url = f"wss://stream.binance.com:9443/ws/{self.symbol}usdt@aggTrade"
+        start_time = asyncio.get_event_loop().time()
+        
+        try:
+            # ping_interval=None تمنع الإزعاج من المنصة للاتصالات القصيرة
+            async with websockets.connect(url, ping_interval=None) as ws:
+                while self.is_active:
+                    elapsed = asyncio.get_event_loop().time() - start_time
+                    if elapsed > duration:
+                        break
+                    
+                    try:
+                        # نستخدم wait_for هنا لتجنب التعليق الأبدي للعملات الميتة
+                        msg = await asyncio.wait_for(ws.recv(), timeout=duration - elapsed)
+                        data = json.loads(msg)
+                        
+                        amount = float(data['q']) * float(data['p']) # الحجم بالدولار
+                        is_buyer_taker = not data['m'] # شراء عدواني
+                        
+                        if is_buyer_taker:
+                            self.delta += amount
+                        else:
+                            self.delta -= amount
+                    except asyncio.TimeoutError:
+                        # العملة هادئة جداً ولا يوجد صفقات حالياً، نخرج بهدوء
+                        break
+        except Exception as e:
+            pass # تجاهل أخطاء الاتصال اللحظية
+
                 
                 # هنا نحسب الـ Absorption (امتصاص البيع)
                 # إذا كان السعر ثابتاً أو يرتفع رغم وجود Delta بيعي ضخم = الحيتان تمتص العروض
@@ -184,13 +200,6 @@ async def smart_radar_watchdog(pool):
     PRICE_SPIKE_THRESHOLD = 0.01   
 
     while True:
-        # --- إضافة: تنظيف الذاكرة المؤقتة من العملات الخاملة لمنع انهيار السيرفر ---
-        current_time_cleanup = time.time()
-        # حذف أي عملة لم تتحدث منذ أكثر من ساعة (3600 ثانية)
-        keys_to_delete = [k for k, v in live_market_memory.items() if current_time_cleanup - v['last_update'] > 3600]
-        for k in keys_to_delete:
-            del live_market_memory[k]
-        # ------------------------------------------------------------
         try:
             async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
                 print("✅ تم الاتصال بنجاح! الرادار اللحظي يعمل الآن.")
@@ -212,23 +221,20 @@ async def smart_radar_watchdog(pool):
                             old_price = old_data['price']
                             time_diff = current_time - old_data['last_update']
 
-      
+                            # فحص الانفجار السعري
                             if time_diff >= 60 and old_vol > 0:
                                 vol_change = (current_vol - old_vol) / old_vol
                                 price_change = (current_price - old_price) / old_price
-                            
-                                # التعديل الجذري: السعر يجب أن يكون ثابتاً تقريباً (أقل من 0.5% حركة) مع دخول فوليوم ضخم = تجميع صامت
-                                MAX_PRICE_SPIKE = 0.005 
-                            
-                                if current_vol >= MIN_VOLUME_USD and vol_change >= VOLUME_SPIKE_THRESHOLD and abs(price_change) <= MAX_PRICE_SPIKE:
+
+                                if current_vol >= MIN_VOLUME_USD and vol_change >= VOLUME_SPIKE_THRESHOLD and price_change >= PRICE_SPIKE_THRESHOLD:
                                     
-                                    # إرسال العملة إلى الطابور فوراً للتحليل العميق
+                                    # إرسال العملة إلى الطابور فوراً للتحليل العميق (بدون انتظار)
                                     coin_mock_data = {
                                         "symbol": symbol.replace("USDT", ""),
                                         "quote": {"USD": {"price": current_price}}
                                     }
+                                    # نضعها في الطابور ليقوم العامل (Worker) بمعالجتها بهدوء
                                     await radar_processing_queue.put(coin_mock_data)
-
                                     
                             live_market_memory[symbol] = {'volume': current_vol, 'price': current_price, 'last_update': current_time}
                         else:
@@ -260,7 +266,7 @@ async def radar_worker_process(pool):
                 # فحص هل أرسلنا العملة في آخر 12 ساعة؟
                 is_signaled = await conn.fetchval("""
                     SELECT 1 FROM radar_history 
-                     WHERE symbol = $1 AND last_signaled > CURRENT_TIMESTAMP - INTERVAL '7 days'
+                    WHERE symbol = $1 AND last_signaled > CURRENT_TIMESTAMP - INTERVAL '12 hours'
                 """, symbol)
 
                 if not is_signaled:
@@ -397,15 +403,15 @@ async def analyze_orderbook_depth(symbol, client):
         }
     return None
 
+
 async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
     """
-    جلب ودمج الأوردر بوك من 8 منصات لقراءة ضغط الحيتان
-    Binance, Bybit, Gate.io, KuCoin, OKX, MEXC, Bitget, HTX
+    جلب ودمج الأوردر بوك من 6 منصات لقرائة ضغط الحيتان
+    Binance, Bybit, Gate.io, KuCoin, OKX, MEXC
     """
     sym_binance_mexc = f"{symbol}USDT"
     sym_gate = f"{symbol}_USDT"
     sym_kucoin_okx = f"{symbol}-USDT"
-    sym_htx = f"{symbol.lower()}usdt" # HTX تتطلب الحروف الصغيرة
 
     urls = {
         "binance": f"https://api.binance.com/api/v3/depth?symbol={sym_binance_mexc}&limit=50",
@@ -413,9 +419,7 @@ async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
         "gate": f"https://api.gateio.ws/api/v4/spot/order_book?currency_pair={sym_gate}&limit=50",
         "kucoin": f"https://api.kucoin.com/api/v1/market/orderbook/level2_100?symbol={sym_kucoin_okx}",
         "okx": f"https://www.okx.com/api/v5/market/books?instId={sym_kucoin_okx}&sz=50",
-        "mexc": f"https://api.mexc.com/api/v3/depth?symbol={sym_binance_mexc}&limit=50",
-        "bitget": f"https://api.bitget.com/api/v2/spot/market/orderbook?symbol={sym_binance_mexc}&type=step0&limit=50",
-        "htx": f"https://api.huobi.pro/market/depth?symbol={sym_htx}&type=step0"
+        "mexc": f"https://api.mexc.com/api/v3/depth?symbol={sym_binance_mexc}&limit=50"
     }
 
     async def fetch_ob(exchange, url):
@@ -425,35 +429,21 @@ async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
                 data = res.json()
                 bids_vol, asks_vol = 0.0, 0.0
                 
-                # 1. Binance, MEXC, Gate
                 if exchange in ["binance", "mexc", "gate"]:
                     bids_vol = sum(float(b[0]) * float(b[1]) for b in data.get("bids", []))
                     asks_vol = sum(float(a[0]) * float(a[1]) for a in data.get("asks", []))
-                # 2. Bybit
                 elif exchange == "bybit":
                     result = data.get("result", {})
                     bids_vol = sum(float(b[0]) * float(b[1]) for b in result.get("b", []))
                     asks_vol = sum(float(a[0]) * float(a[1]) for a in result.get("a", []))
-                # 3. KuCoin
                 elif exchange == "kucoin":
                     d = data.get("data", {})
                     bids_vol = sum(float(b[0]) * float(b[1]) for b in d.get("bids", [])[:50])
                     asks_vol = sum(float(a[0]) * float(a[1]) for a in d.get("asks", [])[:50])
-                # 4. OKX
                 elif exchange == "okx":
                     d = data.get("data", [{}])[0]
                     bids_vol = sum(float(b[0]) * float(b[1]) for b in d.get("bids", []))
                     asks_vol = sum(float(a[0]) * float(a[1]) for a in d.get("asks", []))
-                # 5. Bitget (الجديدة)
-                elif exchange == "bitget":
-                    d = data.get("data", {})
-                    bids_vol = sum(float(b[0]) * float(b[1]) for b in d.get("bids", []))
-                    asks_vol = sum(float(a[0]) * float(a[1]) for a in d.get("asks", []))
-                # 6. HTX (الجديدة)
-                elif exchange == "htx":
-                    d = data.get("tick", {})
-                    bids_vol = sum(float(b[0]) * float(b[1]) for b in d.get("bids", [])[:50])
-                    asks_vol = sum(float(a[0]) * float(a[1]) for a in d.get("asks", [])[:50])
 
                 return exchange, bids_vol, asks_vol
         except:
@@ -466,23 +456,24 @@ async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
     total_bids_usd = 0.0
     total_asks_usd = 0.0
 
-    # ----- الطباعة في اللوغ لمراقبة الضغط المؤسساتي -----
+    # ----- الطباعة في اللوغ -----
+        # ----- الطباعة في اللوغ -----
     print(f"\n📊 --- تفاصيل الأوردر بوك لعملة {symbol} ---", flush=True)
     for exchange, bids, asks in results:
         total_bids_usd += bids
         total_asks_usd += asks
-        # طباعة المنصات التي تحتوي على بيانات فقط
+        # طباعة المنصات التي تحتوي على بيانات فقط لتجنب الإزعاج
         if bids > 0 or asks > 0:
             print(f"🔹 {exchange.upper():<8}: Bids = ${bids:,.0f} | Asks = ${asks:,.0f}", flush=True)
             
-    print(f"🌍 الإجمالي اللحظي (8 منصات): Bids = ${total_bids_usd:,.0f} | Asks = ${total_asks_usd:,.0f}", flush=True)
+    print(f"🌍 الإجمالي: Bids = ${total_bids_usd:,.0f} | Asks = ${total_asks_usd:,.0f}", flush=True)
     print("------------------------------------------\n", flush=True)
 
-    # حساب نسبة الخلل (Imbalance)
     if total_asks_usd == 0:
         return 999.0 if total_bids_usd > 0 else 1.0 
     
     return total_bids_usd / total_asks_usd
+
 
 async def update_market_memory_loop(pool):
     """مهمة خلفية لتحديث ذاكرة السوق لكل العملات بشكل دوري"""
@@ -578,16 +569,9 @@ def detect_smart_money_absorption(df):
     signal_upgrade = None
 
     # 🟢 تم تخفيض السكور ليكون منطقياً وضبط اسم الإشارة الداخلي
-        # تعديل: مقارنة الـ CVD بمتوسط الحجم بنسبة منطقية (0.5 بدلاً من 3 أضعاف المستحيلة)
-    # 1. تجميع شرائي صامت (نطاق ضيق)
-    if abs(price_change_pct) <= 0.015 and cvd_change > (recent["volume"].mean() * 0.3):
-        score_boost = 25.0 
+    if price_change_pct <= 0.02 and cvd_change > (recent["volume"].mean() * 3):
+        score_boost = 15.0 
         signal_upgrade = "Whale_CVD"
-    # 2. الامتصاص (Limit Absorption): الناس تبيع (CVD سلبي) والسعر يرفض الهبوط!
-    elif price_change_pct >= -0.01 and cvd_change < -(recent["volume"].mean() * 0.4):
-        score_boost = 20.0
-        signal_upgrade = "Limit_Absorption"
-
     elif price_change_pct > 0.05 and cvd_change < 0:
         score_boost = -20.0
         signal_upgrade = "Fake_Pump"
@@ -703,25 +687,15 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 """, symbol, vol_mean, vol_std, current_z)
 
             # 1. فلتر الفوليوم
-            # 1. فلتر الفوليوم (بمنطق تجنب الـ FOMO)
-# نحسب حركة السعر في آخر 10 شموع لنتأكد أننا لا نشتري قمة
-            recent_pump = (df["close"].iloc[-1] - df["close"].iloc[-10]) / df["close"].iloc[-10]
-            
             if current_z >= 4.0:
-                if recent_pump > 0.05: # إذا طارت أكثر من 5% والسيولة مجنونة = القطار فات
-                    score -= 15.0 
-                    tags.append("Late_FOMO")
-                else: # سيولة انفجارية والسعر لم يتحرك بعد = قنبلة موقوتة
-                    score += 25.0 
-                    tags.append("Z_Anom_Silent")
-            
-            elif 1.5 <= current_z <= 3.5:
-                # هذا هو النطاق الذهبي للتجميع، سيولة تدخل بدون إحداث فوضى بالشارت
                 score += 20.0
-                tags.append("Smart_Accumulation")
-            
-            elif current_z < 0: 
-                return None
+                tags.append("Z_Anom")
+            elif current_z >= 3.0:
+                score += 12.0
+                tags.append("Z_High")
+            elif current_z >= 2.0:
+                score += 5.0
+            elif current_z < 0: return None 
 
             # 2. فلتر CVD
             cvd_boost, cvd_signal = detect_smart_money_absorption(df)
@@ -750,31 +724,26 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 score += 10.0 
                 tags.append("RSI_Div")
 
-            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)
+            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)
             if score >= 50.0: 
                 depth_data = await analyze_orderbook_depth(symbol, client)
                 if depth_data:
-                    if depth_data['hidden_wall']:
-    # إذا كان هناك حائط بيع، ولكن السيولة إيجابية = الحوت يمتص هذا الحائط لكسره لاحقاً
-                        if current_z >= 1.5 or "Whale_CVD" in tags or "Limit_Absorption" in tags:
-                            score += 20.0 
-                            tags.append("Wall_Absorption")
-                        else:
-                            score -= 10.0 # حائط حقيقي بغرض التصريف
-                    elif depth_data['spoofing_risk']:
-                        score -= 5.0 # عقوبة خفيفة للخدع
-                    
+                    # تفاعل الرادار مع الدالة الجديدة
+                    if depth_data['spoofing_risk'] or depth_data['hidden_wall']:
+                        score -= 35.0 # جلد السكور لأنها عملة مخادعة
+                        tags.append("Spoofing_or_Wall")
                     elif depth_data['imbalance'] > 0.4:
-                        score += 15.0 
+                        score += 15.0 # مكافأة أعلى لأننا نقرأ 50 مستوى حقيقي الآن
                         tags.append("OB_Buy")
 
-                # تعديل: استخدام دالة الـ REST السريعة بدلاً من إيقاف الكود بـ WebSocket
-                delta_usd = await get_recent_orderflow_delta(symbol, client)
-                if delta_usd > (price * 1000): 
+
+                of_analyzer = OrderFlowAnalyzer(symbol)
+                await of_analyzer.start_trade_stream(duration=10)
+                if of_analyzer.delta > (price * 1000): 
                     score += 15.0
                     tags.append("Aggressive_Buy")
-                elif delta_usd < -(price * 1000): 
-                    score -= 15.0 # تخفيف العقوبة السلبية هنا أيضاً
+                elif of_analyzer.delta < -(price * 1000): 
+                    score -= 20.0
 
                 global_ob_pressure = await get_aggregated_orderbook(client, symbol)
                 global_alt_volume = await verify_global_liquidity(symbol, client)
@@ -807,30 +776,17 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
             current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
 
-            # 🟢 1. تحديد الإشارات الحيوية (المفاتيح الذهبية)
-            golden_tags = {"Z_Anom", "Z_High", "Whale_CVD", "Aggressive_Buy", "OB_Buy", "Squeeze"}
-            # كم إشارة ذهبية اجتمعت في هذه العملة؟
-            confluence_count = sum(1 for tag in tags if tag in golden_tags)
-
-            # 🟢 2. فلتر الاتجاه المعاكس (لا تشتري سكين تسقط)
-            is_macro_downtrend = price < ema200_val
-
-            # 🟢 3. شروط القناص النهائي:
-            required_score = 85.0 if (market_regime['trend'] == "Trending_Bear" or is_macro_downtrend) else 75.0
-            required_confluence = 3 if (market_regime['trend'] == "Trending_Bear" or is_macro_downtrend) else 2
-
-            # إرجاع النتيجة فقط إذا تحقق السكور + الإجماع الفني
-            if score >= required_score and confluence_count >= required_confluence:  
+            # إرجاع النتيجة إذا نجحت العملة (سكور 75 يعتبر الآن ممتاز جداً وصعب الوصول له)
+            if score >= 75.0:  
                 return {
                     "symbol": symbol, "price": price, "score": score,
                     "rsi": round(last_rsi, 2), "adx": round(current_adx, 2),
                     "macd": current_z, 
                     "vol_ratio": round(current_vol_ratio, 2),
                     "ob_pressure": round(locals().get('global_ob_pressure', 1.0), 2),
-                    "signal_type": final_signal,
-                    "confluence": confluence_count
+                    "signal_type": final_signal
                 }
-            return None  
+            return None 
         except Exception:
             return None
 
@@ -856,38 +812,24 @@ async def ai_opportunity_radar(pool):
                 # 🟢 التعديل هنا: جلب بيانات الماكرو الجديدة بدل البوليان القديم
                 market_regime = await detect_market_regime(client)
                 
-                # جلب بيانات بايننس اللحظية (24hr Ticker) بدون أي تأخير
-                res = await client.get("https://api.binance.com/api/v3/ticker/24hr", timeout=10)
+                res = await client.get(
+                    "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
+                    headers=headers, params={"limit": "1000"} 
+                )
                 
                 if res.status_code != 200:
-                    await bot.send_message(ADMIN_USER_ID, "❌ فشل الاتصال بـ Binance API. سيتم إعادة المحاولة...")
+                    await bot.send_message(ADMIN_USER_ID, "❌ فشل الاتصال بـ CoinMarketCap. سيتم إعادة المحاولة...")
                     await asyncio.sleep(60)
                     continue
                 
-                all_tickers = res.json()
-                coins = []
-                
-                for t in all_tickers:
-                    symbol = t["symbol"]
-                    if not symbol.endswith("USDT"): continue # نأخذ أزواج التيثر فقط
-                    
-                    clean_sym = symbol.replace("USDT", "")
-                    if clean_sym in STABLE_COINS or clean_sym in ignored_symbols: continue
-                    
-                    vol_usd = float(t["quoteVolume"])
-                    price_change = float(t["priceChangePercent"])
-                    
-                    # 🟢 الفلترة السحرية: 
-                    if vol_usd >= 1_000_000 and -10.0 <= price_change <= 5.0:
-                        # تغليف البيانات لتطابق هيكلة كودك القديمة تماماً عشان ما ينكسر دالة التحليل
-                        coins.append({
-                            "symbol": clean_sym,
-                            "quote": {"USD": {"price": float(t["lastPrice"])}},
-                            "volume": vol_usd # 👈 أضفنا الفوليوم هنا للترتيب
-                        })
-                
-                # 👈 التعديل هنا: نرتب باستخدام x["volume"] 
-                coins = sorted(coins, key=lambda x: x["volume"], reverse=True)[:300]
+                coins = [
+                    c for c in res.json()["data"] 
+                    if c["symbol"] not in STABLE_COINS 
+                    and c["symbol"] not in ignored_symbols
+                    and c["quote"]["USD"]["volume_24h"] >= 1_000_000 
+                    and abs(c["quote"]["USD"]["percent_change_24h"]) >= 0.2
+                ]
+
                 tasks = [analyze_radar_coin(c, client, market_regime, sem) for c in coins]
                 results = await asyncio.gather(*tasks)
                 
@@ -896,7 +838,7 @@ async def ai_opportunity_radar(pool):
 
                 if not valid_signals:
                     print("😴 لم يتم العثور على فرص حالياً... إعادة البحث التلقائي بعد 15 دقائق.")
-                    await asyncio.sleep(250)
+                    await asyncio.sleep(900)
                     continue
 
                 # تجهيز الرسالة للأدمن لأقوى عملة
@@ -1074,6 +1016,7 @@ async def ask_groq(prompt, lang="ar"):
     # إذا لفت الدوامة على كل الـ 10 مفاتيح وكلهم فيهم ليمت أو خطأ
     print("❌ كل مفاتيح Groq فشلت أو استنفذت الليمت!")
     return "⚠️ Error generating analysis. Server is highly loaded."
+
 # --- الأوامر ---
 # --- أزرار موافقة الأدمن على الرادار ---# --- أزرار موافقة الأدمن على الرادار ---
 @dp.callback_query(F.data.startswith("rad_app_"))
