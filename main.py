@@ -397,15 +397,15 @@ async def analyze_orderbook_depth(symbol, client):
         }
     return None
 
-
 async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
     """
-    جلب ودمج الأوردر بوك من 6 منصات لقرائة ضغط الحيتان
-    Binance, Bybit, Gate.io, KuCoin, OKX, MEXC
+    جلب ودمج الأوردر بوك من 8 منصات لقراءة ضغط الحيتان
+    Binance, Bybit, Gate.io, KuCoin, OKX, MEXC, Bitget, HTX
     """
     sym_binance_mexc = f"{symbol}USDT"
     sym_gate = f"{symbol}_USDT"
     sym_kucoin_okx = f"{symbol}-USDT"
+    sym_htx = f"{symbol.lower()}usdt" # HTX تتطلب الحروف الصغيرة
 
     urls = {
         "binance": f"https://api.binance.com/api/v3/depth?symbol={sym_binance_mexc}&limit=50",
@@ -413,7 +413,9 @@ async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
         "gate": f"https://api.gateio.ws/api/v4/spot/order_book?currency_pair={sym_gate}&limit=50",
         "kucoin": f"https://api.kucoin.com/api/v1/market/orderbook/level2_100?symbol={sym_kucoin_okx}",
         "okx": f"https://www.okx.com/api/v5/market/books?instId={sym_kucoin_okx}&sz=50",
-        "mexc": f"https://api.mexc.com/api/v3/depth?symbol={sym_binance_mexc}&limit=50"
+        "mexc": f"https://api.mexc.com/api/v3/depth?symbol={sym_binance_mexc}&limit=50",
+        "bitget": f"https://api.bitget.com/api/v2/spot/market/orderbook?symbol={sym_binance_mexc}&type=step0&limit=50",
+        "htx": f"https://api.huobi.pro/market/depth?symbol={sym_htx}&type=step0"
     }
 
     async def fetch_ob(exchange, url):
@@ -423,21 +425,35 @@ async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
                 data = res.json()
                 bids_vol, asks_vol = 0.0, 0.0
                 
+                # 1. Binance, MEXC, Gate
                 if exchange in ["binance", "mexc", "gate"]:
                     bids_vol = sum(float(b[0]) * float(b[1]) for b in data.get("bids", []))
                     asks_vol = sum(float(a[0]) * float(a[1]) for a in data.get("asks", []))
+                # 2. Bybit
                 elif exchange == "bybit":
                     result = data.get("result", {})
                     bids_vol = sum(float(b[0]) * float(b[1]) for b in result.get("b", []))
                     asks_vol = sum(float(a[0]) * float(a[1]) for a in result.get("a", []))
+                # 3. KuCoin
                 elif exchange == "kucoin":
                     d = data.get("data", {})
                     bids_vol = sum(float(b[0]) * float(b[1]) for b in d.get("bids", [])[:50])
                     asks_vol = sum(float(a[0]) * float(a[1]) for a in d.get("asks", [])[:50])
+                # 4. OKX
                 elif exchange == "okx":
                     d = data.get("data", [{}])[0]
                     bids_vol = sum(float(b[0]) * float(b[1]) for b in d.get("bids", []))
                     asks_vol = sum(float(a[0]) * float(a[1]) for a in d.get("asks", []))
+                # 5. Bitget (الجديدة)
+                elif exchange == "bitget":
+                    d = data.get("data", {})
+                    bids_vol = sum(float(b[0]) * float(b[1]) for b in d.get("bids", []))
+                    asks_vol = sum(float(a[0]) * float(a[1]) for a in d.get("asks", []))
+                # 6. HTX (الجديدة)
+                elif exchange == "htx":
+                    d = data.get("tick", {})
+                    bids_vol = sum(float(b[0]) * float(b[1]) for b in d.get("bids", [])[:50])
+                    asks_vol = sum(float(a[0]) * float(a[1]) for a in d.get("asks", [])[:50])
 
                 return exchange, bids_vol, asks_vol
         except:
@@ -450,24 +466,23 @@ async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
     total_bids_usd = 0.0
     total_asks_usd = 0.0
 
-    # ----- الطباعة في اللوغ -----
-        # ----- الطباعة في اللوغ -----
+    # ----- الطباعة في اللوغ لمراقبة الضغط المؤسساتي -----
     print(f"\n📊 --- تفاصيل الأوردر بوك لعملة {symbol} ---", flush=True)
     for exchange, bids, asks in results:
         total_bids_usd += bids
         total_asks_usd += asks
-        # طباعة المنصات التي تحتوي على بيانات فقط لتجنب الإزعاج
+        # طباعة المنصات التي تحتوي على بيانات فقط
         if bids > 0 or asks > 0:
             print(f"🔹 {exchange.upper():<8}: Bids = ${bids:,.0f} | Asks = ${asks:,.0f}", flush=True)
             
-    print(f"🌍 الإجمالي: Bids = ${total_bids_usd:,.0f} | Asks = ${total_asks_usd:,.0f}", flush=True)
+    print(f"🌍 الإجمالي اللحظي (8 منصات): Bids = ${total_bids_usd:,.0f} | Asks = ${total_asks_usd:,.0f}", flush=True)
     print("------------------------------------------\n", flush=True)
 
+    # حساب نسبة الخلل (Imbalance)
     if total_asks_usd == 0:
         return 999.0 if total_bids_usd > 0 else 1.0 
     
     return total_bids_usd / total_asks_usd
-
 
 async def update_market_memory_loop(pool):
     """مهمة خلفية لتحديث ذاكرة السوق لكل العملات بشكل دوري"""
