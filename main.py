@@ -221,7 +221,7 @@ async def smart_radar_watchdog(pool):
                                 MAX_PRICE_SPIKE = 0.005 
                             
                                 if current_vol >= MIN_VOLUME_USD and vol_change >= VOLUME_SPIKE_THRESHOLD and abs(price_change) <= MAX_PRICE_SPIKE:
-                                    print(f"👀 WebSocket is watching {symbol} | Vol: {current_vol}") 
+                                    
                                     # إرسال العملة إلى الطابور فوراً للتحليل العميق
                                     coin_mock_data = {
                                         "symbol": symbol.replace("USDT", ""),
@@ -304,80 +304,6 @@ async def get_btc_trend(client):
     except:
         pass
     return True # افتراضي في حال فشل الـ API
-async def get_micro_cvd_absorption(symbol, client):
-    """
-    يكتشف التجميع الصامت قبل الانفجار بجلب فريم الدقيقة لآخر 120 دقيقة.
-    """
-    try:
-        # جلب بيانات دقيقة جداً لآخر ساعتين
-        res = await client.get(f"https://api.binance.com/api/v3/klines", params={
-            "symbol": symbol, "interval": "1m", "limit": 120
-        }, timeout=5.0)
-        
-        if res.status_code == 200:
-            data = res.json()
-            df = pd.DataFrame(data, columns=["t", "o", "h", "l", "c", "v", "ct", "qv", "trades", "tbv", "tqav", "ignore"])
-            
-            # تحويل البيانات إلى أرقام
-            df["v"] = pd.to_numeric(df["v"])
-            df["tbv"] = pd.to_numeric(df["tbv"]) # Taker Buy Volume
-            df["c"] = pd.to_numeric(df["c"])
-            
-            # حساب الدلتا اللحظية لكل دقيقة
-            df["sell_vol"] = df["v"] - df["tbv"]
-            df["delta"] = df["tbv"] - df["sell_vol"]
-            df["cvd"] = df["delta"].cumsum()
-            
-            # قياس الشذوذ بين السعر والسيولة
-            price_change = (df["c"].iloc[-1] - df["c"].iloc[0]) / df["c"].iloc[0]
-            cvd_trend = df["cvd"].iloc[-1] - df["cvd"].iloc[0]
-            total_vol = df["v"].sum()
-            
-            # 🎯 معادلة القناص: السعر شبه ثابت (أقل من 1.5% حركة)، لكن الـ CVD يرتفع بانفجار (الحوت يمتص العروض)
-            if abs(price_change) < 0.015 and cvd_trend > (total_vol * 0.35):
-                return 30.0, "Micro_Silent_Accumulation" 
-            
-            # كشف التصريف المخفي: السعر يرتفع لكن الحوت يبيع
-            elif price_change > 0.02 and cvd_trend < -(total_vol * 0.2):
-                return -25.0, "Hidden_Distribution"
-                
-    except Exception as e:
-        pass
-    return 0.0, None
-async def get_institutional_orderflow(symbol, client, minutes=15):
-    """
-    يسحب الصفقات المجمعة لآخر 15 دقيقة متجاوزاً فخ الصفقات الفردية الوهمية.
-    """
-    import time
-    end_time = int(time.time() * 1000)
-    start_time = end_time - (minutes * 60 * 1000)
-    
-    try:
-        res = await client.get(f"https://api.binance.com/api/v3/aggTrades", params={
-            "symbol": symbol,
-            "startTime": start_time,
-            "endTime": end_time
-        }, timeout=5.0)
-        
-        if res.status_code == 200:
-            trades = res.json()
-            buy_vol = 0.0
-            sell_vol = 0.0
-            
-            for t in trades:
-                amount = float(t['q']) * float(t['p'])
-                # 'm' == True تعني أن البائع هو صانع السوق (شخص ما قام بالبيع كـ Taker)
-                if t['m']: 
-                    sell_vol += amount
-                else: 
-                    buy_vol += amount
-                    
-            delta = buy_vol - sell_vol
-            return delta, buy_vol, sell_vol
-    except Exception:
-        pass
-    return 0.0, 0.0, 0.0
-
 import ta
 import pandas as pd
 
@@ -752,7 +678,6 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             df.columns = ["timestamp", "volume", "close", "high", "low", "open", "taker_buy_vol"]
             for col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce')
 
-            # --- الحسابات الأساسية للمؤشرات (محلية وبدون API إضافي) ---
             delta = df["close"].diff()
             gain = delta.clip(lower=0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
             loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
@@ -762,9 +687,12 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             try: current_adx = float(ta.trend.ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14, fillna=True).adx().iloc[-1])
             except: current_adx = 0.0
 
+            # 🟢 البداية من سكور 20 لتوزيع النسب باحترافية
+            score = 20.0
+            tags = [] # قائمة لتجميع نوع الحركات
+
             current_z, vol_mean, vol_std = calculate_volume_zscore(df, window=720)
             
-            # تحديث الذاكرة
             pool = dp['db_pool']
             async with pool.acquire() as conn:
                 await conn.execute("""
@@ -774,161 +702,137 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     SET vol_mean = EXCLUDED.vol_mean, vol_stddev = EXCLUDED.vol_stddev, z_score = EXCLUDED.z_score, last_updated = CURRENT_TIMESTAMP
                 """, symbol, vol_mean, vol_std, current_z)
 
-            # ==========================================
-            # 🟢 نظام توزيع النقاط (Scoring System)
-            # ==========================================
-            score = 0.0
-            tags = []
-            signal_reasons = [] # لجمع أسماء أقوى الإشارات التي توفرت
-            
-            # 1. فلتر الفوليوم (Z-Score) [مؤشر محلي]
+            # 1. فلتر الفوليوم
+            # 1. فلتر الفوليوم (بمنطق تجنب الـ FOMO)
+# نحسب حركة السعر في آخر 10 شموع لنتأكد أننا لا نشتري قمة
             recent_pump = (df["close"].iloc[-1] - df["close"].iloc[-10]) / df["close"].iloc[-10]
-            if current_z >= 3.0 and recent_pump <= 0.05:
-                score += 15.0 
-                tags.append("Z_Anom_Silent")
-                signal_reasons.append("سيولة مخفية")
-            elif 1.5 <= current_z < 3.0:
-                score += 8.0
+            
+            if current_z >= 4.0:
+                if recent_pump > 0.05: # إذا طارت أكثر من 5% والسيولة مجنونة = القطار فات
+                    score -= 15.0 
+                    tags.append("Late_FOMO")
+                else: # سيولة انفجارية والسعر لم يتحرك بعد = قنبلة موقوتة
+                    score += 25.0 
+                    tags.append("Z_Anom_Silent")
+            
+            elif 1.5 <= current_z <= 3.5:
+                # هذا هو النطاق الذهبي للتجميع، سيولة تدخل بدون إحداث فوضى بالشارت
+                score += 20.0
                 tags.append("Smart_Accumulation")
-            elif current_z >= 4.0 and recent_pump > 0.05:
-                score -= 10.0 # صعود سابق لأوانه (تجنب القمم)
+            
+            elif current_z < 0: 
+                return None
 
-            # 2. فلتر CVD (امتصاص الحيتان) [استهلاك خفيف]
-            micro_cvd_boost, micro_cvd_signal = await get_micro_cvd_absorption(symbol, client)
-            if micro_cvd_signal == "Micro_Silent_Accumulation":
-                score += 15.0
-                tags.append(micro_cvd_signal)
-                signal_reasons.append("امتصاص حيتان")
-            elif micro_cvd_signal == "Limit_Absorption":
-                score += 10.0
-                tags.append(micro_cvd_signal)
-            elif micro_cvd_signal == "Hidden_Distribution":
-                score -= 15.0 # تصريف
+            # 2. فلتر CVD
+            cvd_boost, cvd_signal = detect_smart_money_absorption(df)
+            score += cvd_boost
+            if cvd_signal: tags.append(cvd_signal)
 
-            # 3. البولينجر (انضغاط السعر Squeeze) [مؤشر محلي]
+            # 3. فلتر المشتقات
+            old_price_val = df["close"].iloc[-3] if len(df) > 3 else df["open"].iloc[0]
+            futures_boost, futures_signal = await get_futures_liquidity(symbol, client, price, old_price_val)
+            score += futures_boost
+            if futures_signal: tags.append(futures_signal)
+
+            # 4. المؤشرات الكلاسيكية
             sma20 = df["close"].rolling(20).mean()
             std20 = df["close"].rolling(20).std(ddof=0)
             df["upper_band"] = sma20 + 2*std20
             df["lower_band"] = sma20 - 2*std20
             squeeze_pct = (df["upper_band"].iloc[-1] - df["lower_band"].iloc[-1]) / sma20.iloc[-1]
+            
             if squeeze_pct < 0.05: 
                 score += 10.0
                 tags.append("Squeeze")
-                signal_reasons.append("انضغاط سعري")
-
-            # 4. فلتر المشتقات (Futures OI) [استهلاك خفيف]
-            old_price_val = df["close"].iloc[-3] if len(df) > 3 else df["open"].iloc[0]
-            futures_boost, futures_signal = await get_futures_liquidity(symbol, client, price, old_price_val)
-            if futures_signal == "OI_Rising":
-                score += 10.0
-                tags.append(futures_signal)
-                signal_reasons.append("عقود مفتوحة متزايدة")
-            elif futures_signal == "Short_Squeeze":
-                score += 8.0
-                tags.append(futures_signal)
-
-            # 8. RSI & Divergence (الانعكاس والتشبع) [مؤشر محلي]
+            
             ema200_val = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else df["close"].ewm(span=50).mean().iloc[-1]
             if price < ema200_val and last_rsi > 30 and df["rsi"].iloc[-10:-1].min() < 30:
                 score += 10.0 
                 tags.append("RSI_Div")
-                signal_reasons.append("انعكاس إيجابي")
-            elif last_rsi < 35:
-                score += 5.0 # Oversold
 
-            # 9. ADX (قوة الترند) [مؤشر محلي]
-            if current_adx > 25:
-                score += 5.0
-
-            # تعريف افتراضي للمتغير حتى لا يحدث خطأ إذا لم يتم الدخول لشرط الأوردر بوك
-            global_ob_pressure = 1.0
-
-            # ==========================================
-            # 🛑 حارس البوابة (Gatekeeper) لحماية الـ API
-            # ==========================================
-            if score >= 20.0:
-                
-                # 5. Orderbook Depth (عمق سجل الأوامر) [استهلاك ثقيل]
+            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)
+            if score >= 50.0: 
                 depth_data = await analyze_orderbook_depth(symbol, client)
                 if depth_data:
                     if depth_data['hidden_wall']:
-                        score += 10.0 
-                        tags.append("Wall_Absorption")
-                        signal_reasons.append("كسر جدار بيعي")
+    # إذا كان هناك حائط بيع، ولكن السيولة إيجابية = الحوت يمتص هذا الحائط لكسره لاحقاً
+                        if current_z >= 1.5 or "Whale_CVD" in tags or "Limit_Absorption" in tags:
+                            score += 20.0 
+                            tags.append("Wall_Absorption")
+                        else:
+                            score -= 10.0 # حائط حقيقي بغرض التصريف
+                    elif depth_data['spoofing_risk']:
+                        score -= 5.0 # عقوبة خفيفة للخدع
+                    
                     elif depth_data['imbalance'] > 0.4:
-                        score += 5.0 
+                        score += 15.0 
                         tags.append("OB_Buy")
 
-                # 6. السيولة اللحظية المؤسساتية (آخر 15 دقيقة) [استهلاك ثقيل]
-                delta_usd, buy_v, sell_v = await get_institutional_orderflow(symbol, client, minutes=15)
-                if buy_v > (sell_v * 1.5) and buy_v > 200_000:
-                    score += 10.0
-                    tags.append("Inst_Buy")
-                    signal_reasons.append("شراء مؤسساتي مكثف")
+                # تعديل: استخدام دالة الـ REST السريعة بدلاً من إيقاف الكود بـ WebSocket
+                delta_usd = await get_recent_orderflow_delta(symbol, client)
+                if delta_usd > (price * 1000): 
+                    score += 15.0
+                    tags.append("Aggressive_Buy")
+                elif delta_usd < -(price * 1000): 
+                    score -= 15.0 # تخفيف العقوبة السلبية هنا أيضاً
 
-                # 7. إجماع المنصات العالمية (Global OB Pressure) [استهلاك ثقيل جداً - 8 منصات]
-                                # 7. إجماع المنصات العالمية (Global OB Pressure) [الحد الأقصى: 20 نقطة]
                 global_ob_pressure = await get_aggregated_orderbook(client, symbol)
-                
-                if global_ob_pressure >= 2.5: 
-                    # شراء كاسح (مثل حالة BARD) - نعطيها دفعة قوية جداً
-                    score += 20.0
-                    tags.append("Global_OB_Massive_Buy")
-                    signal_reasons.append("ضغط شراء مؤسساتي كاسح")
-                elif global_ob_pressure >= 1.2: 
-                    # شراء جيد
-                    score += 10.0
-                    tags.append("Global_OB_Strong")
-                elif global_ob_pressure < 0.8: 
-                    score -= 10.0 # بيع قوي
-
-                # 10. السيولة الخارجية (Alt Volume) [استهلاك ثقيل - 3 منصات]
                 global_alt_volume = await verify_global_liquidity(symbol, client)
-                if global_alt_volume > 100_000: 
-                    score += 3.0
-            
-            # --- الماكرو ---
-            if isinstance(market_regime, dict):
-                if market_regime['trend'] == "Trending_Bull": score += 2.0
-                elif market_regime['trend'] == "Trending_Bear": score -= 5.0
+                if global_ob_pressure >= 1.5: score += 10.0
+                elif global_ob_pressure < 0.8: score -= 15.0
+                if global_alt_volume > 100000: score += 10.0
 
-            # ==========================================
-            # 🟢 تجميع النتيجة النهائية وتجهيز الإشارة
-            # ==========================================
+            # 6. الماكرو
+            if isinstance(market_regime, dict):
+                if market_regime['trend'] == "Trending_Bear" and ("Z_Anom" in tags or "OI_Rising" in tags):
+                    score -= 15.0
+                elif market_regime['trend'] == "Trending_Bull":
+                    score += 5.0
+
+            # 🟢 ضبط السكور ليكون مستحيلاً وصوله 100 (أقصى شيء بالواقع 95-97)
             score = round(max(0.0, min(score, 98.5)), 1)
             
-            required_score = 65.0 if market_regime.get('trend') == "Trending_Bear" else 55.0
+            # 🟢 محرك تسمية الإشارة الذكي (Short & Punchy Signal Names)
+            final_signal = "High Probability Setup 🎯"
+            if "Fake_Pump" in tags or "Spoofing_or_Wall" in tags or "Short_Covering" in tags:
+                return None 
+            elif "Whale_CVD" in tags and "Aggressive_Buy" in tags: final_signal = "Aggressive Whale Accumulation 🐋"
+            elif "Short_Squeeze" in tags: final_signal = "(Short Squeeze) 🔥"
+            elif "Z_Anom" in tags and "OI_Rising" in tags: final_signal = "(Derivatives Pump) 🚀"
+            elif "Squeeze" in tags and "OB_Buy" in tags: final_signal = "(Liquidity Breakout) ⚡"
+            elif "Whale_CVD" in tags: final_signal = "Silent Institutional Accumulation 🧲"
+            elif "Z_Anom" in tags or "Z_High" in tags: final_signal = "Smart Money Inflow 💸"
 
-            # التأكد من عدم وجود إشارة تصريف خفية التقطها الـ CVD
-            if score >= required_score and "Hidden_Distribution" not in tags:
-                
-                # صياغة اسم الإشارة
-                if len(signal_reasons) >= 2:
-                    final_signal = f"🔥 {signal_reasons[0]} + {signal_reasons[1]}"
-                elif len(signal_reasons) == 1:
-                    final_signal = f"🚀 {signal_reasons[0]} مدعوم بالسيولة"
-                else:
-                    final_signal = "🎯 High Probability Setup"
+            avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
+            avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
+            current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
 
-                avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
-                avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
-                current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
+            # 🟢 1. تحديد الإشارات الحيوية (المفاتيح الذهبية)
+            golden_tags = {"Z_Anom", "Z_High", "Whale_CVD", "Aggressive_Buy", "OB_Buy", "Squeeze"}
+            # كم إشارة ذهبية اجتمعت في هذه العملة؟
+            confluence_count = sum(1 for tag in tags if tag in golden_tags)
 
+            # 🟢 2. فلتر الاتجاه المعاكس (لا تشتري سكين تسقط)
+            is_macro_downtrend = price < ema200_val
+
+            # 🟢 3. شروط القناص النهائي:
+            required_score = 85.0 if (market_regime['trend'] == "Trending_Bear" or is_macro_downtrend) else 75.0
+            required_confluence = 3 if (market_regime['trend'] == "Trending_Bear" or is_macro_downtrend) else 2
+
+            # إرجاع النتيجة فقط إذا تحقق السكور + الإجماع الفني
+            if score >= required_score and confluence_count >= required_confluence:  
                 return {
                     "symbol": symbol, "price": price, "score": score,
                     "rsi": round(last_rsi, 2), "adx": round(current_adx, 2),
                     "macd": current_z, 
                     "vol_ratio": round(current_vol_ratio, 2),
-                    "ob_pressure": round(global_ob_pressure, 2),
+                    "ob_pressure": round(locals().get('global_ob_pressure', 1.0), 2),
                     "signal_type": final_signal,
-                    "confluence": len(tags)
+                    "confluence": confluence_count
                 }
             return None  
-        except Exception as e:
-            print(f"Error in analyze_radar_coin for {c.get('symbol', 'Unknown')}: {e}")
+        except Exception:
             return None
-
-
 
 
 async def ai_opportunity_radar(pool):
@@ -1011,43 +915,16 @@ async def ai_opportunity_radar(pool):
                     """, symbol)
 
                 prompt_ar = f"""
-أنت محلل بيانات مالية (Quant Analyst) في مؤسسة "NaiF CHarT Intelligence Lab".
-مهمتك صياغة "التقرير المالي اللحظي" لعملة {symbol} بناءً على بيانات الرادار الخوارزمي.
-
-البيانات المحسوبة آلياً:
-- الشذوذ الإحصائي للسيولة (Z-Score): {best_meta['macd']} (مؤشر التجميع الصامت)
-- تدفق الأموال الذكية (Volume Ratio): أعلى بـ {best_meta['vol_ratio']} ضعف من المتوسط.
-- ضغط الأوردر بوك اللحظي (Global OB): المشترون يتفوقون بـ {best_meta.get('ob_pressure', 1.0)}x.
-- الإجماع التقني (Confluence): {best_meta.get('confluence', 0)} إشارات مؤسساتية متطابقة.
-- المؤشرات الكلاسيكية: ADX: {best_meta['adx']} | RSI: {best_meta['rsi']}
-
-التعليمات الصارمة:
-1. اكتب التحليل في 3 نقاط (Bullet points) باستخدام HTML (•).
-2. استخدم أسلوباً مؤسساتياً جافاً ومباشراً يعتمد على الأرقام أعلاه فقط.
-3. يمنع منعاً باتاً استخدام الكلمات العاطفية أو التسويقية (مثل: قوي جداً، انفجار، صاروخ، فرصة ذهبية، هائل).
-4. فسر الأرقام باحترافية: مثلاً (تزايد السيولة بـ x ضعف يعكس امتصاصاً لعروض البيع...).
-
-الناتج المطلوب (باللغة العربية فقط):
+أنت كبير المحللين الفنيين. رادار السوق الذكي التقط فرصة لعملة {symbol} بسكور {best_score}/100.
+الإشارة: {signal} | ADX: {best_meta['adx']} | RSI: {best_meta['rsi']} | سيولة أعلى بـ {best_meta['vol_ratio']} ضعف.
+ضغط الشراء (Orderbook): طلبات الشراء تتفوق بـ {best_meta.get('ob_pressure', 1.0)} ضعف.
+اكتب تحليلاً احترافياً (3 أسطر قصار) يدمج هذه الأرقام مباشرة ويوضح سبب احتمال الصعود بدون ذكر قوي وقوة وتهويل.
 """
-
                 prompt_en = f"""
-You are a Quant Analyst at "NaiF CHarT Intelligence Lab".
-Your task is to draft the "Real-time Financial Report" for {symbol} based on algorithmic radar data.
-
-Calculated Metrics:
-- Liquidity Statistical Anomaly (Z-Score): {best_meta['macd']} (Silent accumulation indicator)
-- Smart Money Inflow (Volume Ratio): {best_meta['vol_ratio']}x higher than average.
-- Global Orderbook Pressure: Buyers dominate by {best_meta.get('ob_pressure', 1.0)}x.
-- Technical Confluence: {best_meta.get('confluence', 0)} matching institutional signals.
-- Classic Indicators: ADX: {best_meta['adx']} | RSI: {best_meta['rsi']}
-
-Strict Instructions:
-1. Write the analysis in exactly 3 bullet points using HTML (•).
-2. Use a dry, direct, institutional tone based strictly on the provided numbers.
-3. ABSOLUTELY NO emotional or marketing words (e.g., massive, explosion, to the moon, huge).
-4. Interpret the numbers professionally: e.g. (A liquidity increase of x times indicates absorption of sell pressure).
-
-Required Output (In English only):
+You are Lead Technical Analyst. Smart market caught a bottom opportunity for {symbol} with score {best_score}/100.
+Signal: {signal} | ADX: {best_meta['adx']} | RSI: {best_meta['rsi']} | Liquidity {best_meta['vol_ratio']}x higher.
+Buy Pressure (Orderbook): Buy bids are {best_meta.get('ob_pressure', 1.0)}x stronger.
+Write a 3-short line professional analysis integrating these metrics and explaining the current accumulation Without mentioning strength, power, or exaggeration.
 """
 
                 insight_ar = await ask_groq(prompt_ar, lang="ar")
