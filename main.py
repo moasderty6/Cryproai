@@ -221,7 +221,7 @@ async def smart_radar_watchdog(pool):
                                 MAX_PRICE_SPIKE = 0.01 
                             
                                 if current_vol >= MIN_VOLUME_USD and vol_change >= VOLUME_SPIKE_THRESHOLD and abs(price_change) <= MAX_PRICE_SPIKE:
-                                    
+                                    print(f"👀 WebSocket is watching {symbol} | Vol: {current_vol}") 
                                     # إرسال العملة إلى الطابور فوراً للتحليل العميق
                                     coin_mock_data = {
                                         "symbol": symbol.replace("USDT", ""),
