@@ -1002,7 +1002,7 @@ async def ai_opportunity_radar(pool):
 - المؤشرات الكلاسيكية: ADX: {best_meta['adx']} | RSI: {best_meta['rsi']}
 
 التعليمات الصارمة:
-1. اكتب التحليل في 3 نقاط (Bullet points) باستخدام HTML (•).
+1. اكتب التحليل في 3 نقاط قصيرة بحيث لا يتجاوز ثلاث اسطر (Bullet points) باستخدام HTML (•).
 2. استخدم أسلوباً مؤسساتياً جافاً ومباشراً يعتمد على الأرقام أعلاه فقط.
 3. يمنع منعاً باتاً استخدام الكلمات العاطفية أو التسويقية (مثل: قوي جداً، انفجار، صاروخ، فرصة ذهبية، هائل).
 4. فسر الأرقام باحترافية: مثلاً (تزايد السيولة بـ x ضعف يعكس امتصاصاً لعروض البيع...).
@@ -1022,7 +1022,7 @@ Calculated Metrics:
 - Classic Indicators: ADX: {best_meta['adx']} | RSI: {best_meta['rsi']}
 
 Strict Instructions:
-1. Write the analysis in exactly 3 bullet points using HTML (•).
+1. Write the analysis in exactly 3 short bullet points So that it does not exceed three lines using HTML (•).
 2. Use a dry, direct, institutional tone based strictly on the provided numbers.
 3. ABSOLUTELY NO emotional or marketing words (e.g., massive, explosion, to the moon, huge).
 4. Interpret the numbers professionally: e.g. (A liquidity increase of x times indicates absorption of sell pressure).
