@@ -304,6 +304,80 @@ async def get_btc_trend(client):
     except:
         pass
     return True # افتراضي في حال فشل الـ API
+async def get_micro_cvd_absorption(symbol, client):
+    """
+    يكتشف التجميع الصامت قبل الانفجار بجلب فريم الدقيقة لآخر 120 دقيقة.
+    """
+    try:
+        # جلب بيانات دقيقة جداً لآخر ساعتين
+        res = await client.get(f"https://api.binance.com/api/v3/klines", params={
+            "symbol": symbol, "interval": "1m", "limit": 120
+        }, timeout=5.0)
+        
+        if res.status_code == 200:
+            data = res.json()
+            df = pd.DataFrame(data, columns=["t", "o", "h", "l", "c", "v", "ct", "qv", "trades", "tbv", "tqav", "ignore"])
+            
+            # تحويل البيانات إلى أرقام
+            df["v"] = pd.to_numeric(df["v"])
+            df["tbv"] = pd.to_numeric(df["tbv"]) # Taker Buy Volume
+            df["c"] = pd.to_numeric(df["c"])
+            
+            # حساب الدلتا اللحظية لكل دقيقة
+            df["sell_vol"] = df["v"] - df["tbv"]
+            df["delta"] = df["tbv"] - df["sell_vol"]
+            df["cvd"] = df["delta"].cumsum()
+            
+            # قياس الشذوذ بين السعر والسيولة
+            price_change = (df["c"].iloc[-1] - df["c"].iloc[0]) / df["c"].iloc[0]
+            cvd_trend = df["cvd"].iloc[-1] - df["cvd"].iloc[0]
+            total_vol = df["v"].sum()
+            
+            # 🎯 معادلة القناص: السعر شبه ثابت (أقل من 1.5% حركة)، لكن الـ CVD يرتفع بانفجار (الحوت يمتص العروض)
+            if abs(price_change) < 0.015 and cvd_trend > (total_vol * 0.35):
+                return 30.0, "Micro_Silent_Accumulation" 
+            
+            # كشف التصريف المخفي: السعر يرتفع لكن الحوت يبيع
+            elif price_change > 0.02 and cvd_trend < -(total_vol * 0.2):
+                return -25.0, "Hidden_Distribution"
+                
+    except Exception as e:
+        pass
+    return 0.0, None
+async def get_institutional_orderflow(symbol, client, minutes=15):
+    """
+    يسحب الصفقات المجمعة لآخر 15 دقيقة متجاوزاً فخ الصفقات الفردية الوهمية.
+    """
+    import time
+    end_time = int(time.time() * 1000)
+    start_time = end_time - (minutes * 60 * 1000)
+    
+    try:
+        res = await client.get(f"https://api.binance.com/api/v3/aggTrades", params={
+            "symbol": symbol,
+            "startTime": start_time,
+            "endTime": end_time
+        }, timeout=5.0)
+        
+        if res.status_code == 200:
+            trades = res.json()
+            buy_vol = 0.0
+            sell_vol = 0.0
+            
+            for t in trades:
+                amount = float(t['q']) * float(t['p'])
+                # 'm' == True تعني أن البائع هو صانع السوق (شخص ما قام بالبيع كـ Taker)
+                if t['m']: 
+                    sell_vol += amount
+                else: 
+                    buy_vol += amount
+                    
+            delta = buy_vol - sell_vol
+            return delta, buy_vol, sell_vol
+    except Exception:
+        pass
+    return 0.0, 0.0, 0.0
+
 import ta
 import pandas as pd
 
@@ -724,10 +798,10 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 return None
 
             # 2. فلتر CVD
-            cvd_boost, cvd_signal = detect_smart_money_absorption(df)
-            score += cvd_boost
-            if cvd_signal: tags.append(cvd_signal)
-
+            micro_cvd_boost, micro_cvd_signal = await get_micro_cvd_absorption(symbol, client)
+            score += micro_cvd_boost
+            if micro_cvd_signal: 
+                tags.append(micro_cvd_signal)
             # 3. فلتر المشتقات
             old_price_val = df["close"].iloc[-3] if len(df) > 3 else df["open"].iloc[0]
             futures_boost, futures_signal = await get_futures_liquidity(symbol, client, price, old_price_val)
@@ -750,36 +824,34 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 score += 10.0 
                 tags.append("RSI_Div")
 
-            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)
-            if score >= 50.0: 
+            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)# --- استبدال الفحص العميق رقم 5 بالتالي ---
+            if score >= 45.0: # خفضنا العتبة قليلاً ليتمكن من التقاط العملات في بدايتها
                 depth_data = await analyze_orderbook_depth(symbol, client)
                 if depth_data:
-                    if depth_data['hidden_wall']:
-    # إذا كان هناك حائط بيع، ولكن السيولة إيجابية = الحوت يمتص هذا الحائط لكسره لاحقاً
-                        if current_z >= 1.5 or "Whale_CVD" in tags or "Limit_Absorption" in tags:
-                            score += 20.0 
-                            tags.append("Wall_Absorption")
-                        else:
-                            score -= 10.0 # حائط حقيقي بغرض التصريف
-                    elif depth_data['spoofing_risk']:
-                        score -= 5.0 # عقوبة خفيفة للخدع
-                    
+                    if depth_data['hidden_wall'] and micro_cvd_boost > 0:
+                        # أقوى مؤشر على الإطلاق: جدار بيع ضخم + الحيتان تشتري = كسر قادم
+                        score += 25.0 
+                        tags.append("Wall_Absorption_Pre_Breakout")
                     elif depth_data['imbalance'] > 0.4:
                         score += 15.0 
                         tags.append("OB_Buy")
-
-                # تعديل: استخدام دالة الـ REST السريعة بدلاً من إيقاف الكود بـ WebSocket
-                delta_usd = await get_recent_orderflow_delta(symbol, client)
-                if delta_usd > (price * 1000): 
-                    score += 15.0
-                    tags.append("Aggressive_Buy")
-                elif delta_usd < -(price * 1000): 
-                    score -= 15.0 # تخفيف العقوبة السلبية هنا أيضاً
-
+            
+                # فحص السيولة المؤسساتية لآخر 15 دقيقة
+                delta_usd, buy_v, sell_v = await get_institutional_orderflow(symbol, client, minutes=15)
+                
+                # إذا كان حجم الشراء ضعف حجم البيع، والسيولة ضخمة (أكثر من نصف مليون دولار في 15 دقيقة)
+                if buy_v > (sell_v * 2.0) and buy_v > 500_000:
+                    score += 25.0
+                    tags.append("Institutional_Buy_Spike")
+                elif sell_v > (buy_v * 1.5):
+                    score -= 20.0 # هروب مبكر
+            
+                # فحص السيولة العالمية
                 global_ob_pressure = await get_aggregated_orderbook(client, symbol)
                 global_alt_volume = await verify_global_liquidity(symbol, client)
                 if global_ob_pressure >= 1.5: score += 10.0
                 elif global_ob_pressure < 0.8: score -= 15.0
+
                 if global_alt_volume > 100000: score += 10.0
 
             # 6. الماكرو
