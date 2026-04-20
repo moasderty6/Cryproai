@@ -867,12 +867,20 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     signal_reasons.append("شراء مؤسساتي مكثف")
 
                 # 7. إجماع المنصات العالمية (Global OB Pressure) [استهلاك ثقيل جداً - 8 منصات]
+                                # 7. إجماع المنصات العالمية (Global OB Pressure) [الحد الأقصى: 20 نقطة]
                 global_ob_pressure = await get_aggregated_orderbook(client, symbol)
-                if global_ob_pressure >= 1.2: 
+                
+                if global_ob_pressure >= 2.5: 
+                    # شراء كاسح (مثل حالة BARD) - نعطيها دفعة قوية جداً
+                    score += 20.0
+                    tags.append("Global_OB_Massive_Buy")
+                    signal_reasons.append("ضغط شراء مؤسساتي كاسح")
+                elif global_ob_pressure >= 1.2: 
+                    # شراء جيد
                     score += 10.0
                     tags.append("Global_OB_Strong")
                 elif global_ob_pressure < 0.8: 
-                    score -= 10.0
+                    score -= 10.0 # بيع قوي
 
                 # 10. السيولة الخارجية (Alt Volume) [استهلاك ثقيل - 3 منصات]
                 global_alt_volume = await verify_global_liquidity(symbol, client)
