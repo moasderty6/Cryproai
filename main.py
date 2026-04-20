@@ -218,7 +218,7 @@ async def smart_radar_watchdog(pool):
                                 price_change = (current_price - old_price) / old_price
                             
                                 # التعديل الجذري: السعر يجب أن يكون ثابتاً تقريباً (أقل من 0.5% حركة) مع دخول فوليوم ضخم = تجميع صامت
-                                MAX_PRICE_SPIKE = 0.005 
+                                MAX_PRICE_SPIKE = 0.01 
                             
                                 if current_vol >= MIN_VOLUME_USD and vol_change >= VOLUME_SPIKE_THRESHOLD and abs(price_change) <= MAX_PRICE_SPIKE:
                                     
@@ -888,7 +888,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             is_macro_downtrend = price < ema200_val
 
             # 🟢 3. شروط القناص النهائي:
-            required_score = 85.0 if (market_regime['trend'] == "Trending_Bear" or is_macro_downtrend) else 75.0
+            required_score = 80.0 if (market_regime['trend'] == "Trending_Bear" or is_macro_downtrend) else 70.0
             required_confluence = 3 if (market_regime['trend'] == "Trending_Bear" or is_macro_downtrend) else 2
 
             # إرجاع النتيجة فقط إذا تحقق السكور + الإجماع الفني
