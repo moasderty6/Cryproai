@@ -513,7 +513,7 @@ async def update_market_memory_loop(pool):
             print(f"Market Memory Loop Error: {e}")
         
         # ينام ويحدث البيانات كل 4 ساعات (14400 ثانية)
-        await asyncio.sleep(900)
+        await asyncio.sleep(200)
 
 
 async def verify_global_liquidity(symbol: str, client: httpx.AsyncClient):
