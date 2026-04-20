@@ -863,18 +863,16 @@ async def ai_opportunity_radar(pool):
                     price_change = float(t["priceChangePercent"])
                     
                     # 🟢 الفلترة السحرية: 
-                    # سيولة قوية + العملة لم تطر بعد (بين -10% و +5%)، لو صاعدة 20% ما بتلزمنا!
                     if vol_usd >= 1_000_000 and -10.0 <= price_change <= 5.0:
                         # تغليف البيانات لتطابق هيكلة كودك القديمة تماماً عشان ما ينكسر دالة التحليل
                         coins.append({
                             "symbol": clean_sym,
-                            "quote": {"USD": {"price": float(t["lastPrice"])}}
+                            "quote": {"USD": {"price": float(t["lastPrice"])}},
+                            "volume": vol_usd # 👈 أضفنا الفوليوم هنا للترتيب
                         })
                 
-                # نحدد عدد العملات التي سيتم تحليلها لتخفيف الضغط (أفضل 300 عملة من حيث الفوليوم)
-                coins = sorted(coins, key=lambda x: float(t["quoteVolume"]), reverse=True)[:300]
-
-
+                # 👈 التعديل هنا: نرتب باستخدام x["volume"] 
+                coins = sorted(coins, key=lambda x: x["volume"], reverse=True)[:300]
                 tasks = [analyze_radar_coin(c, client, market_regime, sem) for c in coins]
                 results = await asyncio.gather(*tasks)
                 
