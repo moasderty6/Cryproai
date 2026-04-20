@@ -846,7 +846,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             # ==========================================
             # 🛑 حارس البوابة (Gatekeeper) لحماية الـ API
             # ==========================================
-            if score >= 25.0:
+            if score >= 20.0:
                 
                 # 5. Orderbook Depth (عمق سجل الأوامر) [استهلاك ثقيل]
                 depth_data = await analyze_orderbook_depth(symbol, client)
