@@ -752,7 +752,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             df.columns = ["timestamp", "volume", "close", "high", "low", "open", "taker_buy_vol"]
             for col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce')
 
-            # --- الحسابات الأساسية للمؤشرات ---
+            # --- الحسابات الأساسية للمؤشرات (محلية وبدون API إضافي) ---
             delta = df["close"].diff()
             gain = delta.clip(lower=0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
             loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
@@ -775,13 +775,13 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 """, symbol, vol_mean, vol_std, current_z)
 
             # ==========================================
-            # 🟢 نظام توزيع النقاط (Scoring System) 10 مؤشرات
+            # 🟢 نظام توزيع النقاط (Scoring System)
             # ==========================================
             score = 0.0
             tags = []
             signal_reasons = [] # لجمع أسماء أقوى الإشارات التي توفرت
             
-            # 1. فلتر الفوليوم (Z-Score) [الحد الأقصى: 15 نقطة]
+            # 1. فلتر الفوليوم (Z-Score) [مؤشر محلي]
             recent_pump = (df["close"].iloc[-1] - df["close"].iloc[-10]) / df["close"].iloc[-10]
             if current_z >= 3.0 and recent_pump <= 0.05:
                 score += 15.0 
@@ -793,7 +793,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             elif current_z >= 4.0 and recent_pump > 0.05:
                 score -= 10.0 # صعود سابق لأوانه (تجنب القمم)
 
-            # 2. فلتر CVD (امتصاص الحيتان) [الحد الأقصى: 15 نقطة]
+            # 2. فلتر CVD (امتصاص الحيتان) [استهلاك خفيف]
             micro_cvd_boost, micro_cvd_signal = await get_micro_cvd_absorption(symbol, client)
             if micro_cvd_signal == "Micro_Silent_Accumulation":
                 score += 15.0
@@ -805,7 +805,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             elif micro_cvd_signal == "Hidden_Distribution":
                 score -= 15.0 # تصريف
 
-            # 3. البولينجر (انضغاط السعر Squeeze) [الحد الأقصى: 10 نقاط]
+            # 3. البولينجر (انضغاط السعر Squeeze) [مؤشر محلي]
             sma20 = df["close"].rolling(20).mean()
             std20 = df["close"].rolling(20).std(ddof=0)
             df["upper_band"] = sma20 + 2*std20
@@ -816,7 +816,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 tags.append("Squeeze")
                 signal_reasons.append("انضغاط سعري")
 
-            # 4. فلتر المشتقات (Futures OI) [الحد الأقصى: 10 نقاط]
+            # 4. فلتر المشتقات (Futures OI) [استهلاك خفيف]
             old_price_val = df["close"].iloc[-3] if len(df) > 3 else df["open"].iloc[0]
             futures_boost, futures_signal = await get_futures_liquidity(symbol, client, price, old_price_val)
             if futures_signal == "OI_Rising":
@@ -827,33 +827,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 score += 8.0
                 tags.append(futures_signal)
 
-            # 5. Orderbook Depth (عمق سجل الأوامر) [الحد الأقصى: 10 نقاط]
-            depth_data = await analyze_orderbook_depth(symbol, client)
-            if depth_data:
-                if depth_data['hidden_wall']:
-                    score += 10.0 
-                    tags.append("Wall_Absorption")
-                    signal_reasons.append("كسر جدار بيعي")
-                elif depth_data['imbalance'] > 0.4:
-                    score += 5.0 
-                    tags.append("OB_Buy")
-
-            # 6. السيولة اللحظية المؤسساتية (آخر 15 دقيقة) [الحد الأقصى: 10 نقاط]
-            delta_usd, buy_v, sell_v = await get_institutional_orderflow(symbol, client, minutes=15)
-            if buy_v > (sell_v * 1.5) and buy_v > 200_000:
-                score += 10.0
-                tags.append("Inst_Buy")
-                signal_reasons.append("شراء مؤسساتي مكثف")
-
-            # 7. إجماع المنصات العالمية (Global OB Pressure) [الحد الأقصى: 10 نقاط]
-            global_ob_pressure = await get_aggregated_orderbook(client, symbol)
-            if global_ob_pressure >= 1.2: 
-                score += 10.0
-                tags.append("Global_OB_Strong")
-            elif global_ob_pressure < 0.8: 
-                score -= 10.0
-
-            # 8. RSI & Divergence (الانعكاس والتشبع) [الحد الأقصى: 10 نقاط]
+            # 8. RSI & Divergence (الانعكاس والتشبع) [مؤشر محلي]
             ema200_val = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else df["close"].ewm(span=50).mean().iloc[-1]
             if price < ema200_val and last_rsi > 30 and df["rsi"].iloc[-10:-1].min() < 30:
                 score += 10.0 
@@ -862,15 +836,50 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             elif last_rsi < 35:
                 score += 5.0 # Oversold
 
-            # 9. ADX (قوة الترند) [الحد الأقصى: 5 نقاط]
+            # 9. ADX (قوة الترند) [مؤشر محلي]
             if current_adx > 25:
                 score += 5.0
 
-            # 10. السيولة الخارجية (Alt Volume & Macro) [الحد الأقصى: 5 نقاط]
-            global_alt_volume = await verify_global_liquidity(symbol, client)
-            if global_alt_volume > 100_000: 
-                score += 3.0
+            # تعريف افتراضي للمتغير حتى لا يحدث خطأ إذا لم يتم الدخول لشرط الأوردر بوك
+            global_ob_pressure = 1.0
+
+            # ==========================================
+            # 🛑 حارس البوابة (Gatekeeper) لحماية الـ API
+            # ==========================================
+            if score >= 25.0:
+                
+                # 5. Orderbook Depth (عمق سجل الأوامر) [استهلاك ثقيل]
+                depth_data = await analyze_orderbook_depth(symbol, client)
+                if depth_data:
+                    if depth_data['hidden_wall']:
+                        score += 10.0 
+                        tags.append("Wall_Absorption")
+                        signal_reasons.append("كسر جدار بيعي")
+                    elif depth_data['imbalance'] > 0.4:
+                        score += 5.0 
+                        tags.append("OB_Buy")
+
+                # 6. السيولة اللحظية المؤسساتية (آخر 15 دقيقة) [استهلاك ثقيل]
+                delta_usd, buy_v, sell_v = await get_institutional_orderflow(symbol, client, minutes=15)
+                if buy_v > (sell_v * 1.5) and buy_v > 200_000:
+                    score += 10.0
+                    tags.append("Inst_Buy")
+                    signal_reasons.append("شراء مؤسساتي مكثف")
+
+                # 7. إجماع المنصات العالمية (Global OB Pressure) [استهلاك ثقيل جداً - 8 منصات]
+                global_ob_pressure = await get_aggregated_orderbook(client, symbol)
+                if global_ob_pressure >= 1.2: 
+                    score += 10.0
+                    tags.append("Global_OB_Strong")
+                elif global_ob_pressure < 0.8: 
+                    score -= 10.0
+
+                # 10. السيولة الخارجية (Alt Volume) [استهلاك ثقيل - 3 منصات]
+                global_alt_volume = await verify_global_liquidity(symbol, client)
+                if global_alt_volume > 100_000: 
+                    score += 3.0
             
+            # --- الماكرو ---
             if isinstance(market_regime, dict):
                 if market_regime['trend'] == "Trending_Bull": score += 2.0
                 elif market_regime['trend'] == "Trending_Bear": score -= 5.0
@@ -880,12 +889,12 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             # ==========================================
             score = round(max(0.0, min(score, 98.5)), 1)
             
-            # العتبة أصبحت أسهل، بدلاً من 80 المعقدة، 60 نقطة كافية لتأهل العملة للمنافسة
-            required_score = 65.0 if market_regime['trend'] == "Trending_Bear" else 55.0
+            required_score = 65.0 if market_regime.get('trend') == "Trending_Bear" else 55.0
 
-            if score >= required_score and "Fake_Pump" not in tags:
+            # التأكد من عدم وجود إشارة تصريف خفية التقطها الـ CVD
+            if score >= required_score and "Hidden_Distribution" not in tags:
                 
-                # صياغة اسم الإشارة بناءً على أقوى الأسباب التي التقطها الرادار
+                # صياغة اسم الإشارة
                 if len(signal_reasons) >= 2:
                     final_signal = f"🔥 {signal_reasons[0]} + {signal_reasons[1]}"
                 elif len(signal_reasons) == 1:
@@ -904,11 +913,13 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     "vol_ratio": round(current_vol_ratio, 2),
                     "ob_pressure": round(global_ob_pressure, 2),
                     "signal_type": final_signal,
-                    "confluence": len(tags) # عدد الإشارات الإيجابية
+                    "confluence": len(tags)
                 }
             return None  
         except Exception as e:
+            print(f"Error in analyze_radar_coin for {c.get('symbol', 'Unknown')}: {e}")
             return None
+
 
 
 
