@@ -766,17 +766,30 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
             current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
 
-            # إرجاع النتيجة إذا نجحت العملة (سكور 75 يعتبر الآن ممتاز جداً وصعب الوصول له)
-            if score >= 75.0:  
+            # 🟢 1. تحديد الإشارات الحيوية (المفاتيح الذهبية)
+            golden_tags = {"Z_Anom", "Z_High", "Whale_CVD", "Aggressive_Buy", "OB_Buy", "Squeeze"}
+            # كم إشارة ذهبية اجتمعت في هذه العملة؟
+            confluence_count = sum(1 for tag in tags if tag in golden_tags)
+
+            # 🟢 2. فلتر الاتجاه المعاكس (لا تشتري سكين تسقط)
+            is_macro_downtrend = price < ema200_val
+
+            # 🟢 3. شروط القناص النهائي:
+            required_score = 85.0 if (market_regime['trend'] == "Trending_Bear" or is_macro_downtrend) else 75.0
+            required_confluence = 3 if (market_regime['trend'] == "Trending_Bear" or is_macro_downtrend) else 2
+
+            # إرجاع النتيجة فقط إذا تحقق السكور + الإجماع الفني
+            if score >= required_score and confluence_count >= required_confluence:  
                 return {
                     "symbol": symbol, "price": price, "score": score,
                     "rsi": round(last_rsi, 2), "adx": round(current_adx, 2),
                     "macd": current_z, 
                     "vol_ratio": round(current_vol_ratio, 2),
                     "ob_pressure": round(locals().get('global_ob_pressure', 1.0), 2),
-                    "signal_type": final_signal
+                    "signal_type": final_signal,
+                    "confluence": confluence_count
                 }
-            return None 
+            return None  
         except Exception:
             return None
 
