@@ -825,7 +825,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 tags.append("RSI_Div")
 
             # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)# --- استبدال الفحص العميق رقم 5 بالتالي ---
-            if score >= 30.0: # خفضنا العتبة قليلاً ليتمكن من التقاط العملات في بدايتها
+            if score >= 35.0: # خفضنا العتبة قليلاً ليتمكن من التقاط العملات في بدايتها
                 depth_data = await analyze_orderbook_depth(symbol, client)
                 if depth_data:
                     if depth_data['hidden_wall'] and micro_cvd_boost > 0:
