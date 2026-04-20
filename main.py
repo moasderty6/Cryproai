@@ -218,7 +218,7 @@ async def smart_radar_watchdog(pool):
                                 price_change = (current_price - old_price) / old_price
                             
                                 # التعديل الجذري: السعر يجب أن يكون ثابتاً تقريباً (أقل من 0.5% حركة) مع دخول فوليوم ضخم = تجميع صامت
-                                MAX_PRICE_SPIKE = 0.01 
+                                MAX_PRICE_SPIKE = 0.05 
                             
                                 if current_vol >= MIN_VOLUME_USD and vol_change >= VOLUME_SPIKE_THRESHOLD and abs(price_change) <= MAX_PRICE_SPIKE:
                                     print(f"👀 WebSocket is watching {symbol} | Vol: {current_vol}") 
