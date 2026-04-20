@@ -212,20 +212,23 @@ async def smart_radar_watchdog(pool):
                             old_price = old_data['price']
                             time_diff = current_time - old_data['last_update']
 
-                            # فحص الانفجار السعري
+      
                             if time_diff >= 60 and old_vol > 0:
                                 vol_change = (current_vol - old_vol) / old_vol
                                 price_change = (current_price - old_price) / old_price
-
-                                if current_vol >= MIN_VOLUME_USD and vol_change >= VOLUME_SPIKE_THRESHOLD and price_change >= PRICE_SPIKE_THRESHOLD:
+                            
+                                # التعديل الجذري: السعر يجب أن يكون ثابتاً تقريباً (أقل من 0.5% حركة) مع دخول فوليوم ضخم = تجميع صامت
+                                MAX_PRICE_SPIKE = 0.005 
+                            
+                                if current_vol >= MIN_VOLUME_USD and vol_change >= VOLUME_SPIKE_THRESHOLD and abs(price_change) <= MAX_PRICE_SPIKE:
                                     
-                                    # إرسال العملة إلى الطابور فوراً للتحليل العميق (بدون انتظار)
+                                    # إرسال العملة إلى الطابور فوراً للتحليل العميق
                                     coin_mock_data = {
                                         "symbol": symbol.replace("USDT", ""),
                                         "quote": {"USD": {"price": current_price}}
                                     }
-                                    # نضعها في الطابور ليقوم العامل (Worker) بمعالجتها بهدوء
                                     await radar_processing_queue.put(coin_mock_data)
+
                                     
                             live_market_memory[symbol] = {'volume': current_vol, 'price': current_price, 'last_update': current_time}
                         else:
@@ -561,9 +564,15 @@ def detect_smart_money_absorption(df):
 
     # 🟢 تم تخفيض السكور ليكون منطقياً وضبط اسم الإشارة الداخلي
         # تعديل: مقارنة الـ CVD بمتوسط الحجم بنسبة منطقية (0.5 بدلاً من 3 أضعاف المستحيلة)
-    if price_change_pct <= 0.02 and cvd_change > (recent["volume"].mean() * 0.5):
-        score_boost = 15.0 
+    # 1. تجميع شرائي صامت (نطاق ضيق)
+    if abs(price_change_pct) <= 0.015 and cvd_change > (recent["volume"].mean() * 0.3):
+        score_boost = 25.0 
         signal_upgrade = "Whale_CVD"
+    # 2. الامتصاص (Limit Absorption): الناس تبيع (CVD سلبي) والسعر يرفض الهبوط!
+    elif price_change_pct >= -0.01 and cvd_change < -(recent["volume"].mean() * 0.4):
+        score_boost = 20.0
+        signal_upgrade = "Limit_Absorption"
+
     elif price_change_pct > 0.05 and cvd_change < 0:
         score_boost = -20.0
         signal_upgrade = "Fake_Pump"
@@ -679,15 +688,25 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 """, symbol, vol_mean, vol_std, current_z)
 
             # 1. فلتر الفوليوم
+            # 1. فلتر الفوليوم (بمنطق تجنب الـ FOMO)
+# نحسب حركة السعر في آخر 10 شموع لنتأكد أننا لا نشتري قمة
+            recent_pump = (df["close"].iloc[-1] - df["close"].iloc[-10]) / df["close"].iloc[-10]
+            
             if current_z >= 4.0:
+                if recent_pump > 0.05: # إذا طارت أكثر من 5% والسيولة مجنونة = القطار فات
+                    score -= 15.0 
+                    tags.append("Late_FOMO")
+                else: # سيولة انفجارية والسعر لم يتحرك بعد = قنبلة موقوتة
+                    score += 25.0 
+                    tags.append("Z_Anom_Silent")
+            
+            elif 1.5 <= current_z <= 3.5:
+                # هذا هو النطاق الذهبي للتجميع، سيولة تدخل بدون إحداث فوضى بالشارت
                 score += 20.0
-                tags.append("Z_Anom")
-            elif current_z >= 3.0:
-                score += 12.0
-                tags.append("Z_High")
-            elif current_z >= 2.0:
-                score += 5.0
-            elif current_z < 0: return None 
+                tags.append("Smart_Accumulation")
+            
+            elif current_z < 0: 
+                return None
 
             # 2. فلتر CVD
             cvd_boost, cvd_signal = detect_smart_money_absorption(df)
@@ -720,9 +739,16 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             if score >= 50.0: 
                 depth_data = await analyze_orderbook_depth(symbol, client)
                 if depth_data:
-                    if depth_data['spoofing_risk'] or depth_data['hidden_wall']:
-                        score -= 15.0 # تعديل: تخفيف العقوبة لأن الـ Spoofing طبيعي في العملات الصغيرة
-                        tags.append("Spoofing_or_Wall")
+                    if depth_data['hidden_wall']:
+    # إذا كان هناك حائط بيع، ولكن السيولة إيجابية = الحوت يمتص هذا الحائط لكسره لاحقاً
+                        if current_z >= 1.5 or "Whale_CVD" in tags or "Limit_Absorption" in tags:
+                            score += 20.0 
+                            tags.append("Wall_Absorption")
+                        else:
+                            score -= 10.0 # حائط حقيقي بغرض التصريف
+                    elif depth_data['spoofing_risk']:
+                        score -= 5.0 # عقوبة خفيفة للخدع
+                    
                     elif depth_data['imbalance'] > 0.4:
                         score += 15.0 
                         tags.append("OB_Buy")
@@ -815,23 +841,39 @@ async def ai_opportunity_radar(pool):
                 # 🟢 التعديل هنا: جلب بيانات الماكرو الجديدة بدل البوليان القديم
                 market_regime = await detect_market_regime(client)
                 
-                res = await client.get(
-                    "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
-                    headers=headers, params={"limit": "1000"} 
-                )
+                # جلب بيانات بايننس اللحظية (24hr Ticker) بدون أي تأخير
+                res = await client.get("https://api.binance.com/api/v3/ticker/24hr", timeout=10)
                 
                 if res.status_code != 200:
-                    await bot.send_message(ADMIN_USER_ID, "❌ فشل الاتصال بـ CoinMarketCap. سيتم إعادة المحاولة...")
+                    await bot.send_message(ADMIN_USER_ID, "❌ فشل الاتصال بـ Binance API. سيتم إعادة المحاولة...")
                     await asyncio.sleep(60)
                     continue
                 
-                coins = [
-                    c for c in res.json()["data"] 
-                    if c["symbol"] not in STABLE_COINS 
-                    and c["symbol"] not in ignored_symbols
-                    and c["quote"]["USD"]["volume_24h"] >= 1_000_000 
-                    and abs(c["quote"]["USD"]["percent_change_24h"]) >= 0.2
-                ]
+                all_tickers = res.json()
+                coins = []
+                
+                for t in all_tickers:
+                    symbol = t["symbol"]
+                    if not symbol.endswith("USDT"): continue # نأخذ أزواج التيثر فقط
+                    
+                    clean_sym = symbol.replace("USDT", "")
+                    if clean_sym in STABLE_COINS or clean_sym in ignored_symbols: continue
+                    
+                    vol_usd = float(t["quoteVolume"])
+                    price_change = float(t["priceChangePercent"])
+                    
+                    # 🟢 الفلترة السحرية: 
+                    # سيولة قوية + العملة لم تطر بعد (بين -10% و +5%)، لو صاعدة 20% ما بتلزمنا!
+                    if vol_usd >= 1_000_000 and -10.0 <= price_change <= 5.0:
+                        # تغليف البيانات لتطابق هيكلة كودك القديمة تماماً عشان ما ينكسر دالة التحليل
+                        coins.append({
+                            "symbol": clean_sym,
+                            "quote": {"USD": {"price": float(t["lastPrice"])}}
+                        })
+                
+                # نحدد عدد العملات التي سيتم تحليلها لتخفيف الضغط (أفضل 300 عملة من حيث الفوليوم)
+                coins = sorted(coins, key=lambda x: float(t["quoteVolume"]), reverse=True)[:300]
+
 
                 tasks = [analyze_radar_coin(c, client, market_regime, sem) for c in coins]
                 results = await asyncio.gather(*tasks)
