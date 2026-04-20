@@ -987,16 +987,43 @@ async def ai_opportunity_radar(pool):
                     """, symbol)
 
                 prompt_ar = f"""
-أنت كبير المحللين الفنيين. رادار السوق الذكي التقط فرصة لعملة {symbol} بسكور {best_score}/100.
-الإشارة: {signal} | ADX: {best_meta['adx']} | RSI: {best_meta['rsi']} | سيولة أعلى بـ {best_meta['vol_ratio']} ضعف.
-ضغط الشراء (Orderbook): طلبات الشراء تتفوق بـ {best_meta.get('ob_pressure', 1.0)} ضعف.
-اكتب تحليلاً احترافياً (3 أسطر قصار) يدمج هذه الأرقام مباشرة ويوضح سبب احتمال الصعود بدون ذكر قوي وقوة وتهويل.
+أنت محلل بيانات مالية (Quant Analyst) في مؤسسة "NaiF CHarT Intelligence Lab".
+مهمتك صياغة "التقرير المالي اللحظي" لعملة {symbol} بناءً على بيانات الرادار الخوارزمي.
+
+البيانات المحسوبة آلياً:
+- الشذوذ الإحصائي للسيولة (Z-Score): {best_meta['macd']} (مؤشر التجميع الصامت)
+- تدفق الأموال الذكية (Volume Ratio): أعلى بـ {best_meta['vol_ratio']} ضعف من المتوسط.
+- ضغط الأوردر بوك اللحظي (Global OB): المشترون يتفوقون بـ {best_meta.get('ob_pressure', 1.0)}x.
+- الإجماع التقني (Confluence): {best_meta.get('confluence', 0)} إشارات مؤسساتية متطابقة.
+- المؤشرات الكلاسيكية: ADX: {best_meta['adx']} | RSI: {best_meta['rsi']}
+
+التعليمات الصارمة:
+1. اكتب التحليل في 3 نقاط (Bullet points) باستخدام HTML (•).
+2. استخدم أسلوباً مؤسساتياً جافاً ومباشراً يعتمد على الأرقام أعلاه فقط.
+3. يمنع منعاً باتاً استخدام الكلمات العاطفية أو التسويقية (مثل: قوي جداً، انفجار، صاروخ، فرصة ذهبية، هائل).
+4. فسر الأرقام باحترافية: مثلاً (تزايد السيولة بـ x ضعف يعكس امتصاصاً لعروض البيع...).
+
+الناتج المطلوب (باللغة العربية فقط):
 """
+
                 prompt_en = f"""
-You are Lead Technical Analyst. Smart market caught a bottom opportunity for {symbol} with score {best_score}/100.
-Signal: {signal} | ADX: {best_meta['adx']} | RSI: {best_meta['rsi']} | Liquidity {best_meta['vol_ratio']}x higher.
-Buy Pressure (Orderbook): Buy bids are {best_meta.get('ob_pressure', 1.0)}x stronger.
-Write a 3-short line professional analysis integrating these metrics and explaining the current accumulation Without mentioning strength, power, or exaggeration.
+You are a Quant Analyst at "NaiF CHarT Intelligence Lab".
+Your task is to draft the "Real-time Financial Report" for {symbol} based on algorithmic radar data.
+
+Calculated Metrics:
+- Liquidity Statistical Anomaly (Z-Score): {best_meta['macd']} (Silent accumulation indicator)
+- Smart Money Inflow (Volume Ratio): {best_meta['vol_ratio']}x higher than average.
+- Global Orderbook Pressure: Buyers dominate by {best_meta.get('ob_pressure', 1.0)}x.
+- Technical Confluence: {best_meta.get('confluence', 0)} matching institutional signals.
+- Classic Indicators: ADX: {best_meta['adx']} | RSI: {best_meta['rsi']}
+
+Strict Instructions:
+1. Write the analysis in exactly 3 bullet points using HTML (•).
+2. Use a dry, direct, institutional tone based strictly on the provided numbers.
+3. ABSOLUTELY NO emotional or marketing words (e.g., massive, explosion, to the moon, huge).
+4. Interpret the numbers professionally: e.g. (A liquidity increase of x times indicates absorption of sell pressure).
+
+Required Output (In English only):
 """
 
                 insight_ar = await ask_groq(prompt_ar, lang="ar")
