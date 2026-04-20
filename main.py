@@ -513,7 +513,7 @@ async def update_market_memory_loop(pool):
             print(f"Market Memory Loop Error: {e}")
         
         # ينام ويحدث البيانات كل 4 ساعات (14400 ثانية)
-        await asyncio.sleep(200)
+        await asyncio.sleep(900)
 
 
 async def verify_global_liquidity(symbol: str, client: httpx.AsyncClient):
@@ -838,7 +838,7 @@ async def ai_opportunity_radar(pool):
 
                 if not valid_signals:
                     print("😴 لم يتم العثور على فرص حالياً... إعادة البحث التلقائي بعد 15 دقائق.")
-                    await asyncio.sleep(900)
+                    await asyncio.sleep(200)
                     continue
 
                 # تجهيز الرسالة للأدمن لأقوى عملة
