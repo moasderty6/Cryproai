@@ -1024,7 +1024,6 @@ import pandas as pd
 import ta
 
 # --- محرك الباكتيست المعزول ---
-# أضفنا symbols_to_test كمتغير تستقبله الدالة
 async def backtest_worker_process(m: types.Message, pool, symbols_to_test):
     symbols_str = ", ".join(symbols_to_test)
     await bot.send_message(
@@ -1039,9 +1038,6 @@ async def backtest_worker_process(m: types.Message, pool, symbols_to_test):
     results_log = []
 
     async with httpx.AsyncClient(timeout=30) as client:
-        # جلب حالة السوق الماكرو (محاكاة مبسطة للباكتيست)
-        market_regime = {"trend": "Trending_Bull", "volatility": "Normal", "adx": 30} 
-        
         for sym in symbols_to_test:
             pair = f"{sym}USDT"
             # جلب 1000 شمعة (فريم ساعة) = تقريباً آخر 41 يوم
@@ -1057,17 +1053,22 @@ async def backtest_worker_process(m: types.Message, pool, symbols_to_test):
             df.columns = ["timestamp", "volume", "close", "high", "low", "open", "taker_buy_vol"]
             for col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce')
 
-            # محاكاة الزمن
-            for i in range(750, 950):
-                df_slice = df.iloc[i-700:i].copy() 
+            # محاكاة الزمن: نبدأ من الشمعة 750 حتى ما قبل النهاية بـ 50 شمعة 
+            # ليكون لدينا فترة اختبار أطول (حوالي 8 أيام تداول فعلية لكل عملة)
+            for i in range(750, len(df) - 50):
+                
+                # 🛑 التعديل الجذري: نأخذ كل الشموع من البداية وحتى اللحظة i 
+                # هذا يعطي دالة Z-Score الـ 720 شمعة التي تحتاجها للعمل بشكل صحيح
+                df_slice = df.iloc[:i].copy() 
                 
                 # إراحة السيرفر لتجنب تجميد البوت
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(0.005)
 
                 last_price = df_slice["close"].iloc[-1]
                 
                 # 1. Z-Score
                 current_z, _, _ = calculate_volume_zscore(df_slice, window=720)
+                if pd.isna(current_z): current_z = 0.0 # حماية من القيم الفارغة
                 
                 # 2. CVD Absorption
                 cvd_boost, cvd_signal = detect_smart_money_absorption(df_slice)
@@ -1082,6 +1083,7 @@ async def backtest_worker_process(m: types.Message, pool, symbols_to_test):
                 score = 20.0
                 tags = set()
 
+                # حساب السكور
                 if current_z >= 3.0: 
                     score += 15.0
                     tags.add("Z_High")
@@ -1093,11 +1095,14 @@ async def backtest_worker_process(m: types.Message, pool, symbols_to_test):
                 std20 = df_slice["close"].rolling(20).std(ddof=0)
                 upper_band = sma20 + 2*std20
                 lower_band = sma20 - 2*std20
-                squeeze_pct = (upper_band.iloc[-1] - lower_band.iloc[-1]) / sma20.iloc[-1]
                 
-                if squeeze_pct < 0.05: 
-                    score += 10.0
-                    tags.add("Squeeze")
+                # حماية من القسمة على صفر
+                sma_val = sma20.iloc[-1]
+                if sma_val > 0:
+                    squeeze_pct = (upper_band.iloc[-1] - lower_band.iloc[-1]) / sma_val
+                    if squeeze_pct < 0.05: 
+                        score += 10.0
+                        tags.add("Squeeze")
 
                 ema200_val = df_slice["close"].ewm(span=200).mean().iloc[-1]
                 if last_price < ema200_val and last_rsi > 30 and rsi_val.iloc[-10:-1].min() < 30:
@@ -1107,11 +1112,13 @@ async def backtest_worker_process(m: types.Message, pool, symbols_to_test):
                 golden_tags = {"Z_High", "Whale_CVD", "Squeeze"}
                 confluence = sum(1 for t in tags if t in golden_tags)
 
+                # 🟢 شروط الدخول
                 if score >= 55.0 and confluence >= 2:
                     entry_price = last_price
                     tp_target = entry_price * 1.10  # 10% ربح
                     sl_target = entry_price * 0.90  # 10% خسارة
                     
+                    # نأخذ آخر 50 شمعة في المستقبل لنرى ماذا حدث للسعر
                     future_slice = df.iloc[i:i+50] 
                     
                     trade_result = "Pending"
@@ -1125,11 +1132,14 @@ async def backtest_worker_process(m: types.Message, pool, symbols_to_test):
                             losses += 1
                             break
                     
+                    # إذا لم تضرب الهدف أو الوقف خلال 50 ساعة، نعتبرها ملغاة أو Pending
                     if trade_result != "Pending":
                         total_signals += 1
-                        log_msg = f"#{sym} | السعر: ${format_price(entry_price)} | النتيجة: {trade_result} | السكور: {score}"
+                        log_msg = f"#{sym} | Entry: ${format_price(entry_price)} | Result: {trade_result} | Score: {score}"
                         results_log.append(log_msg)
-                        i += 10 
+                        
+                        # نقفز 15 شمعة للأمام لكي لا يكرر الدخول في نفس الموجة الصاعدة مرتين
+                        i += 15 
 
     # --- تجهيز التقرير النهائي ---
     win_rate = (wins / total_signals * 100) if total_signals > 0 else 0
@@ -1145,11 +1155,12 @@ async def backtest_worker_process(m: types.Message, pool, symbols_to_test):
         f"📝 <b>تفاصيل الصفقات:</b>\n"
     )
     
+    # عرض آخر 15 صفقة في السجل
     for log in results_log[-15:]:
         report += f"▪️ {log}\n"
 
     if not total_signals:
-        report += "لم يتم العثور على فرص مطابقة للشروط الصارمة للرادار في هذه العملات خلال الفترة المحددة."
+        report += "لم يتم العثور على فرص مطابقة للشروط الصارمة للرادار (شروط السكور والإجماع العالي لم تتحقق في هذه الفترة)."
 
     await bot.send_message(m.from_user.id, report, parse_mode=ParseMode.HTML)
 
