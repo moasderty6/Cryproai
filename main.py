@@ -143,43 +143,27 @@ def get_payment_kb(lang):
 
 # --- رادار الفرص الذكي ---
 # --- دوال الرادار المساعدة (ضعها فوق دالة الرادار) ---
-class OrderFlowAnalyzer:
-    def __init__(self, symbol):
-        self.symbol = symbol.lower()
-        self.delta = 0.0
-        self.cumulative_delta = 0.0
-        self.is_active = True
-
-    async def start_trade_stream(self, duration=10):
-        url = f"wss://stream.binance.com:9443/ws/{self.symbol}usdt@aggTrade"
-        start_time = asyncio.get_event_loop().time()
-        
-        try:
-            # ping_interval=None تمنع الإزعاج من المنصة للاتصالات القصيرة
-            async with websockets.connect(url, ping_interval=None) as ws:
-                while self.is_active:
-                    elapsed = asyncio.get_event_loop().time() - start_time
-                    if elapsed > duration:
-                        break
-                    
-                    try:
-                        # نستخدم wait_for هنا لتجنب التعليق الأبدي للعملات الميتة
-                        msg = await asyncio.wait_for(ws.recv(), timeout=duration - elapsed)
-                        data = json.loads(msg)
-                        
-                        amount = float(data['q']) * float(data['p']) # الحجم بالدولار
-                        is_buyer_taker = not data['m'] # شراء عدواني
-                        
-                        if is_buyer_taker:
-                            self.delta += amount
-                        else:
-                            self.delta -= amount
-                    except asyncio.TimeoutError:
-                        # العملة هادئة جداً ولا يوجد صفقات حالياً، نخرج بهدوء
-                        break
-        except Exception as e:
-            pass # تجاهل أخطاء الاتصال اللحظية
-
+async def get_recent_orderflow_delta(symbol, client, limit=500):
+    """
+    بديل سريع وآمن للـ WebSocket: يقرأ آخر 500 صفقة تمت لتحديد الشراء/البيع العدواني
+    """
+    try:
+        res = await client.get(f"{BINANCE_BASE}/trades", params={"symbol": symbol, "limit": limit})
+        if res.status_code == 200:
+            trades = res.json()
+            delta = 0.0
+            for t in trades:
+                amount = float(t['qty']) * float(t['price'])
+                is_buyer_maker = t['isBuyerMaker'] 
+                
+                if not is_buyer_maker: # المشتري هو Taker (شراء ماركت/عدواني)
+                    delta += amount
+                else: # البائع هو Taker (بيع ماركت/عدواني)
+                    delta -= amount
+            return delta
+    except:
+        pass
+    return 0.0
                 
                 # هنا نحسب الـ Absorption (امتصاص البيع)
                 # إذا كان السعر ثابتاً أو يرتفع رغم وجود Delta بيعي ضخم = الحيتان تمتص العروض
@@ -200,6 +184,13 @@ async def smart_radar_watchdog(pool):
     PRICE_SPIKE_THRESHOLD = 0.01   
 
     while True:
+        # --- إضافة: تنظيف الذاكرة المؤقتة من العملات الخاملة لمنع انهيار السيرفر ---
+        current_time_cleanup = time.time()
+        # حذف أي عملة لم تتحدث منذ أكثر من ساعة (3600 ثانية)
+        keys_to_delete = [k for k, v in live_market_memory.items() if current_time_cleanup - v['last_update'] > 3600]
+        for k in keys_to_delete:
+            del live_market_memory[k]
+        # ------------------------------------------------------------
         try:
             async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
                 print("✅ تم الاتصال بنجاح! الرادار اللحظي يعمل الآن.")
@@ -266,7 +257,7 @@ async def radar_worker_process(pool):
                 # فحص هل أرسلنا العملة في آخر 12 ساعة؟
                 is_signaled = await conn.fetchval("""
                     SELECT 1 FROM radar_history 
-                    WHERE symbol = $1 AND last_signaled > CURRENT_TIMESTAMP - INTERVAL '12 hours'
+                     WHERE symbol = $1 AND last_signaled > CURRENT_TIMESTAMP - INTERVAL '7 days'
                 """, symbol)
 
                 if not is_signaled:
@@ -569,7 +560,8 @@ def detect_smart_money_absorption(df):
     signal_upgrade = None
 
     # 🟢 تم تخفيض السكور ليكون منطقياً وضبط اسم الإشارة الداخلي
-    if price_change_pct <= 0.02 and cvd_change > (recent["volume"].mean() * 3):
+        # تعديل: مقارنة الـ CVD بمتوسط الحجم بنسبة منطقية (0.5 بدلاً من 3 أضعاف المستحيلة)
+    if price_change_pct <= 0.02 and cvd_change > (recent["volume"].mean() * 0.5):
         score_boost = 15.0 
         signal_upgrade = "Whale_CVD"
     elif price_change_pct > 0.05 and cvd_change < 0:
@@ -724,26 +716,24 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 score += 10.0 
                 tags.append("RSI_Div")
 
-            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)
+            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)
             if score >= 50.0: 
                 depth_data = await analyze_orderbook_depth(symbol, client)
                 if depth_data:
-                    # تفاعل الرادار مع الدالة الجديدة
                     if depth_data['spoofing_risk'] or depth_data['hidden_wall']:
-                        score -= 35.0 # جلد السكور لأنها عملة مخادعة
+                        score -= 15.0 # تعديل: تخفيف العقوبة لأن الـ Spoofing طبيعي في العملات الصغيرة
                         tags.append("Spoofing_or_Wall")
                     elif depth_data['imbalance'] > 0.4:
-                        score += 15.0 # مكافأة أعلى لأننا نقرأ 50 مستوى حقيقي الآن
+                        score += 15.0 
                         tags.append("OB_Buy")
 
-
-                of_analyzer = OrderFlowAnalyzer(symbol)
-                await of_analyzer.start_trade_stream(duration=10)
-                if of_analyzer.delta > (price * 1000): 
+                # تعديل: استخدام دالة الـ REST السريعة بدلاً من إيقاف الكود بـ WebSocket
+                delta_usd = await get_recent_orderflow_delta(symbol, client)
+                if delta_usd > (price * 1000): 
                     score += 15.0
                     tags.append("Aggressive_Buy")
-                elif of_analyzer.delta < -(price * 1000): 
-                    score -= 20.0
+                elif delta_usd < -(price * 1000): 
+                    score -= 15.0 # تخفيف العقوبة السلبية هنا أيضاً
 
                 global_ob_pressure = await get_aggregated_orderbook(client, symbol)
                 global_alt_volume = await verify_global_liquidity(symbol, client)
