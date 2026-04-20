@@ -828,7 +828,7 @@ async def ai_opportunity_radar(pool):
 
                 if not valid_signals:
                     print("😴 لم يتم العثور على فرص حالياً... إعادة البحث التلقائي بعد 15 دقائق.")
-                    await asyncio.sleep(900)
+                    await asyncio.sleep(250)
                     continue
 
                 # تجهيز الرسالة للأدمن لأقوى عملة
