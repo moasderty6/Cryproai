@@ -2049,6 +2049,11 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change, lang="ar
     
     # 🟢 الحل الجذري: إجبار تحويل الأعمدة إلى أرقام (Floats) قبل أي عملية حسابية
     # هنا بيبدأ كودك القديم طبيعي جداً
+        # 🟢 الحل الجذري: إجبار تحويل الأعمدة إلى أرقام (Floats) قبل أي عملية حسابية
+    for col in ['high', 'low', 'close', 'open', 'volume']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
     df['prev_close'] = df['close'].shift(1)
     df['tr0'] = abs(df['high'] - df['low'])
     df['tr1'] = abs(df['high'] - df['prev_close'])
