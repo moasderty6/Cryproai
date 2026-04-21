@@ -2075,7 +2075,7 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change, lang="ar
     if fvg_target:
         # تنسيق السعر لتجنب الأرقام الطويلة
         fvg_display = f"{fvg_target:,.4f}" if fvg_target > 1 else f"{fvg_target:.8f}"
-        market_action += f" [هدف مغناطيسي FVG عند: {fvg_display}$]" if lang == "ar" else f" [Magnetic FVG Target at: {fvg_display}$]"
+        market_action += f" [هدف مغناطيسي عند: {fvg_display}]" if lang == "ar" else f" [Magnetic FVG Target at: {fvg_display}$]"
 
 
     try:
