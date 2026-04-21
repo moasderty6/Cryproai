@@ -1003,7 +1003,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 tags.append("RSI_Div")
 
             # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)# --- استبدال الفحص العميق رقم 5 بالتالي ---            # 5. الفحص العميق (Order Flow + Global)
-            if score >= 35.0:
+            if score >= 30.0:
                 # 🔴 التحديث الجديد: تشغيل فيديو الأوردر بوك لمدة 4 ثوانٍ
                 depth_data = await detect_flash_spoofing_ws(symbol, duration=4.0)
                 
@@ -1395,16 +1395,10 @@ Output in English only:
                     "symbol": symbol, "price": price, "signal": signal, "score": best_score,
                     "insight_ar": insight_ar, "insight_en": insight_en
                 }
-                # 🧠 [التحديث الجديد]: تسجيل البيانات للذكاء الاصطناعي فور وصولها للرادار (قبل الموافقة)
-                ml_features = {
-                    'z_score': float(best_meta.get('macd', 0)), # استخدمنا MACD لأنك خزنته كـ z-score
-                    'cvd': 1.0 if "Micro_Silent_Accumulation" in tags else 0.0, # تبسيط مبدئي
-                    'imbalance': float(best_meta.get('ob_pressure', 0)),
-                    'adx': float(best_meta.get('adx', 0)),
-                    'rsi': float(best_meta.get('rsi', 0))
-                }
                 # تشغيل التسجيل في الخلفية لكي لا يؤخر إرسال الرسالة للأدمن
-                asyncio.create_task(log_signal_for_ml(pool, symbol, price, best_meta['ml_features']))
+                                # 🧠 تسجيل البيانات للذكاء الاصطناعي (أخذنا البيانات الجاهزة من دالة التحليل مباشرة)
+                asyncio.create_task(log_signal_for_ml(pool, symbol, price, best_meta.get('ml_features', {})))
+
 
                 admin_kb = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="✅ موافقة ونشر للمشتركين", callback_data=f"rad_app_{signal_id}")],
