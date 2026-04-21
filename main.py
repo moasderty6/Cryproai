@@ -1912,13 +1912,19 @@ async def get_candles_binance(symbol: str, interval: str, limit: int = 500, retr
                     # إيقاف إجباري لمدة 5 دقائق على الأقل لمحاولة تهدئة السيرفر
                     asyncio.create_task(handle_binance_rate_limit(300))
                     return None
+                
                 else:
-                    return None
+                    # ✅ التعديل هنا: منعنا البوت من الاستسلام وطبعنا الخطأ في الكونسول لمعرفة السبب
+                    print(f"⚠️ فشل جلب الشموع (المحاولة {attempt+1}): {res.status_code} - {res.text}")
+                    await asyncio.sleep(1) 
+                    
             except Exception as e:
                 if attempt == retries - 1:
                     print(f"Error fetching Binance candles for {clean_symbol}: {e}")
                 await asyncio.sleep(1)
+                
         return None
+
 
 
 
