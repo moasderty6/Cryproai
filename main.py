@@ -1750,42 +1750,49 @@ async def handle_symbol(m: types.Message):
     
     status_msg = await m.answer("⏳ جاري جلب السعر..." if lang=="ar" else "⏳ Fetching price...")
 
-    try:
-        async with httpx.AsyncClient() as client:
-            # بايننس تستخدم الرمز متصل بدون شرطة سفلية، مثلاً BTCUSDT
-            pair = f"{sym}USDT" 
-            
-            # تمرير مفتاحك الخاص في الهيدر
-            binance_headers = {
-                "X-MBX-APIKEY": "rvApoDI6XRYcki1r2QTnPUBs3QwESzrpTVKohgjbK1zxSzlvrFPxAbZKr94xA2Lx"
-            }
-            
-            # جلب السعر والفوليوم من بايننس باستخدام حسابك
-                        # جلب السعر والفوليوم من بايننس باستخدام حسابك
-            base_url = get_random_binance_base()
-            res_binance = await client.get(
-                f"{base_url}/api/v3/ticker/24hr",
-                params={"symbol": pair},
-                headers=binance_headers,
-                timeout=10
-            )
+    # --- بداية الكود الديناميكي الجديد ---
+    binance_success = False
+    
+    async with httpx.AsyncClient() as client:
+        pair = f"{sym}USDT" 
+        
+        # نظام المحاولات الذكي (3 محاولات لامتصاص أي تأخير أو Cold Start)
+        for attempt in range(3):
+            try:
+                base_url = get_random_binance_base()
+                res_binance = await client.get(
+                    f"{base_url}/api/v3/ticker/24hr",
+                    params={"symbol": pair},
+                    timeout=5.0 # تايم أوت قصير عشان المحاولات تكون سريعة
+                )
+                
+                if res_binance.status_code == 200:
+                    data_binance = res_binance.json()
+                    price = float(data_binance["lastPrice"])
+                    volume_24h = float(data_binance["quoteVolume"])
 
-            
-            if res_binance.status_code == 200:
-                data_binance = res_binance.json()
-                price = float(data_binance["lastPrice"])
-                volume_24h = float(data_binance["quoteVolume"]) # الفوليوم بـ USDT
+                    user_session_data[uid] = {
+                        "sym": sym, "price": price, "volume_24h": volume_24h, 
+                        "lang": lang, "is_dex": False
+                    }
+                    binance_success = True
+                    break # نجحنا! نخرج من حلقة المحاولات
+                    
+                elif res_binance.status_code in [400, 404]:
+                    # بايننس تقول صراحة: العملة غير موجودة لدي.
+                    # نخرج فوراً للبحث في الديكس دون تضييع وقت
+                    break 
+                    
+                else:
+                    # خطأ سيرفر مؤقت، ننتظر ثانية ونحاول مجدداً
+                    await asyncio.sleep(1)
+                    
+            except httpx.RequestError:
+                # خطأ انقطاع اتصال أو Timeout (يحدث غالباً أول ثواني بعد التشغيل)
+                await asyncio.sleep(1)
 
-                # محاولة جلب نسبة تغير الفوليوم من CMC
-
-                user_session_data[uid] = {
-                    "sym": sym, "price": price, "volume_24h": volume_24h, 
-                    "lang": lang, "is_dex": False
-                }
-            else:
-                raise ValueError("Symbol not found in Binance")
-
-    except Exception:
+    # إذا فشلت بايننس (سواء العملة غير موجودة، أو السيرفر واقع بعد 3 محاولات) ننتقل للديكس
+    if not binance_success:
         dex_data = await search_dex_coin(sym)
         if dex_data:
             sym = dex_data["base_symbol"]
@@ -1797,10 +1804,11 @@ async def handle_symbol(m: types.Message):
             }
         else:
             error_text = (
-                f"❌ الرمز `{sym}` غير صحيح أو غير متوفر في منصات التداول." if lang=="ar" 
-                else f"❌ Symbol `{sym}` is invalid or not found on exchanges."
+                f"❌ الرمز `{sym}` غير صحيح أو غير متوفر في المنصات المركزية واللامركزية." if lang=="ar" 
+                else f"❌ Symbol `{sym}` is invalid or not found on CEX/DEX."
             )
             return await status_msg.edit_text(error_text, parse_mode=ParseMode.MARKDOWN)
+    # --- نهاية الكود الديناميكي الجديد ---
 
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="أسبوعي" if lang=="ar" else "Weekly", callback_data="tf_weekly"),
