@@ -2357,11 +2357,18 @@ async def run_analysis(cb: types.CallbackQuery):
             real_trend = "صاعد" if trend_dir == "Bullish" else "هابط"
             trend_strength = trend_str
             
+                    # تجهيز المتغيرات للغتين وبناء البرومبت (محمية داخل شرط الشموع لتجنب أي خطأ)
+        if lang == "ar":
+            real_trend = "صاعد" if trend_dir == "Bullish" else "هابط"
+            trend_strength = trend_str
+            
             prompt = f"""
-أنت محلل فني خبير في شركة "NaiF CHarT". قم بصياغة هذا التحليل لعملة {clean_sym} بشكل احترافي ومختصر.
-البيانات محسوبة رياضياً وجاهزة، ⚠️ يمنع منعاً باتاً تغيير أرقام الأهداف أو الوقف ⚠️، فقط قم بترتيبها في القالب المطلوب واكتب تعليقاً فنياً دقيقاً في سطر واحد لكل مؤشر.
+أنت نظام آلي في شركة "NaiF CHarT" وظيفتك الوحيدة هي إخراج النص كقالب جاهز تماماً.
+⚠️ تحذير صارم جداً: 
+1. يمنع منعاً باتاً إضافة أي كلمة أو جملة من عندك خارج القالب (ممنوع كتابة كلمات مثل "البيان الفني" أو أي مقدمات وخواتيم).
+2. قم فقط باستبدال الأقواس [ ] بالتعليق الفني المطلوب.
 
-⚠️ التزم بهذا القالب بحذافيره (استخدم HTML فقط):
+الناتج يجب أن يكون هذا النص بالضبط دون أي زيادة:
 
 📊 <b>التحليل لـ {clean_sym}</b> | {tf} | {format_price(price)}$
 الاتجاه: {real_trend} ({trend_strength})
@@ -2379,11 +2386,53 @@ TP3: <code>{format_price(calc_tp3)}</code>
 Stop Loss: <code>{format_price(calc_sl)}</code>
 
 📈 <b>تحليل المؤشرات</b>
-•Liquidity: {market_action} (اكتب سطر يعلق على هذه الحالة بالعربية فقط ولا حرف غير عربي)
-•RSI ({safe_rsi}): (اكتب سطر واحد يوضح التشبع أو الحياد بالعربية فقط ولا حرف غير عربي)
-•MACD ({macd_fmt}): (اكتب سطر واحد يوضح الزخم بالعربية فقط ولا حرف غير عربي)
-•ADX ({adx_val:.1f}): (اكتب سطر واحد يوضح قوة الترند بالعربية فقط ولا حرف غير عربي)
+• Liquidity: {market_action}
+- [اكتب هنا سطر واحد فقط يعلق على حالة السيولة بالعربي فقط ولا حرف غير عربي]
+• RSI ({safe_rsi}):
+- [اكتب هنا سطر واحد فقط يوضح حالة التشبع أو الحياد بالعربي فقط ولا حرف غير عربي]
+• MACD ({macd_fmt}):
+- [اكتب هنا سطر واحد فقط يوضح الزخم الإيجابي أو السلبي بالعربي فقط ولا حرف غير عربي]
+• ADX ({adx_val:.1f}):
+- [اكتب هنا سطر واحد فقط يوضح قوة أو ضعف الترند بالعربي فقط ولا حرف غير عربي]
 """
+        else:
+            real_trend = "Bullish" if trend_dir == "Bullish" else "Bearish"
+            trend_strength = trend_str
+            
+            prompt = f"""
+You are an automated system at "NaiF CHarT". Your ONLY job is to output the exact template below.
+⚠️ STRICT RULES:
+1. DO NOT add any extra text, titles, or comments outside the template. (NO phrases like "Technical Statement" or intros/outros).
+2. Replace the brackets [ ] with the requested comment only.
+
+Your output MUST be exactly this format:
+
+📊 <b>Analysis: {clean_sym}</b> | {tf} | {format_price(price)}$
+Trend: {real_trend} ({trend_strength})
+
+📉 <b>Support & Resistance</b>
+Nearest Support: <code>{format_price(calc_sup)}</code>$
+Nearest Resistance: <code>{format_price(calc_res)}</code>$
+
+🎯 <b>Price Targets (TP)</b>
+TP1: <code>{format_price(calc_tp1)}</code>
+TP2: <code>{format_price(calc_tp2)}</code>
+TP3: <code>{format_price(calc_tp3)}</code>
+
+🛑 <b>Stop Loss (SL)</b>
+Stop Loss: <code>{format_price(calc_sl)}</code>
+
+📈 <b>Indicator Analysis</b>
+• Liquidity: {market_action}
+- [Write exactly one line commenting on this action]
+• RSI ({safe_rsi}):
+- [Write exactly one line explaining overbought/oversold or neutrality]
+• MACD ({macd_fmt}):
+- [Write exactly one line explaining momentum]
+• ADX ({adx_val:.1f}):
+- [Write exactly one line explaining trend strength]
+"""
+
         else:
             real_trend = "Bullish" if trend_dir == "Bullish" else "Bearish"
             trend_strength = trend_str
