@@ -2386,14 +2386,10 @@ TP3: <code>{format_price(calc_tp3)}</code>
 Stop Loss: <code>{format_price(calc_sl)}</code>
 
 📈 <b>تحليل المؤشرات</b>
-• Liquidity: {market_action}
-- [اكتب هنا سطر واحد فقط يعلق على حالة السيولة بالعربي فقط ولا حرف غير عربي]
-• RSI ({safe_rsi}):
-- [اكتب هنا سطر واحد فقط يوضح حالة التشبع أو الحياد بالعربي فقط ولا حرف غير عربي]
-• MACD ({macd_fmt}):
-- [اكتب هنا سطر واحد فقط يوضح الزخم الإيجابي أو السلبي بالعربي فقط ولا حرف غير عربي]
-• ADX ({adx_val:.1f}):
-- [اكتب هنا سطر واحد فقط يوضح قوة أو ضعف الترند بالعربي فقط ولا حرف غير عربي]
+• Liquidity: {market_action} [اكتب هنا سطر واحد فقط يعلق على حالة السيولة بالعربي فقط ولا حرف غير عربي]
+• RSI ({safe_rsi}): [اكتب هنا سطر واحد فقط يوضح حالة التشبع أو الحياد بالعربي فقط ولا حرف غير عربي]
+• MACD ({macd_fmt}): [اكتب هنا سطر واحد فقط يوضح الزخم الإيجابي أو السلبي بالعربي فقط ولا حرف غير عربي]
+• ADX ({adx_val:.1f}): [اكتب هنا سطر واحد فقط يوضح قوة أو ضعف الترند بالعربي فقط ولا حرف غير عربي]
 """
         else:
             real_trend = "Bullish" if trend_dir == "Bullish" else "Bearish"
@@ -2423,14 +2419,10 @@ TP3: <code>{format_price(calc_tp3)}</code>
 Stop Loss: <code>{format_price(calc_sl)}</code>
 
 📈 <b>Indicator Analysis</b>
-• Liquidity: {market_action}
-- [Write exactly one line commenting on this action]
-• RSI ({safe_rsi}):
-- [Write exactly one line explaining overbought/oversold or neutrality]
-• MACD ({macd_fmt}):
-- [Write exactly one line explaining momentum]
-• ADX ({adx_val:.1f}):
-- [Write exactly one line explaining trend strength]
+• Liquidity: {market_action} [Write exactly one line commenting on this action]
+• RSI ({safe_rsi}): [Write exactly one line explaining overbought/oversold or neutrality]
+• MACD ({macd_fmt}): [Write exactly one line explaining momentum]
+• ADX ({adx_val:.1f}): [Write exactly one line explaining trend strength]
 """
     res = await ask_groq(prompt, lang=lang)
     await cb.message.answer(res, parse_mode=ParseMode.HTML)
