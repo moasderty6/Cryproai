@@ -2918,7 +2918,7 @@ async def on_startup(app):
         await conn.execute("ALTER TABLE paid_users ADD COLUMN IF NOT EXISTS expiry_date TIMESTAMP")
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS invited_by BIGINT")
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS ref_count INTEGER DEFAULT 0")
-
+        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS whale_inflow_score DOUBLE PRECISION DEFAULT 0.0")
         # 3. تفعيل حسابات الأدمن بشكل دائم
         initial_paid_users = {1317225334, 5527572646}
         for uid in initial_paid_users:
