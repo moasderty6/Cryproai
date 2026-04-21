@@ -2228,33 +2228,33 @@ async def run_analysis(cb: types.CallbackQuery):
                 z_score, _, _ = calculate_volume_zscore(df, window=720)
 
                 # 3. تعديل (trend_str) و (market_action) بناءً على النوايا الحقيقية للحيتان                # 3. تعديل (trend_str) و (market_action) بناءً على النوايا الحقيقية للحيتان
+                                # 3. تعديل (trend_str) و (market_action) بناءً على النوايا الحقيقية للحيتان
                 if trend_dir == "Bullish":
                     if cvd_sig == "Hidden_Distribution" or (sell_v > buy_v * 1.5) or z_score > 4.0:
-                        trend_str = "ضعيف (خطر الانعكاس)" if lang == "ar" else "Weak (Reversal Risk)"
+                        trend_str = "ضعيف - خطر الانعكاس" if lang == "ar" else "Weak - Reversal Risk"
                         market_action += " | فخ شرائي وتصريف مخفي" if lang == "ar" else " | Bull Trap & Hidden Distribution"
                     elif cvd_sig == "Micro_Silent_Accumulation" or buy_v > sell_v * 1.5:
-                        trend_str = "قوي جداً (دخول مؤسساتي)" if lang == "ar" else "Very Strong (Inst. Inflow)"
+                        trend_str = "قوي جداً - دخول مؤسساتي" if lang == "ar" else "Very Strong - Inst. Inflow"
                         
                     # المشتقات في حالة الصعود
                     if fut_sig == "Short_Squeeze":
-                        trend_str = "انفجار سعري صاعد وشيك" if lang == "ar" else "Imminent Bullish Squeeze"
+                        trend_str = "انفجار سعري وشيك" if lang == "ar" else "Imminent Squeeze"
                     elif fut_sig == "Short_Covering":
-                        trend_str = "متوسط (إغلاق مراكز بيع)" if lang == "ar" else "Moderate (Short Covering)"
+                        trend_str = "متوسط - إغلاق مراكز بيع" if lang == "ar" else "Moderate - Short Covering"
 
                 elif trend_dir == "Bearish":
                     if cvd_sig == "Micro_Silent_Accumulation" or (buy_v > sell_v * 1.5):
-                        trend_str = "مخادع (احتمال ارتداد صاعد)" if lang == "ar" else "Fake (Bullish Reversal Risk)"
+                        trend_str = "مخادع - احتمال ارتداد صاعد" if lang == "ar" else "Fake - Bullish Reversal Risk"
                         market_action += " | فخ بيعي وامتصاص للعروض" if lang == "ar" else " | Bear Trap & Supply Absorption"
                     elif cvd_sig == "Hidden_Distribution" or (sell_v > buy_v * 1.5):
-                        trend_str = "قوي (تصريف مؤسساتي)" if lang == "ar" else "Strong (Inst. Distribution)"
+                        trend_str = "قوي - تصريف مؤسساتي" if lang == "ar" else "Strong - Inst. Distribution"
                         
                     # المشتقات في حالة الهبوط
                     if fut_sig == "Short_Squeeze":
                         # السكويز هنا يعني صعود مفاجئ يخالف الترند الهابط (خطر على صفقات البيع)
-                        trend_str = "هابط (خطر ارتداد - Short Squeeze)" if lang == "ar" else "Bearish (Short Squeeze Risk)"
+                        trend_str = "خطر ارتداد صاعد - Short Squeeze" if lang == "ar" else "Short Squeeze Risk"
                     elif fut_sig == "Short_Covering":
-                        trend_str = "ضعيف (جني أرباح للمراكز البيعية)" if lang == "ar" else "Weak (Bearish Profit Taking)"
-
+                        trend_str = "ضعيف - جني أرباح للمراكز البيعية" if lang == "ar" else "Weak - Bearish Profit Taking"
                     
         except Exception as e:
             print(f"Error injecting radar data into analysis: {e}")
