@@ -149,6 +149,108 @@ def get_payment_kb(lang):
         [InlineKeyboardButton(text="⭐ Subscribe Now with 500 Stars Monthly", callback_data="pay_stars")],
         [InlineKeyboardButton(text="🎁 Get a Free Month (Invite Friends)", callback_data="pay_invite")]
     ])
+# ذاكرة مؤقتة لبيانات السلسلة لتجنب استنفاد الـ API (Cache)
+ON_CHAIN_CACHE = {"usdt_inflow_score": 0.0, "last_updated": 0}
+
+async def get_whale_inflow_score():
+    """
+    تتبع حركة دخول الدولار الرقمي (USDT/USDC) لمنصات التداول.
+    حالياً نستخدم محاكاة (Mock) يمكن استبدالها بـ API حقيقي من CryptoQuant أو Glassnode مستقبلاً.
+    """
+    current_time = time.time()
+    
+    # القراءة من الذاكرة إذا لم يمر 60 ثانية (حماية السيرفر والـ API)
+    if current_time - ON_CHAIN_CACHE["last_updated"] < 60:
+        return ON_CHAIN_CACHE["usdt_inflow_score"]
+
+    try:
+        # 💡 [مستقبلاً]: هنا تضع طلب الـ API الفعلي لـ CryptoQuant مثلاً
+        # async with httpx.AsyncClient() as client:
+        #     res = await client.get("https://api.cryptoquant.com/v1/exchange-flows/inflow")
+        #     inflow_volume = res.json()['data']['volume']
+        
+        # محاكاة مؤقتة: توليد رقم عشوائي يمثل تدفق الحيتان (من 0 إلى 10)
+        # في الواقع، هذا سيقرأ حجم دخول الدولار للمنصة اللحظي
+        mock_inflow_volume = random.uniform(2_000_000, 50_000_000) 
+        
+        # تحويل الحجم إلى سكور من 0 إلى 10
+        score = min(max((mock_inflow_volume - 5_000_000) / 4_000_000, 0.0), 10.0)
+        
+        ON_CHAIN_CACHE["usdt_inflow_score"] = score
+        ON_CHAIN_CACHE["last_updated"] = current_time
+        
+        return score
+    except Exception as e:
+        print(f"⚠️ On-Chain Fetch Error: {e}")
+        return 0.0
+import xgboost as xgb
+import pandas as pd
+import numpy as np
+
+# تخزين النموذج في الذاكرة الحية
+AI_QUANT_MODEL = None
+MIN_TRAINING_SAMPLES = 100 # أقل عدد صفقات مطلوب لتدريب الذكاء الاصطناعي
+
+def train_xgboost_sync(records):
+    """
+    الدالة الثقيلة لتدريب النموذج (تعمل في مسار منفصل لكي لا تجمد التيليجرام).
+    """
+    global AI_QUANT_MODEL
+    df = pd.DataFrame(records)
+    
+    # تحديد المدخلات (Features) والمخرجات (Labels)
+    X = df[['z_score', 'cvd', 'imbalance', 'adx', 'rsi', 'whale_inflow_score']]
+    y = df['label']
+    
+    # إعدادات متقدمة للبيانات المالية المليئة بالضوضاء
+    model = xgb.XGBClassifier(
+        n_estimators=100, max_depth=4, learning_rate=0.05, 
+        subsample=0.8, colsample_bytree=0.8, eval_metric='logloss'
+    )
+    model.fit(X, y)
+    AI_QUANT_MODEL = model
+    return True
+
+async def ai_trainer_worker(pool):
+    """
+    عامل خلفي يستيقظ كل 12 ساعة لتدريب الذكاء الاصطناعي وتحديث ذكائه
+    بناءً على أحدث الصفقات التي تمت معالجتها.
+    """
+    await asyncio.sleep(60) # انتظر دقيقة عند تشغيل البوت
+    
+    while True:
+        try:
+            async with pool.acquire() as conn:
+                # جلب البيانات التي تم الحكم عليها (0 فاشلة، 1 ناجحة)
+                records = await conn.fetch("""
+                    SELECT z_score, cvd, imbalance, adx, rsi, whale_inflow_score, label
+                    FROM ml_training_data 
+                    WHERE label IN (0, 1)
+                """)
+                
+                if len(records) >= MIN_TRAINING_SAMPLES:
+                    print(f"🧠 [AI Trainer] Training model on {len(records)} historical signals...")
+                    # تشغيل التدريب في مسار خلفي
+                    records_dict = [dict(r) for r in records]
+                    await asyncio.to_thread(train_xgboost_sync, records_dict)
+                    print("✅ [AI Trainer] Model updated successfully! AI is getting smarter.")
+                else:
+                    print(f"⏳ [AI Trainer] Not enough data yet ({len(records)}/{MIN_TRAINING_SAMPLES}). Collecting...")
+                    
+        except Exception as e:
+            print(f"⚠️ AI Trainer Error: {e}")
+            
+        await asyncio.sleep(43200) # ينام 12 ساعة
+
+def predict_signal_sync(features: dict) -> float:
+    """ يتوقع احتمالية النجاح من 0% إلى 100% """
+    if AI_QUANT_MODEL is None:
+        return -1.0 # -1 تعني أن الذكاء الاصطناعي لم يتدرب بعد
+        
+    input_data = pd.DataFrame([features])
+    # استخراج احتمالية الفئة 1 (نجاح)
+    prob = AI_QUANT_MODEL.predict_proba(input_data)[0][1]
+    return float(prob) * 100 # إرجاع النسبة المئوية
 
 # --- دوال الرادار المساعدة (ضعها فوق دالة الرادار) ---
 async def get_recent_orderflow_delta(symbol, client, limit=500):
@@ -997,19 +1099,49 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             required_confluence = 2 if (market_regime['trend'] == "Trending_Bear" or is_macro_downtrend) else 1
 
             # إرجاع النتيجة فقط إذا تحقق السكور + الإجماع الفني
+                        # --- 🧠 التكامل مع الذكاء الاصطناعي وبيانات السلسلة ---
             if score >= required_score and confluence_count >= required_confluence:    
+                
+                # 1. جلب بيانات السلسلة (On-Chain)
+                whale_inflow = await get_whale_inflow_score()
+                
+                # 2. تجهيز الملامح (Features) للذكاء الاصطناعي
+                ml_features = {
+                    'z_score': float(current_z),
+                    'cvd': 1.0 if "Micro_Silent_Accumulation" in tags else 0.0,
+                    'imbalance': float(locals().get('global_ob_pressure', 0)),
+                    'adx': float(current_adx),
+                    'rsi': float(last_rsi),
+                    'whale_inflow_score': float(whale_inflow)
+                }
+                
+                # 3. سؤال الذكاء الاصطناعي عن رأيه (في مسار خلفي)
+                ai_probability = await asyncio.to_thread(predict_signal_sync, ml_features)
+                
+                # 4. قرار الفلترة المزدوج:
+                # إذا كان الـ AI متدرباً، نعتمد على رأيه (مثلاً يرفض أي صفقة احتمال نجاحها أقل من 60%)
+                if ai_probability != -1.0:
+                    if ai_probability < 60.0:
+                        return None # الذكاء الاصطناعي يرفض الصفقة رغم أن السكور الكلاسيكي عالي!
+                    final_score = ai_probability # نستبدل السكور القديم بنسبة النجاح الذكية
+                    ai_status = "Active 🧠"
+                else:
+                    final_score = score # نستخدم السكور القديم لأن الـ AI يجمع البيانات حالياً
+                    ai_status = "Learning ⏳"
+                
                 return {
-                    "symbol": symbol, "price": price, "score": score,
+                    "symbol": symbol, "price": price, "score": final_score,
                     "rsi": round(last_rsi, 2), "adx": round(current_adx, 2),
                     "macd": current_z, 
                     "vol_ratio": round(current_vol_ratio, 2),
                     "ob_pressure": round(locals().get('global_ob_pressure', 1.0), 2),
                     "signal_type": final_signal,
-                    "confluence": confluence_count
+                    "confluence": confluence_count,
+                    "ml_features": ml_features, # تمريرها لكي يتم تسجيلها لاحقاً
+                    "ai_status": ai_status
                 }
             return None  
-        except Exception:
-            return None
+
 
 
 async def handle_binance_rate_limit(retry_after: int = 60):
@@ -1028,6 +1160,93 @@ async def handle_binance_rate_limit(retry_after: int = 60):
         
         # إرجاع الإشارة خضراء (تستيقظ جميع المهام وتكمل عملها تلقائياً)
         binance_rate_limit_event.set() 
+async def log_signal_for_ml(pool, symbol: str, price: float, features: dict):
+    """
+    تسجيل بيانات الإشارة في قاعدة البيانات فور التقاطها من الرادار (حتى قبل موافقة الأدمن).
+    يمنع التكرار: لا يسجل نفس العملة إذا تم تسجيلها في آخر 4 ساعات.
+    """
+    async with pool.acquire() as conn:
+        # 🛡️ فلتر التكرار الذكي: إذا وصلت العملة للأدمن وعمل مسح (Clear)، لن تسجل كبيانات مكررة
+        exists = await conn.fetchval("""
+            SELECT 1 FROM ml_training_data 
+            WHERE symbol = $1 AND signal_time > CURRENT_TIMESTAMP - INTERVAL '4 hours'
+        """, symbol)
+        
+        if exists:
+            return # العملة مسجلة حديثاً، تجاهل التسجيل المزدوج لحماية جودة التدريب
+
+        await conn.execute("""
+            INSERT INTO ml_training_data 
+            (symbol, entry_price, z_score, cvd, imbalance, adx, rsi)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+        """, 
+        symbol, price, 
+        features.get('z_score', 0.0), features.get('cvd', 0.0), 
+        features.get('imbalance', 0.0), features.get('adx', 0.0), features.get('rsi', 0.0))
+        print(f"🧠 [ML Logger] Data captured for {symbol} at ${price}")
+
+async def ml_inspector_worker(pool):
+    """
+    عامل خلفي يعمل بصمت. يفحص الإشارات التي مر عليها 4 ساعات.
+    يحسب أقصى قمة وصل لها السعر (Highest High) لتحديد الربح الفعلي.
+    """
+    await asyncio.sleep(120) # انتظار دقيقتين بعد تشغيل السيرفر ليهدأ
+    print("🕵️‍♂️ ML Inspector is running in the background...")
+    
+    while True:
+        try:
+            async with pool.acquire() as conn:
+                # جلب العملات المعلقة التي مر عليها أكثر من 4 ساعات
+                pending = await conn.fetch("""
+                    SELECT id, symbol, entry_price, EXTRACT(EPOCH FROM signal_time) as sig_ts
+                    FROM ml_training_data 
+                    WHERE label = -1 AND signal_time <= CURRENT_TIMESTAMP - INTERVAL '4 hours'
+                """)
+                
+                if not pending:
+                    await asyncio.sleep(600) # ينام 10 دقائق إذا لم يجد شيئاً
+                    continue
+                    
+                async with httpx.AsyncClient(timeout=10) as client:
+                    for row in pending:
+                        sym = f"{row['symbol']}USDT"
+                        entry = row['entry_price']
+                        start_time_ms = int(row['sig_ts'] * 1000)
+                        
+                        # جلب شموع 15 دقيقة لتغطي الـ 4 ساعات التالية للإشارة
+                        base_url = get_random_binance_base()
+                        res = await client.get(
+                            f"{base_url}/api/v3/klines",
+                            params={"symbol": sym, "interval": "15m", "startTime": start_time_ms, "limit": 20}
+                        )
+                        
+                        if res.status_code == 200:
+                            klines = res.json()
+                            if not klines: continue
+                            
+                            # استخراج أعلى قمة وصل لها السعر في الـ 4 ساعات (الرقم 2 هو الـ High)
+                            highest_high = max([float(k[2]) for k in klines])
+                            
+                            # حساب أقصى نسبة ربح
+                            max_profit_pct = ((highest_high - entry) / entry) * 100
+                            
+                            # 🎯 التقييم: إذا صعدت 2% فأكثر نعتبرها صفقة ناجحة (1)، غير ذلك فاشلة (0)
+                            label = 1 if max_profit_pct >= 2.0 else 0
+                            
+                            await conn.execute("""
+                                UPDATE ml_training_data 
+                                SET max_profit_pct = $1, label = $2 
+                                WHERE id = $3
+                            """, max_profit_pct, label, row['id'])
+                            
+                            print(f"📊 [ML Labeling] {sym} evaluated. Max Profit: {max_profit_pct:.2f}%. Label: {label}")
+                            
+                        await asyncio.sleep(0.5) # حماية الـ API
+                        
+        except Exception as e:
+            print(f"⚠️ ML Inspector Error: {e}")
+            
+        await asyncio.sleep(600) # إعادة الفحص كل 10 دقائق
 
 async def ai_opportunity_radar(pool):
     print("🚀 تم تشغيل الرادار الشامل (وضع صيد القيعان)...")
@@ -1173,6 +1392,16 @@ Output in English only:
                     "symbol": symbol, "price": price, "signal": signal, "score": best_score,
                     "insight_ar": insight_ar, "insight_en": insight_en
                 }
+                # 🧠 [التحديث الجديد]: تسجيل البيانات للذكاء الاصطناعي فور وصولها للرادار (قبل الموافقة)
+                ml_features = {
+                    'z_score': float(best_meta.get('macd', 0)), # استخدمنا MACD لأنك خزنته كـ z-score
+                    'cvd': 1.0 if "Micro_Silent_Accumulation" in tags else 0.0, # تبسيط مبدئي
+                    'imbalance': float(best_meta.get('ob_pressure', 0)),
+                    'adx': float(best_meta.get('adx', 0)),
+                    'rsi': float(best_meta.get('rsi', 0))
+                }
+                # تشغيل التسجيل في الخلفية لكي لا يؤخر إرسال الرسالة للأدمن
+                asyncio.create_task(log_signal_for_ml(pool, symbol, price, best_meta['ml_features']))
 
                 admin_kb = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="✅ موافقة ونشر للمشتركين", callback_data=f"rad_app_{signal_id}")],
@@ -2658,6 +2887,25 @@ async def on_startup(app):
                 last_signaled TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+                # 🧠 الجديد: إنشاء جدول تدريب الذكاء الاصطناعي المؤسساتي (ML Data)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS ml_training_data (
+                id SERIAL PRIMARY KEY,
+                symbol TEXT,
+                signal_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                entry_price DOUBLE PRECISION,
+                z_score DOUBLE PRECISION,
+                cvd DOUBLE PRECISION,
+                imbalance DOUBLE PRECISION,
+                adx DOUBLE PRECISION,
+                rsi DOUBLE PRECISION,
+                max_profit_pct DOUBLE PRECISION DEFAULT 0.0,
+                label INTEGER DEFAULT -1
+            )
+        """)
+        # فهرس لتسريع بحث العامل الخلفي (Performance Optimization)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_ml_pending ON ml_training_data(label, signal_time)")
+
                 # ترقية جدول الذاكرة ليعمل بنظام الشذوذ الإحصائي
         await conn.execute("ALTER TABLE market_memory ADD COLUMN IF NOT EXISTS vol_mean DOUBLE PRECISION DEFAULT 0")
         await conn.execute("ALTER TABLE market_memory ADD COLUMN IF NOT EXISTS vol_stddev DOUBLE PRECISION DEFAULT 0")
@@ -2675,6 +2923,8 @@ async def on_startup(app):
 
     asyncio.create_task(smart_radar_watchdog(pool))
     asyncio.create_task(radar_worker_process(pool))
+    asyncio.create_task(ai_trainer_worker(pool)) # 🧠 تشغيل مدرب الذكاء الاصطناعي
+    asyncio.create_task(ml_inspector_worker(pool)) # 🧠 تشغيل محقق الذكاء الاصطناعي
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
 
