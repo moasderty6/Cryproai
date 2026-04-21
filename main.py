@@ -313,7 +313,7 @@ async def get_btc_trend(client):
     try:
         res = await client.get(f"{BINANCE_BASE}/klines", params={
             "symbol": "BTCUSDT", "interval": "1d", "limit": 25
-        }, headers=BINANCE_HEADERS)
+        })
         if res.status_code == 200:
             data = res.json()
             # في بايننس الإغلاق هو المؤشر رقم 4
@@ -1630,39 +1630,58 @@ async def set_lang(cb: types.CallbackQuery):
 # --- التعامل مع الرموز ---
 # --- التعامل مع الرموز ---
 
-async def search_dex_coin(symbol: str):
-    """تبحث عن العملة في DexScreener بناءً على التوثيق الرسمي"""
+async def search_dex_coin(symbol: str, retries: int = 3):
+    """تبحث عن العملة في DexScreener مع نظام حماية من الحظر اللحظي"""
     url = f"https://api.dexscreener.com/latest/dex/search?q={symbol}"
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            res = await client.get(url)
-            data = res.json()
-            if data.get("pairs") and len(data["pairs"]) > 0:
-                best_pair = data["pairs"][0]
-                return {
-                    "network": best_pair["chainId"],
-                    "pool_address": best_pair["pairAddress"],
-                    "price": float(best_pair.get("priceUsd", 0)),
-                    "volume_24h": float(best_pair.get("volume", {}).get("h24", 0)),
-                    "base_symbol": best_pair.get("baseToken", {}).get("symbol", symbol)
-                }
-    except Exception as e:
-        print(f"DexScreener Error: {e}")
+    
+    async with httpx.AsyncClient(timeout=10) as client:
+        for attempt in range(retries):
+            try:
+                res = await client.get(url)
+                
+                if res.status_code == 200:
+                    data = res.json()
+                    if data.get("pairs") and len(data["pairs"]) > 0:
+                        best_pair = data["pairs"][0]
+                        return {
+                            "network": best_pair["chainId"],
+                            "pool_address": best_pair["pairAddress"],
+                            "price": float(best_pair.get("priceUsd", 0)),
+                            "volume_24h": float(best_pair.get("volume", {}).get("h24", 0)),
+                            "base_symbol": best_pair.get("baseToken", {}).get("symbol", symbol)
+                        }
+                    return None # العملة غير موجودة فعلاً
+                    
+                elif res.status_code == 429: # حظر مؤقت من DexScreener
+                    await asyncio.sleep(2)
+                    continue
+                    
+            except Exception as e:
+                if attempt == retries - 1:
+                    print(f"DexScreener Error after 3 attempts: {e}")
+                await asyncio.sleep(1)
+                
     return None
 
+
+import pandas as pd
+
 async def get_candles_dex(network: str, pool_address: str, interval: str, limit: int = 500, retries: int = 3):
-    """تجلب الشموع من GeckoTerminal مع تخطي حماية كلاود فلير وعدم الاستسلام"""
+    """تجلب الشموع من GeckoTerminal مع تجميع الشموع الأسبوعية إذا طلبها المستخدم"""
     
+    # 1. تحديد الفريم الذي سنسحبه من الـ API
     if interval == "1w":
         timeframe, aggregate = "day", 1
+        fetch_limit = 500 # نسحب 500 يوم لتكوين حوالي 71 شمعة أسبوعية
     elif interval == "1d" or interval == "daily":
         timeframe, aggregate = "day", 1
+        fetch_limit = limit
     else: 
         timeframe, aggregate = "hour", 4
+        fetch_limit = limit
 
-    url = f"https://api.geckoterminal.com/api/v2/networks/{network}/pools/{pool_address}/ohlcv/{timeframe}?aggregate={aggregate}&limit={limit}"
+    url = f"https://api.geckoterminal.com/api/v2/networks/{network}/pools/{pool_address}/ohlcv/{timeframe}?aggregate={aggregate}&limit={fetch_limit}"
     
-    # 🟢 السر هنا: إضافة هيدر متصفح حقيقي لخداع حماية Cloudflare
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "application/json;version=20230302"
@@ -1671,7 +1690,6 @@ async def get_candles_dex(network: str, pool_address: str, interval: str, limit:
     async with httpx.AsyncClient() as client:
         for attempt in range(retries):
             try:
-                # أضفنا الـ headers للطلب
                 res = await client.get(url, headers=headers, timeout=15)
                 
                 if res.status_code == 200:
@@ -1686,19 +1704,43 @@ async def get_candles_dex(network: str, pool_address: str, interval: str, limit:
                         t, o, h, l, c, v = candle
                         formatted_candles.append([t, v, c, h, l, o])
                         
-                    return formatted_candles[::-1] 
+                    # عكس الترتيب ليصبح من الأقدم للأحدث
+                    formatted_candles = formatted_candles[::-1] 
+                    
+                    # 🟢 التجميع السحري للشموع الأسبوعية باستخدام Pandas
+                    if interval == "1w":
+                        df = pd.DataFrame(formatted_candles, columns=["timestamp", "volume", "close", "high", "low", "open"])
+                        
+                        # تحويل وقت الشمعة إلى نوع Datetime كفهرس للتجميع
+                        df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
+                        df.set_index('datetime', inplace=True)
+                        
+                        # هندسة الشمعة الأسبوعية
+                        resample_rules = {
+                            'open': 'first',     # الافتتاح هو افتتاح يوم الإثنين
+                            'high': 'max',       # الأعلى في الأسبوع
+                            'low': 'min',        # الأدنى في الأسبوع
+                            'close': 'last',     # الإغلاق هو إغلاق يوم الأحد
+                            'volume': 'sum',     # مجموع فوليوم الأسبوع كامل
+                            'timestamp': 'first' 
+                        }
+                        
+                        # التجميع بناءً على أسبوع يبدأ يوم الإثنين (W-MON)
+                        weekly_df = df.resample('W-MON').agg(resample_rules).dropna()
+                        
+                        # إعادة ترتيب الأعمدة كما يتوقعها البوت
+                        weekly_candles = weekly_df[["timestamp", "volume", "close", "high", "low", "open"]].values.tolist()
+                        return weekly_candles
+                        
+                    return formatted_candles
                 
-                # 🟢 التعديل الأهم: لا تستسلم فوراً! عالج كل الأخطاء المؤقتة (429، 403، 500، 502)
                 elif res.status_code in [429, 403, 500, 502, 503, 504]:
-                    print(f"⚠️ [GeckoTerminal] Blocked/Error ({res.status_code}). Retrying... (Attempt {attempt+1}/{retries})")
                     await asyncio.sleep(2)
                     continue
                 else:
-                    print(f"⚠️ [GeckoTerminal] Permanent error {res.status_code} for {pool_address}")
                     break
                     
             except Exception as e:
-                print(f"⚠️ [GeckoTerminal] Connection error: {e}")
                 await asyncio.sleep(1)
                 
     return None
@@ -1842,7 +1884,6 @@ async def get_candles_binance(symbol: str, interval: str, limit: int = 500, retr
                 res = await client.get(
                     f"{base_url}/api/v3/klines",
                     params={"symbol": clean_symbol, "interval": interval, "limit": limit},
-                    headers=BINANCE_HEADERS,
                     timeout=10
                 )
 
