@@ -451,73 +451,91 @@ async def detect_market_regime(client):
     
     return {"trend": regime, "volatility": volatility, "adx": current_adx}
 
-async def analyze_orderbook_depth(symbol, client, snapshots=3, delay=2.0):
-    """
-    تحليل متقدم للأوردر بوك يأخذ عدة لقطات (Snapshots) متتالية 
-    لكشف الجدران الوهمية اللحظية (Flash Spoofing) التي تضعها حيتان التلاعب وتسحبها.
-    """
-    pair = f"{symbol.upper()}USDT"
-    
-    total_imbalance = 0.0
-    spoof_count = 0
-    hidden_wall_count = 0
-    near_support_avg = 0.0
-    
-    for i in range(snapshots):
-        try:
-            base_url = get_random_binance_base()
-            res = await client.get(f"{base_url}/api/v3/depth", params={"symbol": pair, "limit": 500})
+import websockets
+import json
+import asyncio
+import time
 
-            if res.status_code == 200:
-                data = res.json()
-                bids = data['bids']
-                asks = data['asks']
-                
-                near_bids_vol = sum(float(b[0]) * float(b[1]) for b in bids[:50])
-                near_asks_vol = sum(float(a[0]) * float(a[1]) for a in asks[:50])
-                far_bids_vol = sum(float(b[0]) * float(b[1]) for b in bids[200:500])
-                far_asks_vol = sum(float(a[0]) * float(a[1]) for a in asks[200:500])
+async def detect_flash_spoofing_ws(symbol: str, duration: float = 4.0):
+    """
+    تسجيل فيديو للأوردر بوك لمدة 4 ثوانٍ (بمعدل 10 إطارات في الثانية)
+    لكشف الجدران التي تظهر وتختفي بسرعة البرق (Flash Spoofing).
+    """
+    clean_symbol = symbol.replace("USDT", "").lower() + "usdt"
+    # نطلب أفضل 20 مستوى، بتحديث كل 100 ملي ثانية
+    ws_url = f"wss://stream.binance.com:9443/ws/{clean_symbol}@depth20@100ms"
+    
+    total_bids_vol = 0
+    total_asks_vol = 0
+    frames_count = 0
+    
+    # لتتبع حجم أكبر جدار شراء وبيع في كل إطار
+    max_bid_walls = []
+    max_ask_walls = []
 
-                total_near = near_bids_vol + near_asks_vol
-                imbalance = (near_bids_vol - near_asks_vol) / total_near if total_near > 0 else 0
-                
-                total_imbalance += imbalance
-                near_support_avg += near_bids_vol
-                
-                # كشف التلاعب في هذه اللقطة
-                if far_bids_vol > (near_bids_vol * 5.0):
-                    spoof_count += 1
-                if far_asks_vol > (near_asks_vol * 8.0) and far_asks_vol > (near_bids_vol * 3.0):
-                    hidden_wall_count += 1
+    try:
+        # نفتح الاتصال لمدة محددة فقط (مثلاً 4 ثوانٍ)
+        async with websockets.connect(ws_url, ping_interval=None) as ws:
+            start_time = time.time()
+            
+            while time.time() - start_time < duration:
+                try:
+                    # ننتظر التحديث (إذا تأخر أكثر من ثانية نتجاوزه)
+                    msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                    data = json.loads(msg)
                     
-            # الانتظار قبل أخذ اللقطة التالية (إلا في اللقطة الأخيرة)
-            if i < snapshots - 1:
-                await asyncio.sleep(delay)
-                
-        except Exception:
-            pass
+                    bids = data.get('bids', [])
+                    asks = data.get('asks', [])
+                    
+                    if not bids or not asks:
+                        continue
 
-    # إذا فشلت كل اللقطات
-    if near_support_avg == 0:
+                    # حساب السيولة في هذا الإطار (Frame)
+                    current_bids_vol = sum(float(b[0]) * float(b[1]) for b in bids)
+                    current_asks_vol = sum(float(a[0]) * float(a[1]) for a in asks)
+                    
+                    total_bids_vol += current_bids_vol
+                    total_asks_vol += current_asks_vol
+                    frames_count += 1
+                    
+                    # تسجيل أكبر جدار في هذه اللحظة (أكبر أوردر مفرد)
+                    max_bid_walls.append(max(float(b[0]) * float(b[1]) for b in bids))
+                    max_ask_walls.append(max(float(a[0]) * float(a[1]) for a in asks))
+
+                except asyncio.TimeoutError:
+                    continue # تجاهل التأخير المؤقت
+                    
+    except Exception as e:
+        print(f"WS Depth Error for {symbol}: {e}")
         return None
 
-    # حساب المتوسطات
-    avg_imbalance = total_imbalance / snapshots
-    avg_support = near_support_avg / snapshots
+    if frames_count < 10: # إذا لم نلتقط بيانات كافية (أقل من 10 لقطات)
+        return None
 
-    # 🎯 محرك اتخاذ القرار:
-    # 1. تلاعب خاطف (Flash Spoof): الجدار ظهر واختفى (تم رصده في لقطة واحدة أو اثنتين فقط)
-    is_flash_spoof = (0 < spoof_count < snapshots)
+    # --- محرك كشف التلاعب المالي (Quant Engine) ---
     
-    # 2. جدار بيع خفي ثابت (Persistent Wall): الجدار صامد في أغلب اللقطات
-    is_persistent_wall = hidden_wall_count >= (snapshots // 2 + 1)
+    # 1. هل هناك جدار وهمي (Spoof) ظهر واختفى فجأة؟
+    # إذا كان أكبر جدار شراء مسجل أكبر بـ 5 أضعاف من متوسط الجدران الأخرى، فهذا يعني أنه جدار ظهر للحظة واختفى
+    avg_bid_wall = sum(max_bid_walls) / len(max_bid_walls)
+    max_recorded_bid = max(max_bid_walls)
+    is_bid_spoof = max_recorded_bid > (avg_bid_wall * 5.0)
+
+    avg_ask_wall = sum(max_ask_walls) / len(max_ask_walls)
+    max_recorded_ask = max(max_ask_walls)
+    is_ask_spoof = max_recorded_ask > (avg_ask_wall * 5.0)
+
+    # 2. الخلل العام في السيولة (Orderbook Imbalance)
+    avg_bids = total_bids_vol / frames_count
+    avg_asks = total_asks_vol / frames_count
+    imbalance = (avg_bids - avg_asks) / (avg_bids + avg_asks) if (avg_bids + avg_asks) > 0 else 0
 
     return {
-        "imbalance": round(avg_imbalance, 2),
-        "is_flash_spoof": is_flash_spoof,
-        "persistent_wall": is_persistent_wall,
-        "real_support": avg_support
+        "imbalance": round(imbalance, 2), # من -1 (سيطرة بائعين) إلى 1 (سيطرة مشترين)
+        "is_bid_spoof": is_bid_spoof,     # فخ شراء وهمي (لتصريف العملة)
+        "is_ask_spoof": is_ask_spoof,     # فخ بيع وهمي (لتجميع العملة بسعر رخيص)
+        "real_support": avg_bids
     }
+
 
 async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
     """
@@ -882,26 +900,29 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 score += 10.0 
                 tags.append("RSI_Div")
 
-            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)# --- استبدال الفحص العميق رقم 5 بالتالي ---
-                        # 5. الفحص العميق (Order Flow + Global)
+            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)# --- استبدال الفحص العميق رقم 5 بالتالي ---            # 5. الفحص العميق (Order Flow + Global)
             if score >= 35.0:
-                # نأخذ 3 لقطات بفاصل ثانيتين
-                depth_data = await analyze_orderbook_depth(symbol, client, snapshots=3, delay=2.0)
+                # 🔴 التحديث الجديد: تشغيل فيديو الأوردر بوك لمدة 4 ثوانٍ
+                depth_data = await detect_flash_spoofing_ws(symbol, duration=4.0)
+                
                 if depth_data:
-                    # 🚫 إذا اكتشفنا أن الحيتان تتلاعب وتضع أوامر تسحبها بسرعة (فخ)
-                    if depth_data['is_flash_spoof']:
-                        score -= 20.0 
-                        tags.append("Flash_Spoofing_Manipulation")
+                    # 🚫 كشف فخ الشراء: حوت يضع جدار شراء ضخم ويسحبه ليوهمنا بالصعود (يصرف علينا)
+                    if depth_data['is_bid_spoof']:
+                        score -= 25.0 
+                        tags.append("Flash_Spoofing_Manipulation (Trap)")
                     
-                    # ✅ إذا كان هناك جدار بيع ضخم وثابت، والحيتان تقوم بامتصاصه (CVD قوي)
-                    elif depth_data['persistent_wall'] and micro_cvd_boost > 0:
-                        score += 25.0 
-                        tags.append("Wall_Absorption_Pre_Breakout")
+                    # ✅ كشف فخ البيع: حوت يضع جدار بيع ضخم ويسحبه لكي يضغط السعر ويجمع براحته
+                    elif depth_data['is_ask_spoof'] and micro_cvd_boost > 0:
+                        score += 20.0 
+                        tags.append("Whale_Spoofing_Accumulation")
                     
-                    # ✅ إذا كان الخلل الحقيقي لصالح المشترين
-                    elif depth_data['imbalance'] > 0.4:
+                    # الخلل الحقيقي المستقر لصالح المشترين
+                    elif depth_data['imbalance'] > 0.3:
                         score += 15.0 
                         tags.append("OB_Buy")
+                    elif depth_data['imbalance'] < -0.3:
+                        score -= 15.0 # هروب مبكر لو البائعين مسيطرين
+
 
             
                 # فحص السيولة المؤسساتية لآخر 15 دقيقة
