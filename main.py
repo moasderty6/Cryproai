@@ -1961,8 +1961,9 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change, lang="ar
                 trend_strength = "متوسط" if lang == "ar" else "Moderate"
                 market_action = "جني أرباح طبيعي وتصحيح ضمن ترند صاعد عام" if lang == "ar" else "Natural profit-taking and correction within a macro uptrend"
             elif not macro_bull and vwap_bull:
-                trend_strength = "ضعيف" if lang == "ar" else "Weak"
-                market_action = "الحيتان تشتري الهبوط سرًا" if lang == "ar" else "Whales are silently buying the dip"
+                trend_strength = "مخادع (خطر ارتداد)" if lang == "ar" else "Fake (Bounce Risk)"
+                market_action = "سيولة شرائية مؤقتة تعاكس الترند الهابط العام" if lang == "ar" else "Temporary buying liquidity countering the macro downtrend"
+
             else:
                 trend_strength = "ضعيف ومخادع" if lang == "ar" else "Weak & Fake"
                 market_action = "فخ بيعي لتخويف المتداولين" if lang == "ar" else "Bear trap to shake out retail traders"
