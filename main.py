@@ -793,6 +793,28 @@ def calculate_volume_zscore(df, window=720):
         current_z = 0.0
 
     return current_z, last_mean, last_std
+def process_dataframe_sync(candles_data):
+    """دالة خارجية لمعالجة البيانات بدون تجميد البوت"""
+    df = pd.DataFrame(candles_data)
+    df = df.iloc[:, :7] 
+    df.columns = ["timestamp", "volume", "close", "high", "low", "open", "taker_buy_vol"]
+    for col in df.columns: 
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    delta = df["close"].diff()
+    gain = delta.clip(lower=0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    df["rsi"] = 100 - (100 / (1 + (gain / loss)))
+    last_rsi_val = df["rsi"].iloc[-1]
+    
+    try: 
+        current_adx_val = float(ta.trend.ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14, fillna=True).adx().iloc[-1])
+    except: 
+        current_adx_val = 0.0
+
+    current_z_val, vol_mean_val, vol_std_val = calculate_volume_zscore(df, window=720)
+    
+    return df, last_rsi_val, current_adx_val, current_z_val, vol_mean_val, vol_std_val
 
 async def analyze_radar_coin(c, client, market_regime, sem):
     async with sem:  
@@ -803,25 +825,12 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             candles = await get_candles_binance(f"{symbol}USDT", "1h", limit=750)
             if not candles: return None
 
-            df = pd.DataFrame(candles)
-            df = df.iloc[:, :7] 
-            df.columns = ["timestamp", "volume", "close", "high", "low", "open", "taker_buy_vol"]
-            for col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce')
-
-            delta = df["close"].diff()
-            gain = delta.clip(lower=0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-            loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-            df["rsi"] = 100 - (100 / (1 + (gain / loss)))
-            last_rsi = df["rsi"].iloc[-1]
-            
-            try: current_adx = float(ta.trend.ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14, fillna=True).adx().iloc[-1])
-            except: current_adx = 0.0
+                        # --- هذا هو الكود البديل (سطر واحد يستدعي الدالة اللي فوق في الخلفية) ---
+            df, last_rsi, current_adx, current_z, vol_mean, vol_std = await asyncio.to_thread(process_dataframe_sync, candles)
 
             # 🟢 البداية من سكور 20 لتوزيع النسب باحترافية
             score = 20.0
             tags = [] # قائمة لتجميع نوع الحركات
-
-            current_z, vol_mean, vol_std = calculate_volume_zscore(df, window=720)
             
             pool = dp['db_pool']
             async with pool.acquire() as conn:
@@ -1066,8 +1075,16 @@ async def ai_opportunity_radar(pool):
                         })
                 
                 # 👈 التعديل هنا: نرتب باستخدام x["volume"] 
+                                # 👈 التعديل هنا: نرتب باستخدام x["volume"] 
                 coins = sorted(coins, key=lambda x: x["volume"], reverse=True)[:300]
-                tasks = [analyze_radar_coin(c, client, market_regime, sem) for c in coins]
+                
+                # ✅ التعديل الجديد: إرسال الطلبات بالتدريج لحماية الـ API من الحظر
+                tasks = []
+                for c in coins:
+                    await asyncio.sleep(0.2) # استراحة 200 ملي ثانية بين كل عملة
+                    task = asyncio.create_task(analyze_radar_coin(c, client, market_regime, sem))
+                    tasks.append(task)
+                    
                 results = await asyncio.gather(*tasks)
                 
                 valid_signals = [r for r in results if r is not None]
@@ -2031,10 +2048,6 @@ def detect_nearest_fvg(df, current_price, trend_direction):
 def calculate_smart_trend_and_targets(df, current_price, db_vol_change, lang="ar", override_trend=None):
     
     # 🟢 الحل الجذري: إجبار تحويل الأعمدة إلى أرقام (Floats) قبل أي عملية حسابية
-    for col in ['high', 'low', 'close', 'open', 'volume']:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-
     # هنا بيبدأ كودك القديم طبيعي جداً
     df['prev_close'] = df['close'].shift(1)
     df['tr0'] = abs(df['high'] - df['low'])
