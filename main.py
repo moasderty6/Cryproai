@@ -40,8 +40,7 @@ BINANCE_HEADERS = {"X-MBX-APIKEY": BINANCE_API_KEY}
 GATE_API_KEY = "a3f6a57b42f6106011e6890049e57b2e"
 GATE_API_SECRET = "1ac18e0a690ce782f6854137908a6b16eb910cf02f5b95fa3c43b670758f79bc"
 GATE_BASE = "https://api.gateio.ws/api/v4/spot/candlesticks"
-# قائمة سوداء للعملات المشطوبة أو المزعجة لمنعها من دخول الرادار نهائياً
-BLACKLISTED_COINS = {"TOMO", "COCOS", "LRC", "BUSD", "TUSD", "USDC"}
+BLACKLISTED_COINS = {"TOMO", "COCOS", "LRC", "BUSD", "TUSD", "USDC", "USDE", "XUSD"}
 GROQ_KEYS_STR = os.getenv("GROQ_API_KEYS", "")
 GROQ_API_KEYS = [k.strip() for k in GROQ_KEYS_STR.split(",") if k.strip()]
 WEBHOOK_URL = os.getenv("WEBHOOK_URL") 
