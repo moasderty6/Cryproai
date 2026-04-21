@@ -2245,13 +2245,13 @@ async def run_analysis(cb: types.CallbackQuery):
         # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة
         if trend_dir == "Bullish":
             if classic_trend == "Bearish":
-                trend_str = "صاعد قوي (اكتشاف فخ بيعي وانعكاس)" if lang == "ar" else "Strong Bullish (Bear Trap)"
+                trend_str = "قوي (اكتشاف فخ بيعي وانعكاس)" if lang == "ar" else "Strong (Bear Trap)"
                 market_action += " | الحيتان تشتري سراً وتمتص العروض للهبوط" if lang == "ar" else " | Whales absorbing supply"
             elif fut_sig == "Short_Squeeze":
                 trend_str = "انفجار سعري وشيك" if lang == "ar" else "Imminent Squeeze"
         elif trend_dir == "Bearish":
             if classic_trend == "Bullish":
-                trend_str = "هابط (تصريف مخفي في القمة)" if lang == "ar" else "Bearish (Hidden Distribution)"
+                trend_str = "(تصريف مخفي في القمة)" if lang == "ar" else "(Hidden Distribution)"
                 market_action += " | فخ شرائي، الحيتان تفرغ محافظها" if lang == "ar" else " | Bull trap, whales distributing"
             elif fut_sig == "Short_Covering":
                 trend_str = "ضعيف - إغلاق شورت" if lang == "ar" else "Weak - Short Covering"
