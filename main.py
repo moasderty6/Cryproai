@@ -2218,16 +2218,24 @@ async def run_analysis(cb: types.CallbackQuery):
         except Exception:
             cvd_sig, buy_v, sell_v, fut_sig, z_score = None, 0, 0, None, 0
 
-        # 2. كشف الفخاخ وتوحيد الاتجاه
+        # 2. كشف الفخاخ وتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه
         ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
         ema50 = df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
         classic_trend = "Bullish" if ema20 > ema50 else "Bearish"
         
         final_trend_dir = classic_trend
-        if classic_trend == "Bearish" and (cvd_sig == "Micro_Silent_Accumulation" or buy_v > sell_v * 1.5):
-            final_trend_dir = "Bullish" # الحيتان تشتري في قاع هابط = الاتجاه الحقيقي صاعد
-        elif classic_trend == "Bullish" and (cvd_sig == "Hidden_Distribution" or sell_v > buy_v * 1.5):
-            final_trend_dir = "Bearish" # الحيتان تصرف في قمة صاعدة = الاتجاه الحقيقي هابط
+        
+        # أ. شروط انعكاس الاتجاه من هابط إلى صاعد (اصطياد القاع)
+        if classic_trend == "Bearish":
+            # إما الحيتان تشتري الآن، أو المؤشرات (RSI/MACD) تؤكد ارتداداً صريحاً من القاع
+            if (cvd_sig == "Micro_Silent_Accumulation" or buy_v > sell_v * 1.5) or (last_rsi < 40 and last_macd > 0):
+                final_trend_dir = "Bullish" 
+                
+        # ب. شروط انعكاس الاتجاه من صاعد إلى هابط (الهروب من القمة المخادعة)
+        elif classic_trend == "Bullish":
+            # إما الحيتان تصرف الآن، أو المؤشرات تؤكد تشبعاً بيعياً مع تقاطع سلبي
+            if (cvd_sig == "Hidden_Distribution" or sell_v > buy_v * 1.5) or (last_rsi > 70 and last_macd < 0):
+                final_trend_dir = "Bearish" 
 
         # 3. حساب الدعم والمقاومة والأهداف بناءً على الاتجاه "المُوحّد" لمنع التضارب
         trend_dir, trend_str, market_action, adx_val, calc_sl, calc_tp1, calc_tp2, calc_tp3, calc_sup, calc_res = calculate_smart_trend_and_targets(
