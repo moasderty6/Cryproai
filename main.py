@@ -55,6 +55,9 @@ ADMIN_USER_ID = 6172153716
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
 # --- إعداد البوت ---
+# إشارة مرور للتحكم في طلبات بايننس لمنع الحظر
+binance_rate_limit_event = asyncio.Event()
+binance_rate_limit_event.set() # الإشارة خضراء افتراضياً (مسموح بالطلبات)
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 user_session_data = {}
@@ -965,6 +968,22 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             return None
 
 
+async def handle_binance_rate_limit(retry_after: int = 60):
+    """توقف الرادار بالكامل عند استقبال 429 لمنع حظر 418"""
+    # نتأكد أن الإشارة خضراء حتى لا نقوم بتشغيل المؤقت أكثر من مرة
+    if binance_rate_limit_event.is_set():
+        print(f"⚠️ [نظام الحماية] بايننس أرسلت تحذير (429)! إيقاف جميع الطلبات لمدة {retry_after} ثانية...")
+        
+        # تحويل الإشارة إلى حمراء (تجميد كل المهام التي تنتظر الإشارة)
+        binance_rate_limit_event.clear() 
+        
+        # ننتظر الفترة المطلوبة من بايننس
+        await asyncio.sleep(retry_after)
+        
+        print("🟢 [نظام الحماية] انتهاء فترة التوقف. استئناف عمل الرادار...")
+        
+        # إرجاع الإشارة خضراء (تستيقظ جميع المهام وتكمل عملها تلقائياً)
+        binance_rate_limit_event.set() 
 
 async def ai_opportunity_radar(pool):
     print("🚀 تم تشغيل الرادار الشامل (وضع صيد القيعان)...")
@@ -983,11 +1002,16 @@ async def ai_opportunity_radar(pool):
                 ignored_symbols = {r['symbol'] for r in records}
 
             async with httpx.AsyncClient(timeout=30) as client:
+                
+                # 👇👇 هذا هو السطر الجديد (نقطة التفتيش / البريك) 👇👇
+                await binance_rate_limit_event.wait()
+                
                 # 🟢 التعديل هنا: جلب بيانات الماكرو الجديدة بدل البوليان القديم
                 market_regime = await detect_market_regime(client)
                 
                 # جلب بيانات بايننس اللحظية (24hr Ticker) بدون أي تأخير
                 res = await client.get("https://api.binance.com/api/v3/ticker/24hr", timeout=10)
+
                 
                 if res.status_code != 200:
                     await bot.send_message(ADMIN_USER_ID, "❌ فشل الاتصال بـ Binance API. سيتم إعادة المحاولة...")
@@ -1749,6 +1773,9 @@ async def get_candles_binance(symbol: str, interval: str, limit: int = 500, retr
     
     async with httpx.AsyncClient() as client:
         for attempt in range(retries):
+            # 🛑 انتظار الإشارة الخضراء قبل إرسال أي طلب لبايننس
+            await binance_rate_limit_event.wait()
+
             try:
                 res = await client.get(
                     f"{BINANCE_BASE}/klines",
@@ -1761,17 +1788,26 @@ async def get_candles_binance(symbol: str, interval: str, limit: int = 500, retr
                     formatted_candles = []
                     for c in data:
                         formatted_candles.append([
-                            str(int(c[0] / 1000)), # 0: Timestamp
-                            c[5], # 1: Total Volume
-                            c[4], # 2: Close
-                            c[2], # 3: High
-                            c[3], # 4: Low
-                            c[1], # 5: Open
-                            c[9]  # 6: Taker Buy Base Asset Volume (هنا السر: أموال الشراء العدواني)
+                            str(int(c[0] / 1000)), c[5], c[4], c[2], c[3], c[1], c[9]
                         ])
                     return formatted_candles
+                
+                # 🚨 هنا يتم اصطياد التحذير قبل الحظر!
                 elif res.status_code == 429:
-                    await asyncio.sleep(2 * (attempt + 1))
+                    # قراءة وقت الانتظار المطلوب من هيدر بايننس (أو افتراض 60 ثانية)
+                    retry_after = int(res.headers.get("Retry-After", 60))
+                    
+                    # تفعيل حالة الطوارئ وإيقاف باقي الرادار
+                    asyncio.create_task(handle_binance_rate_limit(retry_after))
+                    
+                    # تأخير بسيط للمحاولة الحالية
+                    await asyncio.sleep(2) 
+                    
+                elif res.status_code == 418:
+                    print("❌ [كارثة] حظر IP كامل (418)! خادمك محظور من بايننس.")
+                    # إيقاف إجباري لمدة 5 دقائق على الأقل لمحاولة تهدئة السيرفر
+                    asyncio.create_task(handle_binance_rate_limit(300))
+                    return None
                 else:
                     return None
             except Exception as e:
