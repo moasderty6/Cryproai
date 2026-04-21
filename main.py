@@ -37,11 +37,11 @@ CMC_KEY = os.getenv("CMC_API_KEY")
 BINANCE_API_KEY = "rvApoDI6XRYcki1r2QTnPUBs3QwESzrpTVKohgjbK1zxSzlvrFPxAbZKr94xA2Lx"
 # قائمة مسارات بايننس الرسمية للتهرب من الليمت وتوزيع الحمل
 BINANCE_BASES = [
-    "https://api.binance.com/api/v3",
-    "https://api1.binance.com/api/v3",
-    "https://api2.binance.com/api/v3",
-    "https://api3.binance.com/api/v3",
-    "https://api4.binance.com/api/v3"
+    "https://api.binance.com",
+    "https://api1.binance.com",
+    "https://api2.binance.com",
+    "https://api3.binance.com",
+    "https://api4.binance.com"
 ]
 
 def get_random_binance_base():
