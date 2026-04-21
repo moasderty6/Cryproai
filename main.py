@@ -2197,7 +2197,7 @@ async def run_analysis(cb: types.CallbackQuery):
     # ... (كمل باقي الكود من هنا: سحب الفوليوم من الداتا بيز، وتعريف الـ prompt بدون ما تخليهم جوا if) ...
 
 
-        # 🔥 سحب الفوليوم من قاعدة البيانات
+        # 🔥 سحب الفوليوم من قاعدة البيانات        # 🔥 سحب الفوليوم من قاعدة البيانات
         db_vol_float = 0.0
         try:
             async with pool.acquire() as conn:
@@ -2208,8 +2208,54 @@ async def run_analysis(cb: types.CallbackQuery):
         except Exception as e:
             print(f"Failed to fetch market_memory for {clean_sym}: {e}")
 
-        # تمرير قيمة الفوليوم للدالة الذكية
+        # 1. الحساب الكلاسيكي للترند والأهداف
         trend_dir, trend_str, market_action, adx_val, calc_sl, calc_tp1, calc_tp2, calc_tp3, calc_sup, calc_res = calculate_smart_trend_and_targets(df, price, db_vol_float, lang)
+
+        # 2. ⚡ حقن قوة الرادار (السيولة المؤسساتية) لتنقيح الاتجاه وقوته
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                old_price_val = df["close"].iloc[-3] if len(df) > 3 else price
+                
+                # جلب البيانات المؤسساتية بالتوازي لضمان سرعة استجابة البوت
+                cvd_task = get_micro_cvd_absorption(f"{clean_sym}USDT", client)
+                flow_task = get_institutional_orderflow(f"{clean_sym}USDT", client, minutes=15)
+                futures_task = get_futures_liquidity(clean_sym, client, price, old_price_val)
+                
+                (cvd_boost, cvd_sig), (delta_usd, buy_v, sell_v), (fut_boost, fut_sig) = await asyncio.gather(
+                    cvd_task, flow_task, futures_task
+                )
+                
+                z_score, _, _ = calculate_volume_zscore(df, window=720)
+
+                # 3. تعديل (trend_str) و (market_action) بناءً على النوايا الحقيقية للحيتان
+                if trend_dir == "Bullish":
+                    # كشف الفخ الشرائي: صعود السعر لكن الـ CVD سلبي، أو البيع أكثر من الشراء، أو فوليوم شاذ جداً (FOMO)
+                    if cvd_sig == "Hidden_Distribution" or (sell_v > buy_v * 1.5) or z_score > 4.0:
+                        trend_str = "ضعيف ومخادع" if lang == "ar" else "Weak & Fake"
+                        market_action += " | فخ شرائي وتصريف مخفي" if lang == "ar" else " | Bull Trap & Hidden Distribution"
+                    # تأكيد الاختراق: شراء عنيف كـ Taker أو تجميع صامت
+                    elif cvd_sig == "Micro_Silent_Accumulation" or buy_v > sell_v * 1.5:
+                        trend_str = "قوي جداً (دخول مؤسساتي)" if lang == "ar" else "Very Strong (Inst. Inflow)"
+                        
+                elif trend_dir == "Bearish":
+                    # كشف الفخ البيعي: السعر يهبط لكن الحيتان تمتص العروض
+                    if cvd_sig == "Micro_Silent_Accumulation" or (buy_v > sell_v * 1.5):
+                        trend_str = "مخادع (انعكاس محتمل)" if lang == "ar" else "Fake (Reversal Likely)"
+                        market_action += " | فخ بيعي وامتصاص للعروض" if lang == "ar" else " | Bear Trap & Supply Absorption"
+                    # تأكيد الانهيار: هبوط مدعوم بتصريف حقيقي
+                    elif cvd_sig == "Hidden_Distribution" or (sell_v > buy_v * 1.5):
+                        trend_str = "قوي (تصريف مؤسساتي)" if lang == "ar" else "Strong (Inst. Distribution)"
+
+                # دمج تأثير المشتقات لتحديد الحركات العنيفة (Squeezes)
+                if fut_sig == "Short_Squeeze":
+                    trend_str = "انفجار سعري وشيك" if lang == "ar" else "Imminent Squeeze"
+                elif fut_sig == "Short_Covering" and trend_dir == "Bullish":
+                    trend_str = "متوسط (إغلاق مراكز بيع)" if lang == "ar" else "Moderate (Short Covering)"
+                    
+        except Exception as e:
+            print(f"Error injecting radar data into analysis: {e}")
+            # في حال فشل الاتصال، سيعتمد البوت بسلاسة على المتغيرات الكلاسيكية المحسوبة في الخطوة 1
+
 
         # 🟢 استعادة تعريف متغيرات RSI و MACD لتجنب خطأ NameError
         macd_fmt = format_price(last_macd) if 'last_macd' in locals() and last_macd is not None else "0.0"
