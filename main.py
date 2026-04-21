@@ -2432,41 +2432,6 @@ Stop Loss: <code>{format_price(calc_sl)}</code>
 • ADX ({adx_val:.1f}):
 - [Write exactly one line explaining trend strength]
 """
-
-        else:
-            real_trend = "Bullish" if trend_dir == "Bullish" else "Bearish"
-            trend_strength = trend_str
-            
-            prompt = f"""
-You are an expert Technical Analyst at "NaiF CHarT". Format this analysis for {clean_sym} professionally and concisely.
-The data is calculated mathematically and is completely ready. ⚠️ STRICT RULE: DO NOT change the TP or SL numbers ⚠️. Just arrange them in the required template and write a precise technical comment in one short line for each indicator.
-
-⚠️ Strictly follow this template (Use HTML only):
-
-📊 <b>Analysis: {clean_sym}</b> | {tf} | {format_price(price)}$
-Trend: {real_trend} ({trend_strength})
-
-📉 <b>Support & Resistance</b>
-Nearest Support: <code>{format_price(calc_sup)}</code>$
-Nearest Resistance: <code>{format_price(calc_res)}</code>$
-
-🎯 <b>Price Targets (TP)</b>
-TP1: <code>{format_price(calc_tp1)}</code>
-TP2: <code>{format_price(calc_tp2)}</code>
-TP3: <code>{format_price(calc_tp3)}</code>
-
-🛑 <b>Stop Loss (SL)</b>
-Stop Loss: <code>{format_price(calc_sl)}</code>
-
-📈 <b>Indicator Analysis</b>
-• Liquidity: {market_action} (Write one line commenting on this action)
-• RSI ({safe_rsi}): (Write one line explaining overbought/oversold or neutrality)
-• MACD ({macd_fmt}): (Write one line explaining momentum)
-• ADX ({adx_val:.1f}): (Write one line explaining trend strength)
-"""
-
-
-
     res = await ask_groq(prompt, lang=lang)
     await cb.message.answer(res, parse_mode=ParseMode.HTML)
     
