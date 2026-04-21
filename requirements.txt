@@ -9,3 +9,4 @@ pandas
 numpy
 ta==0.11.0
 websockets
+xgboost pandas scikit-learn numpy
