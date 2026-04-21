@@ -2281,7 +2281,8 @@ async def run_analysis(cb: types.CallbackQuery):
             return await cb.message.answer(error_msg, parse_mode=ParseMode.HTML)
 
     # 🟢 لاحظ هنا: شلنا (if candles:) وكل الأسطر اللي تحتها رجعناها لورا مسافة عشان تصير أساسية بالدالة
-    last_rsi, last_macd, last_bb, last_vol, _, _ = compute_indicators(candles) 
+    # 🟢 التعديل الأول: نقل حساب المؤشرات إلى الخلفية لمنع تعليق البوت
+    last_rsi, last_macd, last_bb, last_vol, _, _ = await asyncio.to_thread(compute_indicators, candles)
         
     import pandas as pd 
     df = pd.DataFrame(candles)
@@ -2338,9 +2339,11 @@ async def run_analysis(cb: types.CallbackQuery):
                 final_trend_dir = "Bearish" 
 
         # 3. حساب الدعم والمقاومة والأهداف بناءً على الاتجاه "المُوحّد" لمنع التضارب
-        trend_dir, trend_str, market_action, adx_val, calc_sl, calc_tp1, calc_tp2, calc_tp3, calc_sup, calc_res = calculate_smart_trend_and_targets(
-            df, price, db_vol_float, lang, override_trend=final_trend_dir
+                # 3. حساب الدعم والمقاومة والأهداف في الخلفية لمنع التضارب والتعليق
+        trend_dir, trend_str, market_action, adx_val, calc_sl, calc_tp1, calc_tp2, calc_tp3, calc_sup, calc_res = await asyncio.to_thread(
+            calculate_smart_trend_and_targets, df, price, db_vol_float, lang, final_trend_dir
         )
+
 
         # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة
         if trend_dir == "Bullish":
