@@ -35,7 +35,17 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CMC_KEY = os.getenv("CMC_API_KEY")
 BINANCE_API_KEY = "rvApoDI6XRYcki1r2QTnPUBs3QwESzrpTVKohgjbK1zxSzlvrFPxAbZKr94xA2Lx"
-BINANCE_BASE = "https://api.binance.com/api/v3"
+# قائمة مسارات بايننس الرسمية للتهرب من الليمت وتوزيع الحمل
+BINANCE_BASES = [
+    "https://api.binance.com/api/v3",
+    "https://api1.binance.com/api/v3",
+    "https://api2.binance.com/api/v3",
+    "https://api3.binance.com/api/v3",
+    "https://api4.binance.com/api/v3"
+]
+
+def get_random_binance_base():
+    return random.choice(BINANCE_BASES)
 BINANCE_HEADERS = {"X-MBX-APIKEY": BINANCE_API_KEY}
 GATE_API_KEY = "a3f6a57b42f6106011e6890049e57b2e"
 GATE_API_SECRET = "1ac18e0a690ce782f6854137908a6b16eb910cf02f5b95fa3c43b670758f79bc"
@@ -151,7 +161,9 @@ async def get_recent_orderflow_delta(symbol, client, limit=500):
     بديل سريع وآمن للـ WebSocket: يقرأ آخر 500 صفقة تمت لتحديد الشراء/البيع العدواني
     """
     try:
-        res = await client.get(f"{BINANCE_BASE}/trades", params={"symbol": symbol, "limit": limit})
+        base_url = get_random_binance_base()
+        res = await client.get(f"{base_url}/api/v3/trades", params={"symbol": symbol, "limit": limit})
+
         if res.status_code == 200:
             trades = res.json()
             delta = 0.0
@@ -318,7 +330,9 @@ async def get_micro_cvd_absorption(symbol, client):
     """
     try:
         # جلب بيانات دقيقة جداً لآخر ساعتين
-        res = await client.get(f"https://api.binance.com/api/v3/klines", params={
+        base_url = get_random_binance_base()
+        res = await client.get(f"{base_url}/api/v3/klines", params={
+
             "symbol": symbol, "interval": "1m", "limit": 120
         }, timeout=5.0)
         
@@ -363,7 +377,9 @@ async def get_institutional_orderflow(symbol, client, minutes=15):
     start_time = end_time - (minutes * 60 * 1000)
     
     try:
-        res = await client.get(f"https://api.binance.com/api/v3/aggTrades", params={
+        base_url = get_random_binance_base()
+        res = await client.get(f"{base_url}/api/v3/aggTrades", params={
+
             "symbol": symbol,
             "startTime": start_time,
             "endTime": end_time
@@ -396,7 +412,9 @@ async def detect_market_regime(client):
     تحليل حالة السوق العامة (الماكرو) بناءً على حركة البيتكوين.
     """
     # جلب شمعة الـ 4 ساعات للبيتكوين لتحديد الاتجاه العام
-    res = await client.get(f"https://api.binance.com/api/v3/klines", params={"symbol": "BTCUSDT", "interval": "4h", "limit": 100})
+        # جلب شمعة الـ 4 ساعات للبيتكوين لتحديد الاتجاه العام
+    base_url = get_random_binance_base()
+    res = await client.get(f"{base_url}/api/v3/klines", params={"symbol": "BTCUSDT", "interval": "4h", "limit": 100})
     if res.status_code != 200:
         return {"trend": "Neutral", "volatility": "Normal", "adx": 20}
 
@@ -453,7 +471,9 @@ async def analyze_orderbook_depth(symbol, client, snapshots=3, delay=2.0):
     
     for i in range(snapshots):
         try:
-            res = await client.get(f"https://api.binance.com/api/v3/depth", params={"symbol": pair, "limit": 500})
+            base_url = get_random_binance_base()
+            res = await client.get(f"{base_url}/api/v3/depth", params={"symbol": pair, "limit": 500})
+
             if res.status_code == 200:
                 data = res.json()
                 bids = data['bids']
@@ -516,7 +536,7 @@ async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
     sym_htx = f"{symbol.lower()}usdt" # HTX تتطلب الحروف الصغيرة
 
     urls = {
-        "binance": f"https://api.binance.com/api/v3/depth?symbol={sym_binance_mexc}&limit=50",
+        "binance": f"{get_random_binance_base()}/api/v3/depth?symbol={sym_binance_mexc}&limit=50",
         "bybit": f"https://api.bybit.com/v5/market/orderbook?category=spot&symbol={sym_binance_mexc}&limit=50",
         "gate": f"https://api.gateio.ws/api/v4/spot/order_book?currency_pair={sym_gate}&limit=50",
         "kucoin": f"https://api.kucoin.com/api/v1/market/orderbook/level2_100?symbol={sym_kucoin_okx}",
@@ -1010,7 +1030,9 @@ async def ai_opportunity_radar(pool):
                 market_regime = await detect_market_regime(client)
                 
                 # جلب بيانات بايننس اللحظية (24hr Ticker) بدون أي تأخير
-                res = await client.get("https://api.binance.com/api/v3/ticker/24hr", timeout=10)
+                                # جلب بيانات بايننس اللحظية (24hr Ticker) بدون أي تأخير
+                base_url = get_random_binance_base()
+                res = await client.get(f"{base_url}/api/v3/ticker/24hr", timeout=10)
 
                 
                 if res.status_code != 200:
@@ -1711,12 +1733,15 @@ async def handle_symbol(m: types.Message):
             }
             
             # جلب السعر والفوليوم من بايننس باستخدام حسابك
+                        # جلب السعر والفوليوم من بايننس باستخدام حسابك
+            base_url = get_random_binance_base()
             res_binance = await client.get(
-                "https://api.binance.com/api/v3/ticker/24hr",
+                f"{base_url}/api/v3/ticker/24hr",
                 params={"symbol": pair},
                 headers=binance_headers,
                 timeout=10
             )
+
             
             if res_binance.status_code == 200:
                 data_binance = res_binance.json()
@@ -1777,12 +1802,14 @@ async def get_candles_binance(symbol: str, interval: str, limit: int = 500, retr
             await binance_rate_limit_event.wait()
 
             try:
+                base_url = get_random_binance_base()
                 res = await client.get(
-                    f"{BINANCE_BASE}/klines",
+                    f"{base_url}/api/v3/klines",
                     params={"symbol": clean_symbol, "interval": interval, "limit": limit},
                     headers=BINANCE_HEADERS,
                     timeout=10
                 )
+
                 if res.status_code == 200:
                     data = res.json()
                     formatted_candles = []
