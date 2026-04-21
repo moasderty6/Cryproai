@@ -1031,45 +1031,47 @@ async def ai_opportunity_radar(pool):
                         SET last_signaled = CURRENT_TIMESTAMP
                     """, symbol)
 
-                prompt_ar = f"""
-أنت محلل بيانات مالية (Quant Analyst) في مؤسسة "NaiF CHarT Intelligence Lab".
-مهمتك صياغة "التقرير المالي اللحظي" لعملة {symbol} بناءً على بيانات الرادار الخوارزمي.
+                                # تنسيق الأرقام لضمان عدم ظهور أرقام طويلة جداً
+                z_score_val = f"{best_meta['macd']:.2f}"
+                vol_ratio_val = f"{best_meta['vol_ratio']:.2f}"
+                ob_pressure_val = f"{best_meta.get('ob_pressure', 1.0):.2f}"
 
-البيانات المحسوبة آلياً:
-- الشذوذ الإحصائي للسيولة (Z-Score): {best_meta['macd']} (مؤشر التجميع الصامت)
-- تدفق الأموال الذكية (Volume Ratio): أعلى بـ {best_meta['vol_ratio']} ضعف من المتوسط.
-- ضغط الأوردر بوك اللحظي (Global OB): المشترون يتفوقون بـ {best_meta.get('ob_pressure', 1.0)}x.
-- الإجماع التقني (Confluence): {best_meta.get('confluence', 0)} إشارات مؤسساتية متطابقة.
-- المؤشرات الكلاسيكية: ADX: {best_meta['adx']} | RSI: {best_meta['rsi']}
+                prompt_ar = f"""
+أنت محلل كمي (Quant) في NaiF CHarT Intelligence Lab.
+اكتب تقرير فحص سريع لعملة {symbol} بناءً على هذه المعطيات:
+- Z-Score (مؤشر التجميع الصامت): {z_score_val}
+- تدفق السيولة الذكية: أعلى بـ {vol_ratio_val} ضعف.
+- ضغط الأوردر بوك: المشترون أقوى بـ {ob_pressure_val}x.
+- قوة الإجماع التقني: {best_meta.get('confluence', 0)}
+- مؤشرات الاتجاه: ADX: {best_meta['adx']} | RSI: {best_meta['rsi']}
 
 التعليمات الصارمة:
-1. اكتب التحليل في 3 نقاط قصيرة بحيث لا يتجاوز ثلاث اسطر (Bullet points) باستخدام HTML (•).
-2. استخدم أسلوباً مؤسساتياً جافاً ومباشراً يعتمد على الأرقام أعلاه فقط.
-3. يمنع منعاً باتاً استخدام الكلمات العاطفية أو التسويقية (مثل: قوي جداً، انفجار، صاروخ، فرصة ذهبية، هائل).
-4. فسر الأرقام باحترافية: مثلاً (تزايد السيولة بـ x ضعف يعكس امتصاصاً لعروض البيع...).
+1. التنويع: لا تكرر نفس العبارات في كل تحليل. استخدم زوايا مختلفة (مرة ركز على امتصاص العروض، ومرة على الشراء الهجومي، ومرة على جفاف السيولة البيعية).
+2. اكتب 3 نقاط قصيرة جداً (لا تتجاوز 3 أسطر) باستخدام HTML (•).
+3. لا تقم بسرد الأرقام كما هي بشكل ممل، بل ادمجها في التحليل (مثلاً: "تضاعف السيولة بـ {vol_ratio_val} مرات يؤكد...").
+4. ممنوع استخدام كلمات الإثارة (انفجار، صاروخ، فرصة ذهبية، هائل). حافظ على لغة مؤسساتية جافة.
 
-الناتج المطلوب (باللغة العربية فقط):
+الناتج باللغة العربية فقط:
 """
 
                 prompt_en = f"""
-You are a Quant Analyst at "NaiF CHarT Intelligence Lab".
-Your task is to draft the "Real-time Financial Report" for {symbol} based on algorithmic radar data.
-
-Calculated Metrics:
-- Liquidity Statistical Anomaly (Z-Score): {best_meta['macd']} (Silent accumulation indicator)
-- Smart Money Inflow (Volume Ratio): {best_meta['vol_ratio']}x higher than average.
-- Global Orderbook Pressure: Buyers dominate by {best_meta.get('ob_pressure', 1.0)}x.
-- Technical Confluence: {best_meta.get('confluence', 0)} matching institutional signals.
-- Classic Indicators: ADX: {best_meta['adx']} | RSI: {best_meta['rsi']}
+You are a Quant Analyst at NaiF CHarT Intelligence Lab.
+Write a dynamic, real-time brief for {symbol} based on these metrics:
+- Z-Score (Silent Accumulation): {z_score_val}
+- Smart Money Inflow: {vol_ratio_val}x higher.
+- Orderbook Pressure: Buyers dominate by {ob_pressure_val}x.
+- Technical Confluence: {best_meta.get('confluence', 0)}
+- Trend Indicators: ADX: {best_meta['adx']} | RSI: {best_meta['rsi']}
 
 Strict Instructions:
-1. Write the analysis in exactly 3 short bullet points So that it does not exceed three lines using HTML (•).
-2. Use a dry, direct, institutional tone based strictly on the provided numbers.
-3. ABSOLUTELY NO emotional or marketing words (e.g., massive, explosion, to the moon, huge).
-4. Interpret the numbers professionally: e.g. (A liquidity increase of x times indicates absorption of sell pressure).
+1. Variety: Do not use the same phrasing every time. Vary your analytical angle (e.g., focus on supply absorption, aggressive market buying, or liquidity dry-up).
+2. Write exactly 3 short bullet points using HTML (•). Maximum 3 lines total.
+3. Do not just robotically list the numbers. Weave them into the analysis (e.g., "A {vol_ratio_val}x volume spike indicates...").
+4. ZERO hype words (moon, massive, explosion, huge). Keep a dry, institutional tone.
 
-Required Output (In English only):
+Output in English only:
 """
+
 
                 insight_ar = await ask_groq(prompt_ar, lang="ar")
                 insight_en = await ask_groq(prompt_en, lang="en")
