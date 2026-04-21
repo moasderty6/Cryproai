@@ -1098,7 +1098,10 @@ Required Output (In English only):
                 await bot.send_message(ADMIN_USER_ID, admin_text, reply_markup=admin_kb, parse_mode=ParseMode.HTML)
                 print(f"✅ تم اصطياد قاع {symbol} بسكور {best_score}!")
                 
-                break
+                # 🟢 التعديل هنا: حذفنا break ووضعنا استراحة 5 دقائق (300 ثانية)
+                print("⏱️ الرادار يدخل في استراحة لمدة 5 دقائق قبل بدء البحث التالي...")
+                await asyncio.sleep(300) 
+
 
         except Exception as e:
             print(f"Radar Error: {e}")
