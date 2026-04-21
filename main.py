@@ -2363,7 +2363,7 @@ async def run_analysis(cb: types.CallbackQuery):
             trend_strength = trend_str
             
             prompt = f"""
-أنت نظام آلي في شركة "NaiF CHarT" وظيفتك الوحيدة هي إخراج النص كقالب جاهز تماماً.
+أنت نظام آلي في شركة "NaiF CHarT" لتحليل العملات الرقمية وظيفتك الوحيدة هي إخراج النص كقالب جاهز تماماً.
 ⚠️ تحذير صارم جداً: 
 1. يمنع منعاً باتاً إضافة أي كلمة أو جملة من عندك خارج القالب (ممنوع كتابة كلمات مثل "البيان الفني" أو أي مقدمات وخواتيم).
 2. قم فقط باستبدال الأقواس [ ] بالتعليق الفني المطلوب.
@@ -2396,7 +2396,7 @@ Stop Loss: <code>{format_price(calc_sl)}</code>
             trend_strength = trend_str
             
             prompt = f"""
-You are an automated system at "NaiF CHarT". Your ONLY job is to output the exact template below.
+You are an automated system at "NaiF CHarT" for crypto analysis. Your ONLY job is to output the exact template below.
 ⚠️ STRICT RULES:
 1. DO NOT add any extra text, titles, or comments outside the template. (NO phrases like "Technical Statement" or intros/outros).
 2. Replace the brackets [ ] with the requested comment only.
