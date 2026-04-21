@@ -2387,7 +2387,7 @@ Stop Loss: <code>{format_price(calc_sl)}</code>
 
 📈 <b>تحليل المؤشرات</b>
 • Liquidity: {market_action} [اكتب هنا سطر واحد فقط يعلق على حالة السيولة بالعربي فقط ولا حرف غير عربي]
-• RSI ({safe_rsi}): [اكتب هنا سطر واحد فقط يوضح حالة التشبع أو الحياد بالعربي فقط ولا حرف غير عربي]
+• RSI ({safe_rsi}): [اكتب هنا سطر واحد فقط يوضح حالة التشبع أو الحياد للعملة الرقمية بالعربي فقط ولا حرف غير عربي]
 • MACD ({macd_fmt}): [اكتب هنا سطر واحد فقط يوضح الزخم الإيجابي أو السلبي بالعربي فقط ولا حرف غير عربي]
 • ADX ({adx_val:.1f}): [اكتب هنا سطر واحد فقط يوضح قوة أو ضعف الترند بالعربي فقط ولا حرف غير عربي]
 """
@@ -2420,7 +2420,7 @@ Stop Loss: <code>{format_price(calc_sl)}</code>
 
 📈 <b>Indicator Analysis</b>
 • Liquidity: {market_action} [Write exactly one line commenting on this action]
-• RSI ({safe_rsi}): [Write exactly one line explaining overbought/oversold or neutrality]
+• RSI ({safe_rsi}): [Write exactly one line explaining overbought/oversold or neutrality for cryptocurrency]
 • MACD ({macd_fmt}): [Write exactly one line explaining momentum]
 • ADX ({adx_val:.1f}): [Write exactly one line explaining trend strength]
 """
