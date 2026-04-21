@@ -437,47 +437,71 @@ async def detect_market_regime(client):
     
     return {"trend": regime, "volatility": volatility, "adx": current_adx}
 
-async def analyze_orderbook_depth(symbol, client):
+async def analyze_orderbook_depth(symbol, client, snapshots=3, delay=2.0):
     """
-    تحليل أعمق لـ 500 مستوى في الأوردر بوك لكشف الجدران المخفية (Iceberg) والتلاعب (Spoofing)
+    تحليل متقدم للأوردر بوك يأخذ عدة لقطات (Snapshots) متتالية 
+    لكشف الجدران الوهمية اللحظية (Flash Spoofing) التي تضعها حيتان التلاعب وتسحبها.
     """
     pair = f"{symbol.upper()}USDT"
-    # غيرنا الليمت إلى 500 لكشف الأعماق الحقيقية
-    res = await client.get(f"https://api.binance.com/api/v3/depth", params={"symbol": pair, "limit": 500})
     
-    if res.status_code == 200:
-        data = res.json()
-        bids = data['bids'] # طلبات الشراء (الدعم)
-        asks = data['asks'] # طلبات البيع (المقاومة)
-        
-        # تقسيم العمق إلى 3 مناطق: قريبة (1-50)، متوسطة (51-200)، بعيدة (201-500)
-        # المنطقة القريبة (السيولة اللحظية الحقيقية التي تحرك السعر الآن)
-        near_bids_vol = sum(float(b[0]) * float(b[1]) for b in bids[:50])
-        near_asks_vol = sum(float(a[0]) * float(a[1]) for a in asks[:50])
-        
-        # المنطقة البعيدة (هنا يضع الحيتان الأوامر الوهمية Spoofing)
-        far_bids_vol = sum(float(b[0]) * float(b[1]) for b in bids[200:500])
-        far_asks_vol = sum(float(a[0]) * float(a[1]) for a in asks[200:500])
+    total_imbalance = 0.0
+    spoof_count = 0
+    hidden_wall_count = 0
+    near_support_avg = 0.0
+    
+    for i in range(snapshots):
+        try:
+            res = await client.get(f"https://api.binance.com/api/v3/depth", params={"symbol": pair, "limit": 500})
+            if res.status_code == 200:
+                data = res.json()
+                bids = data['bids']
+                asks = data['asks']
+                
+                near_bids_vol = sum(float(b[0]) * float(b[1]) for b in bids[:50])
+                near_asks_vol = sum(float(a[0]) * float(a[1]) for a in asks[:50])
+                far_bids_vol = sum(float(b[0]) * float(b[1]) for b in bids[200:500])
+                far_asks_vol = sum(float(a[0]) * float(a[1]) for a in asks[200:500])
 
-        # 1. حساب خلل التوازن الحقيقي (Order Book Imbalance) للمنطقة القريبة
-        total_near = near_bids_vol + near_asks_vol
-        imbalance = (near_bids_vol - near_asks_vol) / total_near if total_near > 0 else 0
-        
-        # 2. كشف الخداع (Spoofing Detection)
-        # إذا كانت الطلبات البعيدة ضخمة جداً (أكبر بـ 5 أضعاف من القريبة) فهذا فخ وهمي لدفع السعر للأسفل ثم سحبها!
-        spoofing_risk = far_bids_vol > (near_bids_vol * 5.0)
-        
-        # 3. كشف جدار البيع الخفي (Iceberg Distribution)
-        # إذا كان الدعم القريب قوي جداً، لكن يوجد جدار بيع بعيد أضخم منه، الحوت يصرف بصمت
-        hidden_wall_risk = far_asks_vol > (near_asks_vol * 8.0) and far_asks_vol > (near_bids_vol * 3.0)
+                total_near = near_bids_vol + near_asks_vol
+                imbalance = (near_bids_vol - near_asks_vol) / total_near if total_near > 0 else 0
+                
+                total_imbalance += imbalance
+                near_support_avg += near_bids_vol
+                
+                # كشف التلاعب في هذه اللقطة
+                if far_bids_vol > (near_bids_vol * 5.0):
+                    spoof_count += 1
+                if far_asks_vol > (near_asks_vol * 8.0) and far_asks_vol > (near_bids_vol * 3.0):
+                    hidden_wall_count += 1
+                    
+            # الانتظار قبل أخذ اللقطة التالية (إلا في اللقطة الأخيرة)
+            if i < snapshots - 1:
+                await asyncio.sleep(delay)
+                
+        except Exception:
+            pass
 
-        return {
-            "imbalance": round(imbalance, 2), # من 1.0 (شراء كاسح) إلى -1.0 (بيع كاسح)
-            "spoofing_risk": spoofing_risk,
-            "hidden_wall": hidden_wall_risk,
-            "real_support": near_bids_vol
-        }
-    return None
+    # إذا فشلت كل اللقطات
+    if near_support_avg == 0:
+        return None
+
+    # حساب المتوسطات
+    avg_imbalance = total_imbalance / snapshots
+    avg_support = near_support_avg / snapshots
+
+    # 🎯 محرك اتخاذ القرار:
+    # 1. تلاعب خاطف (Flash Spoof): الجدار ظهر واختفى (تم رصده في لقطة واحدة أو اثنتين فقط)
+    is_flash_spoof = (0 < spoof_count < snapshots)
+    
+    # 2. جدار بيع خفي ثابت (Persistent Wall): الجدار صامد في أغلب اللقطات
+    is_persistent_wall = hidden_wall_count >= (snapshots // 2 + 1)
+
+    return {
+        "imbalance": round(avg_imbalance, 2),
+        "is_flash_spoof": is_flash_spoof,
+        "persistent_wall": is_persistent_wall,
+        "real_support": avg_support
+    }
 
 async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
     """
@@ -834,16 +858,26 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 tags.append("RSI_Div")
 
             # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)# --- استبدال الفحص العميق رقم 5 بالتالي ---
-            if score >= 35.0: # خفضنا العتبة قليلاً ليتمكن من التقاط العملات في بدايتها
-                depth_data = await analyze_orderbook_depth(symbol, client)
+                        # 5. الفحص العميق (Order Flow + Global)
+            if score >= 35.0:
+                # نأخذ 3 لقطات بفاصل ثانيتين
+                depth_data = await analyze_orderbook_depth(symbol, client, snapshots=3, delay=2.0)
                 if depth_data:
-                    if depth_data['hidden_wall'] and micro_cvd_boost > 0:
-                        # أقوى مؤشر على الإطلاق: جدار بيع ضخم + الحيتان تشتري = كسر قادم
+                    # 🚫 إذا اكتشفنا أن الحيتان تتلاعب وتضع أوامر تسحبها بسرعة (فخ)
+                    if depth_data['is_flash_spoof']:
+                        score -= 20.0 
+                        tags.append("Flash_Spoofing_Manipulation")
+                    
+                    # ✅ إذا كان هناك جدار بيع ضخم وثابت، والحيتان تقوم بامتصاصه (CVD قوي)
+                    elif depth_data['persistent_wall'] and micro_cvd_boost > 0:
                         score += 25.0 
                         tags.append("Wall_Absorption_Pre_Breakout")
+                    
+                    # ✅ إذا كان الخلل الحقيقي لصالح المشترين
                     elif depth_data['imbalance'] > 0.4:
                         score += 15.0 
                         tags.append("OB_Buy")
+
             
                 # فحص السيولة المؤسساتية لآخر 15 دقيقة
                 delta_usd, buy_v, sell_v = await get_institutional_orderflow(symbol, client, minutes=15)
