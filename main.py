@@ -1141,6 +1141,9 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     "ai_status": ai_status
                 }
             return None  
+        except Exception as e:
+            print(f"Error in analyze_radar_coin: {e}")
+            return None  
 
 
 
