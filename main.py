@@ -2216,7 +2216,7 @@ async def run_analysis(cb: types.CallbackQuery):
                         trend_str = "ضعيف - خطر الانعكاس" if lang == "ar" else "Weak - Reversal Risk"
                         market_action += " | فخ شرائي وتصريف مخفي" if lang == "ar" else " | Bull Trap & Hidden Distribution"
                     elif cvd_sig == "Micro_Silent_Accumulation" or buy_v > sell_v * 1.5:
-                        trend_str = "قوي جداً - دخول مؤسساتي" if lang == "ar" else "Very Strong - Inst. Inflow"
+                        trend_str = "قوي جداً" if lang == "ar" else "Very Strong"
                         
                     # المشتقات في حالة الصعود
                     if fut_sig == "Short_Squeeze":
