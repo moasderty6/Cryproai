@@ -2365,7 +2365,7 @@ async def run_analysis(cb: types.CallbackQuery):
             prompt = f"""
 أنت نظام آلي في شركة "NaiF CHarT" لتحليل العملات الرقمية وظيفتك الوحيدة هي إخراج النص كقالب جاهز تماماً.
 ⚠️ تحذير صارم جداً: 
-1. يمنع منعاً باتاً إضافة أي كلمة أو جملة من عندك خارج القالب (ممنوع كتابة كلمات مثل "البيان الفني" أو أي مقدمات وخواتيم).
+1. يمنع منعاً باتاً إضافة أي كلمة أو جملة من عندك خارج القالب (ممنوع كتابة كلمات مثل "البيان الفني" أو أي مقدمات وخواتيم او اسهم لانك محلل عملات رقمية).
 2. قم فقط باستبدال الأقواس [ ] بالتعليق الفني المطلوب.
 
 الناتج يجب أن يكون هذا النص بالضبط دون أي زيادة:
@@ -2398,7 +2398,7 @@ Stop Loss: <code>{format_price(calc_sl)}</code>
             prompt = f"""
 You are an automated system at "NaiF CHarT" for crypto analysis. Your ONLY job is to output the exact template below.
 ⚠️ STRICT RULES:
-1. DO NOT add any extra text, titles, or comments outside the template. (NO phrases like "Technical Statement" or intros/outros).
+1. DO NOT add any extra text, titles, or comments outside the template. (NO phrases like "Technical Statement" or intros/outros or stocks because you're a cryptocurrency analyst).
 2. Replace the brackets [ ] with the requested comment only.
 
 Your output MUST be exactly this format:
