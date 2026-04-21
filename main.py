@@ -2279,7 +2279,7 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change, lang="ar
 
     if real_adx_value < 20:
         trend_strength = "ضعيف" if lang == "ar" else "Weak"
-        market_action = "صراع سيولة وتجميع حول VWAP اليومي في نطاق عرضي" if lang == "ar" else "Liquidity struggle and accumulation around daily VWAP in a ranging market"
+        market_action = "تجميع عرضي للسيولة حول الفيواب اليومي" if lang == "ar" else "Liquidity struggle and accumulation around daily VWAP in a ranging market"
     else: 
         if micro_bull:
             if macro_bull and vwap_bull:
