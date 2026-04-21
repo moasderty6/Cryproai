@@ -40,7 +40,8 @@ BINANCE_HEADERS = {"X-MBX-APIKEY": BINANCE_API_KEY}
 GATE_API_KEY = "a3f6a57b42f6106011e6890049e57b2e"
 GATE_API_SECRET = "1ac18e0a690ce782f6854137908a6b16eb910cf02f5b95fa3c43b670758f79bc"
 GATE_BASE = "https://api.gateio.ws/api/v4/spot/candlesticks"
-# استخراج قائمة مفاتيح Groq
+# قائمة سوداء للعملات المشطوبة أو المزعجة لمنعها من دخول الرادار نهائياً
+BLACKLISTED_COINS = {"TOMO", "COCOS", "LRC", "BUSD", "TUSD", "USDC"}
 GROQ_KEYS_STR = os.getenv("GROQ_API_KEYS", "")
 GROQ_API_KEYS = [k.strip() for k in GROQ_KEYS_STR.split(",") if k.strip()]
 WEBHOOK_URL = os.getenv("WEBHOOK_URL") 
@@ -203,8 +204,13 @@ async def smart_radar_watchdog(pool):
                         symbol = ticker['s']
                         if not symbol.endswith("USDT"): continue
 
+                        clean_sym = symbol.replace("USDT", "")
+                        # 🚫 الحظر الجذري قبل إدخالها للذاكرة اللحظية
+                        if clean_sym in BLACKLISTED_COINS: continue
+
                         current_vol = float(ticker['q']) 
                         current_price = float(ticker['c'])
+                        # ... باقي الكود كما هو ...
 
                         if symbol in live_market_memory:
                             old_data = live_market_memory[symbol]
@@ -948,7 +954,8 @@ async def ai_opportunity_radar(pool):
                     if not symbol.endswith("USDT"): continue # نأخذ أزواج التيثر فقط
                     
                     clean_sym = symbol.replace("USDT", "")
-                    if clean_sym in STABLE_COINS or clean_sym in ignored_symbols: continue
+                    if clean_sym in STABLE_COINS or clean_sym in ignored_symbols or clean_sym in BLACKLISTED_COINS: 
+                        continue
                     
                     vol_usd = float(t["quoteVolume"])
                     price_change = float(t["priceChangePercent"])
