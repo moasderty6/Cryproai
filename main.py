@@ -311,7 +311,9 @@ async def trigger_deep_analysis(coin_mock_data, sem, pool):
 async def get_btc_trend(client):
     """جلب حالة البيتكوين لمعرفة ترند السوق العام من Binance"""
     try:
-        res = await client.get(f"{BINANCE_BASE}/klines", params={
+        # ✅ التصحيح: استدعاء الدالة التي تجلب رابطاً عشوائياً وتصحيح مسار الـ API
+        base_url = get_random_binance_base()
+        res = await client.get(f"{base_url}/api/v3/klines", params={
             "symbol": "BTCUSDT", "interval": "1d", "limit": 25
         })
         if res.status_code == 200:
@@ -323,6 +325,7 @@ async def get_btc_trend(client):
     except:
         pass
     return True # افتراضي في حال فشل الـ API
+ # افتراضي في حال فشل الـ API
 async def get_micro_cvd_absorption(symbol, client):
     """
     يكتشف التجميع الصامت قبل الانفجار بجلب فريم الدقيقة لآخر 120 دقيقة.
