@@ -907,22 +907,38 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             score = round(max(0.0, min(score, 98.5)), 1)
             
             # 🟢 محرك تسمية الإشارة الذكي (Short & Punchy Signal Names)
+                        # 🟢 محرك تسمية الإشارة الذكي (المصحح والمطور)
             final_signal = "High Probability Setup 🎯"
-            if "Fake_Pump" in tags or "Spoofing_or_Wall" in tags or "Short_Covering" in tags:
+            
+            # 1. إشارات الخطر (تمنع إرسال العملة)
+            if "Fake_Pump" in tags or "Flash_Spoofing_Manipulation" in tags or "Short_Covering" in tags or "Late_FOMO" in tags or "Hidden_Distribution" in tags:
                 return None 
-            elif "Whale_CVD" in tags and "Aggressive_Buy" in tags: final_signal = "Aggressive Whale Accumulation 🐋"
-            elif "Short_Squeeze" in tags: final_signal = "(Short Squeeze) 🔥"
-            elif "Z_Anom" in tags and "OI_Rising" in tags: final_signal = "(Derivatives Pump) 🚀"
-            elif "Squeeze" in tags and "OB_Buy" in tags: final_signal = "(Liquidity Breakout) ⚡"
-            elif "Whale_CVD" in tags: final_signal = "Silent Institutional Accumulation 🧲"
-            elif "Z_Anom" in tags or "Z_High" in tags: final_signal = "Smart Money Inflow 💸"
+                
+            # 2. الإشارات الأسطورية (سكور فوق 90)
+            if score >= 90.0:
+                final_signal = "Massive Institutional Accumulation 🐋"
+            
+            # 3. الإشارات القوية المحددة (تم تصحيحها)
+            elif "Micro_Silent_Accumulation" in tags and "Institutional_Buy_Spike" in tags: 
+                final_signal = "Aggressive Whale Accumulation 🐋"
+            elif "Short_Squeeze" in tags: 
+                final_signal = "(Short Squeeze) 🔥"
+            elif "Z_Anom_Silent" in tags and "OI_Rising" in tags: 
+                final_signal = "(Derivatives Pump) 🚀"
+            elif "Squeeze" in tags and "OB_Buy" in tags: 
+                final_signal = "(Liquidity Breakout) ⚡"
+            elif "Micro_Silent_Accumulation" in tags or "Wall_Absorption_Pre_Breakout" in tags: 
+                final_signal = "Silent Institutional Accumulation 🧲"
+            elif "Z_Anom_Silent" in tags or "Smart_Accumulation" in tags: 
+                final_signal = "Smart Money Inflow 💸"
 
             avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
             avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
             current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
 
-            # 🟢 1. تحديد الإشارات الحيوية (المفاتيح الذهبية)
-            golden_tags = {"Z_Anom", "Z_High", "Whale_CVD", "Aggressive_Buy", "OB_Buy", "Squeeze"}
+            # 🟢 1. تحديد الإشارات الحيوية (تم تصحيح المفاتيح الذهبية)
+            golden_tags = {"Z_Anom_Silent", "Smart_Accumulation", "Micro_Silent_Accumulation", "Institutional_Buy_Spike", "OB_Buy", "Squeeze"}
+            
             # كم إشارة ذهبية اجتمعت في هذه العملة؟
             confluence_count = sum(1 for tag in tags if tag in golden_tags)
 
@@ -930,7 +946,6 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             is_macro_downtrend = price < ema200_val
 
             # 🟢 3. شروط القناص النهائي:
-                        # 🟢 3. شروط القناص النهائي (مخففة لإعطاء فرص أكثر):
             required_score = 65.0 if (market_regime['trend'] == "Trending_Bear" or is_macro_downtrend) else 55.0
             required_confluence = 2 if (market_regime['trend'] == "Trending_Bear" or is_macro_downtrend) else 1
 
@@ -948,6 +963,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             return None  
         except Exception:
             return None
+
 
 
 async def ai_opportunity_radar(pool):
