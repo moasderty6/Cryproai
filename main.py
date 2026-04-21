@@ -36,12 +36,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CMC_KEY = os.getenv("CMC_API_KEY")
 BINANCE_API_KEY = "rvApoDI6XRYcki1r2QTnPUBs3QwESzrpTVKohgjbK1zxSzlvrFPxAbZKr94xA2Lx"
 # قائمة مسارات بايننس الرسمية للتهرب من الليمت وتوزيع الحمل
+# --- التعديل في أعلى الكود ---
+
+# قائمة المسارات التي تمر عبر الجسر السري (Cloudflare Worker)
 BINANCE_BASES = [
-    "https://api.binance.com",
-    "https://api1.binance.com",
-    "https://api2.binance.com",
-    "https://api3.binance.com",
-    "https://api4.binance.com"
+    "https://binance-sain.mo-dahoh.workers.dev"
 ]
 
 def get_random_binance_base():
