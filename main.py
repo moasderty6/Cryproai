@@ -1651,30 +1651,59 @@ async def search_dex_coin(symbol: str):
         print(f"DexScreener Error: {e}")
     return None
 
-async def get_candles_dex(network: str, pool_address: str, interval: str, limit: int = 500):
-    """تجلب الشموع من GeckoTerminal وتعيد ترتيبها لتطابق تنسيق Gate.io"""
-    if interval == "1d" or interval == "1w":
-        timeframe = "day"
-        aggregate = 1
-    else:
-        timeframe = "hour"
-        aggregate = 4
+async def get_candles_dex(network: str, pool_address: str, interval: str, limit: int = 500, retries: int = 3):
+    """تجلب الشموع من GeckoTerminal مع تخطي حماية كلاود فلير وعدم الاستسلام"""
+    
+    if interval == "1w":
+        timeframe, aggregate = "day", 1
+    elif interval == "1d" or interval == "daily":
+        timeframe, aggregate = "day", 1
+    else: 
+        timeframe, aggregate = "hour", 4
 
     url = f"https://api.geckoterminal.com/api/v2/networks/{network}/pools/{pool_address}/ohlcv/{timeframe}?aggregate={aggregate}&limit={limit}"
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            res = await client.get(url)
-            if res.status_code == 200:
-                data = res.json()
-                ohlcv_list = data["data"]["attributes"]["ohlcv_list"]
-                formatted_candles = []
-                for candle in ohlcv_list:
-                    t, o, h, l, c, v = candle
-                    formatted_candles.append([t, v, c, h, l, o])
-                return formatted_candles[::-1] 
-    except Exception as e:
-        print(f"GeckoTerminal Error: {e}")
+    
+    # 🟢 السر هنا: إضافة هيدر متصفح حقيقي لخداع حماية Cloudflare
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json;version=20230302"
+    }
+
+    async with httpx.AsyncClient() as client:
+        for attempt in range(retries):
+            try:
+                # أضفنا الـ headers للطلب
+                res = await client.get(url, headers=headers, timeout=15)
+                
+                if res.status_code == 200:
+                    data = res.json()
+                    ohlcv_list = data["data"]["attributes"]["ohlcv_list"]
+                    
+                    if not ohlcv_list or len(ohlcv_list) < 3:
+                        return None 
+                        
+                    formatted_candles = []
+                    for candle in ohlcv_list:
+                        t, o, h, l, c, v = candle
+                        formatted_candles.append([t, v, c, h, l, o])
+                        
+                    return formatted_candles[::-1] 
+                
+                # 🟢 التعديل الأهم: لا تستسلم فوراً! عالج كل الأخطاء المؤقتة (429، 403، 500، 502)
+                elif res.status_code in [429, 403, 500, 502, 503, 504]:
+                    print(f"⚠️ [GeckoTerminal] Blocked/Error ({res.status_code}). Retrying... (Attempt {attempt+1}/{retries})")
+                    await asyncio.sleep(2)
+                    continue
+                else:
+                    print(f"⚠️ [GeckoTerminal] Permanent error {res.status_code} for {pool_address}")
+                    break
+                    
+            except Exception as e:
+                print(f"⚠️ [GeckoTerminal] Connection error: {e}")
+                await asyncio.sleep(1)
+                
     return None
+
 
 @dp.message(F.text)
 async def handle_symbol(m: types.Message):
