@@ -881,7 +881,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
 
             # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)# --- استبدال الفحص العميق رقم 5 بالتالي ---
                         # 5. الفحص العميق (Order Flow + Global)
-            if score >= 30.0:
+            if score >= 35.0:
                 # نأخذ 3 لقطات بفاصل ثانيتين
                 depth_data = await analyze_orderbook_depth(symbol, client, snapshots=3, delay=2.0)
                 if depth_data:
