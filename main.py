@@ -988,7 +988,8 @@ async def analyze_radar_coin(c, client, market_regime, sem):
 
 
             # 2. فلتر CVD
-            micro_cvd_boost, micro_cvd_signal = await get_micro_cvd_absorption(symbol, client)
+                        # 2. فلتر CVD
+            micro_cvd_boost, micro_cvd_signal = await get_micro_cvd_absorption(f"{symbol}USDT", client)
             score += micro_cvd_boost
             if micro_cvd_signal: 
                 tags.append(micro_cvd_signal)
@@ -1041,7 +1042,9 @@ async def analyze_radar_coin(c, client, market_regime, sem):
 
             
                 # فحص السيولة المؤسساتية لآخر 15 دقيقة
-                delta_usd, buy_v, sell_v = await get_institutional_orderflow(symbol, client, minutes=15)
+                                # فحص السيولة المؤسساتية لآخر 15 دقيقة
+                delta_usd, buy_v, sell_v = await get_institutional_orderflow(f"{symbol}USDT", client, minutes=15)
+
                 
                 # إذا كان حجم الشراء ضعف حجم البيع، والسيولة ضخمة (أكثر من نصف مليون دولار في 15 دقيقة)
                 if buy_v > (sell_v * 2.0) and buy_v > 500_000:
