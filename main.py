@@ -1497,15 +1497,20 @@ Output in English only:
                     [InlineKeyboardButton(text="❌ إلغاء وتجاهل", callback_data=f"rad_rej_{signal_id}")]
                 ])
 
+                                # جلب حالة الذكاء الاصطناعي من النتائج (وإذا لم يجدها يضع Learning افتراضياً)
+                current_ai_status = best_meta.get('ai_status', 'Learning ⏳')
+
                 admin_text = (
                     f"⚠️ <b>تنبيه أدمن: قناص القيعان أنهى المسح 🎯</b>\n"
                     f"🏆 <b>أفضل عملة:</b> #{symbol}\n"
                     f"💵 السعر: ${format_price(price)}\n"
                     f"⚡ نوع التجميع: {signal}\n"
-                    f"📊 السكور: <b>{best_score}/100</b>\n\n"
+                    f"🤖 حالة الـ AI: <b>{current_ai_status}</b>\n"  # 👈 هذا هو السطر الذي سيظهر لك التغيير
+                    f"📊 تقييم الفرصة: <b>{best_score}/100</b>\n\n"
                     f"📝 <b>التحليل:</b>\n{insight_ar}\n\n"
                     f"هل تريد الموافقة على نشرها؟"
                 )
+
 
                 await bot.send_message(ADMIN_USER_ID, admin_text, reply_markup=admin_kb, parse_mode=ParseMode.HTML)
                 print(f"✅ تم اصطياد قاع {symbol} بسكور {best_score}!")
