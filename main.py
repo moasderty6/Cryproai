@@ -1453,7 +1453,7 @@ async def ai_opportunity_radar(pool):
                 ob_pressure_val = f"{best_meta.get('ob_pressure', 1.0):.2f}"
 
                 prompt_ar = f"""
-أنت محلل بيانات كمية (Quant). المهمة: كتابة 3 نقاط تحليلية دقيقة ومباشرة فقط. لا تكتب أي مقدمات، أو تحيات، أو استنتاجات.
+أنت محلل بيانات كمية (Quant). المهمة: كتابة 4 نقاط تحليلية دقيقة ومباشرة فقط. لا تكتب أي مقدمات، أو تحيات، أو استنتاجات.
 البيانات الخام لعملة {symbol}:
 - شذوذ الفوليوم (Z-Score): {z_score_val}
 - نسبة السيولة (Current/Avg Vol): {vol_ratio_val}
@@ -1471,10 +1471,11 @@ async def ai_opportunity_radar(pool):
 - المخرج يجب أن يكون 3 نقاط فقط تبدأ برمز (•).
 - اربط الأرقام بالواقع (مثال: "جفاف في السيولة مع نسبة فوليوم {vol_ratio_val} يعكس تجميعاً صامتاً من الحيتان").
 - لغة جافة، خالية من العواطف والمبالغات.
+- أسلوب الكتابة: اكتب بطريقة (Flash Notes). لا تشرح كل رقم في سطر منفصل، بل ادمجها بذكاء. مثال بدلاً من سرد الأرقام قل: (تكدس قوي في طلبات الشراء بضعف 1.84x يتزامن مع امتصاص صامت للسيولة 0.93x في قاع منضغط).
 """
 
                 prompt_en = f"""
-Act as a strict Quant Analyst. Task: Write EXACTLY 3 analytical bullet points. NO intro, NO outro, NO fluff.
+Act as a strict Quant Analyst. Task: Write EXACTLY 4 analytical bullet points. NO intro, NO outro, NO fluff.
 Raw Data for {symbol}:
 - Volume Anomaly (Z-Score): {z_score_val}
 - Volume Ratio (Current/Avg): {vol_ratio_val}
@@ -1492,6 +1493,7 @@ Strict Output Format:
 - Output EXACTLY 3 points starting with (•).
 - Weave numbers naturally (e.g., "Orderbook shows supply absorption with a ratio of {ob_pressure_val}").
 - Keep the tone cold, dry, and institutional. Zero hype.
+- Writing Style: Use 'Flash Notes' format. Do not explain metrics in isolation; fuse them into a cohesive narrative (e.g., 'Aggressive bid stacking at {ob_pressure_val}x aligns with silent liquidity absorption {vol_ratio_val}x at compressed lows').
 """
 
 
