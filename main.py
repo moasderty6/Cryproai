@@ -1028,7 +1028,8 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     # 🚫 كشف فخ الشراء: حوت يضع جدار شراء ضخم ويسحبه ليوهمنا بالصعود (يصرف علينا)
                     if depth_data['is_bid_spoof']:
                         score -= 25.0 
-                        tags.append("Flash_Spoofing_Manipulation (Trap)")
+                        tags.append("Flash_Spoofing_Manipulation") # 👈 مسحنا كلمة (Trap) ليتطابق مع الفلتر
+
                     
                     # ✅ كشف فخ البيع: حوت يضع جدار بيع ضخم ويسحبه لكي يضغط السعر ويجمع براحته
                     elif depth_data['is_ask_spoof'] and micro_cvd_boost > 0:
@@ -2719,19 +2720,31 @@ async def run_analysis(cb: types.CallbackQuery):
 
         # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة
                 # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة
+                # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة
+        
+        # استخراج الهدف المغناطيسي (FVG) إن وجد للاحتفاظ به
+                # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة
+        
+        # استخراج الهدف المغناطيسي (FVG) وحالة الفوليوم للاحتفاظ بهما
+        fvg_text = " [" + market_action.split("[")[1] if "[" in market_action else ""
+        vol_text = " + فوليوم انفجاري" if "انفجاري" in market_action else (" + فوليوم ميت" if "ميت" in market_action else "")
+
         if trend_dir == "Bullish":
             if classic_trend == "Bearish":
                 trend_str = "قوي (اكتشاف فخ بيعي وانعكاس)" if lang == "ar" else "Strong (Bear Trap Detected)"
-                # 🛠️ تم تصحيح المنطق المالي هنا: الشراء يؤدي لصعود وليس هبوط
-                market_action += " | الحيتان تشتري سراً وتمتص العروض لانعكاس صاعد" if lang == "ar" else " | Whales silently absorbing supply for a bullish reversal"
+                market_action = ("فخ بيعي للقطيع | الحيتان تشتري سراً وتمتص العروض لانعكاس صاعد" if lang == "ar" else "Retail bear trap | Whales silently absorbing supply for a bullish reversal") + vol_text + fvg_text
             elif fut_sig == "Short_Squeeze":
                 trend_str = "انفجار سعري وشيك" if lang == "ar" else "Imminent Squeeze"
+                market_action = ("ضغط شورت (Short Squeeze) | سيولة إجبارية تدفع السعر للأعلى" if lang == "ar" else "Short Squeeze | Forced liquidity pushing price up") + vol_text + fvg_text
+        
         elif trend_dir == "Bearish":
             if classic_trend == "Bullish":
                 trend_str = "(تصريف مخفي في القمة)" if lang == "ar" else "(Hidden Distribution)"
-                market_action += " | فخ شرائي، الحيتان تفرغ كمياتها بهدوء" if lang == "ar" else " | Bull trap, whales quietly distributing"
+                market_action = ("فخ شرائي للقطيع | الحيتان تفرغ حمولتها بهدوء للهبوط" if lang == "ar" else "Retail bull trap | Whales quietly distributing for a drop") + vol_text + fvg_text
             elif fut_sig == "Short_Covering":
                 trend_str = "ضعيف - إغلاق شورت" if lang == "ar" else "Weak - Short Covering"
+                market_action = ("إغلاق صفقات بيع (شورت) يرفع السعر مؤقتاً بدون زخم شراء حقيقي" if lang == "ar" else "Short covering causing a temporary bounce without true buying momentum") + vol_text + fvg_text
+
 
         # 🟢 استعادة تعريف متغيرات RSI و MACD لتجنب خطأ NameError
         macd_fmt = format_price(last_macd) if 'last_macd' in locals() and last_macd is not None else "0.0"
