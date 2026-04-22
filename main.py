@@ -1107,9 +1107,10 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 
                 # 2. تجهيز الملامح (Features) للذكاء الاصطناعي
                                 # 2. تجهيز الملامح (Features) للذكاء الاصطناعي
+                                # 2. تجهيز الملامح (Features) للذكاء الاصطناعي
                 ml_features = {
                     'z_score': float(current_z),
-                    'cvd': float(micro_cvd_boost), # 👈 التعديل هنا: نمرر الرقم الفعلي للسيولة (إيجابي أو سلبي)
+                    'cvd': float(delta_usd), # ✅ التعديل هنا: تمرير صافي السيولة الحقيقي بالدولار (إيجابي أو سلبي)
                     'imbalance': float(locals().get('global_ob_pressure', 0)),
                     'adx': float(current_adx),
                     'rsi': float(last_rsi),
