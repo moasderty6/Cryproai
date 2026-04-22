@@ -1016,7 +1016,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 tags.append("RSI_Div")
 
             # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)# --- استبدال الفحص العميق رقم 5 بالتالي ---            # 5. الفحص العميق (Order Flow + Global)
-            if score >= 30.0:
+            if score >= 35.0:
                 # 🔴 التحديث الجديد: تشغيل فيديو الأوردر بوك لمدة 4 ثوانٍ
                 depth_data = await detect_flash_spoofing_ws(symbol, duration=4.0)
                 
