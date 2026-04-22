@@ -1106,9 +1106,10 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 whale_inflow = await get_whale_inflow_score()
                 
                 # 2. تجهيز الملامح (Features) للذكاء الاصطناعي
+                                # 2. تجهيز الملامح (Features) للذكاء الاصطناعي
                 ml_features = {
                     'z_score': float(current_z),
-                    'cvd': 1.0 if "Micro_Silent_Accumulation" in tags else 0.0,
+                    'cvd': float(micro_cvd_boost), # 👈 التعديل هنا: نمرر الرقم الفعلي للسيولة (إيجابي أو سلبي)
                     'imbalance': float(locals().get('global_ob_pressure', 0)),
                     'adx': float(current_adx),
                     'rsi': float(last_rsi),
@@ -1172,7 +1173,7 @@ async def log_signal_for_ml(pool, symbol: str, price: float, features: dict):
         # 🛡️ فلتر التكرار الذكي: إذا وصلت العملة للأدمن وعمل مسح (Clear)، لن تسجل كبيانات مكررة
         exists = await conn.fetchval("""
             SELECT 1 FROM ml_training_data 
-            WHERE symbol = $1 AND signal_time > CURRENT_TIMESTAMP - INTERVAL '4 hours'
+            WHERE symbol = $1 AND signal_time > CURRENT_TIMESTAMP - INTERVAL '24 hours'
         """, symbol)
         
         if exists:
@@ -1180,12 +1181,17 @@ async def log_signal_for_ml(pool, symbol: str, price: float, features: dict):
 
         await conn.execute("""
             INSERT INTO ml_training_data 
-            (symbol, entry_price, z_score, cvd, imbalance, adx, rsi)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            (symbol, entry_price, z_score, cvd, imbalance, adx, rsi, whale_inflow_score)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         """, 
         symbol, price, 
-        features.get('z_score', 0.0), features.get('cvd', 0.0), 
-        features.get('imbalance', 0.0), features.get('adx', 0.0), features.get('rsi', 0.0))
+        features.get('z_score', 0.0), 
+        features.get('cvd', 0.0), 
+        features.get('imbalance', 0.0), 
+        features.get('adx', 0.0), 
+        features.get('rsi', 0.0),
+        features.get('whale_inflow_score', 0.0)) # 👈 تم إضافة سكور الحيتان هنا
+
         print(f"🧠 [ML Logger] Data captured for {symbol} at ${price}")
 
 async def ml_inspector_worker(pool):
@@ -1203,7 +1209,7 @@ async def ml_inspector_worker(pool):
                 pending = await conn.fetch("""
                     SELECT id, symbol, entry_price, EXTRACT(EPOCH FROM signal_time) as sig_ts
                     FROM ml_training_data 
-                    WHERE label = -1 AND signal_time <= CURRENT_TIMESTAMP - INTERVAL '4 hours'
+                    WHERE label = -1 AND signal_time <= CURRENT_TIMESTAMP - INTERVAL '24 hours'
                 """)
                 
                 if not pending:
@@ -1220,7 +1226,7 @@ async def ml_inspector_worker(pool):
                         base_url = get_random_binance_base()
                         res = await client.get(
                             f"{base_url}/api/v3/klines",
-                            params={"symbol": sym, "interval": "15m", "startTime": start_time_ms, "limit": 20}
+                            params={"symbol": sym, "interval": "15m", "startTime": start_time_ms, "limit": 96}
                         )
                         
                         if res.status_code == 200:
@@ -1234,7 +1240,7 @@ async def ml_inspector_worker(pool):
                             max_profit_pct = ((highest_high - entry) / entry) * 100
                             
                             # 🎯 التقييم: إذا صعدت 2% فأكثر نعتبرها صفقة ناجحة (1)، غير ذلك فاشلة (0)
-                            label = 1 if max_profit_pct >= 2.0 else 0
+                            label = 1 if max_profit_pct >= 5.0 else 0
                             
                             await conn.execute("""
                                 UPDATE ml_training_data 
