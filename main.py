@@ -251,7 +251,8 @@ def predict_signal_sync(features: dict) -> float:
     if AI_QUANT_MODEL is None:
         return -1.0 # -1 تعني أن الذكاء الاصطناعي لم يتدرب بعد
         
-        input_data = pd.DataFrame([{
+    # 🛠️ تم إرجاع المتغير للخلف ليكون خارج شرط الـ if
+    input_data = pd.DataFrame([{
         'z_score': features.get('z_score', 0),
         'cvd': features.get('cvd_usd', 0),
         'imbalance': features.get('ofi_imbalance', 0),
@@ -266,7 +267,6 @@ def predict_signal_sync(features: dict) -> float:
         'sp500_trend': features.get('sp500_trend', 0.0),
         'sentiment_score': features.get('sentiment_score', 50.0)
     }])
-
 
     # استخراج احتمالية الفئة 1 (نجاح)
     prob = AI_QUANT_MODEL.predict_proba(input_data)[0][1]
@@ -1004,13 +1004,17 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             if futures_signal: tags.append(futures_signal)
 
             # 4. المؤشرات الكلاسيكية
+                        # 4. المؤشرات الكلاسيكية
             sma20 = df["close"].rolling(20).mean()
             std20 = df["close"].rolling(20).std(ddof=0)
             df["upper_band"] = sma20 + 2*std20
             df["lower_band"] = sma20 - 2*std20
             squeeze_pct = (df["upper_band"].iloc[-1] - df["lower_band"].iloc[-1]) / sma20.iloc[-1]
             
-            if squeeze_pct < 0.05: 
+            # 🛠️ حماية الكود من الانهيار إذا كانت العملة جديدة جداً ولا تملك 20 شمعة
+            if pd.isna(squeeze_pct):
+                squeeze_pct = 1.0 # قيمة افتراضية آمنة
+            elif squeeze_pct < 0.05: 
                 score += 10.0
                 tags.append("Squeeze")
             
