@@ -1453,40 +1453,47 @@ async def ai_opportunity_radar(pool):
                 ob_pressure_val = f"{best_meta.get('ob_pressure', 1.0):.2f}"
 
                 prompt_ar = f"""
-أنت محلل كمي (Quant) في NaiF CHarT Intelligence Lab.
-اكتب تقرير فحص سريع لعملة {symbol} بناءً على هذه المعطيات:
-- Z-Score (مؤشر التجميع الصامت): {z_score_val}
-- تدفق السيولة الذكية: أعلى بـ {vol_ratio_val} ضعف.
-- ضغط الأوردر بوك: المشترون أقوى بـ {ob_pressure_val}x.
-- قوة الإجماع التقني: {best_meta.get('confluence', 0)}
-- مؤشرات الاتجاه: ADX: {best_meta['adx']} | RSI: {best_meta['rsi']}
+أنت محلل بيانات كمية (Quant). المهمة: كتابة 3 نقاط تحليلية دقيقة ومباشرة فقط. لا تكتب أي مقدمات، أو تحيات، أو استنتاجات.
+البيانات الخام لعملة {symbol}:
+- شذوذ الفوليوم (Z-Score): {z_score_val}
+- نسبة السيولة (Current/Avg Vol): {vol_ratio_val}
+- ضغط الأوردر بوك (Bids/Asks): {ob_pressure_val}
+- الإجماع الفني: {best_meta.get('confluence', 0)}
+- الزخم: ADX: {best_meta['adx']} | RSI: {best_meta['rsi']}
 
-التعليمات الصارمة:
-1. التنويع: لا تكرر نفس العبارات في كل تحليل. استخدم زوايا مختلفة (مرة ركز على امتصاص العروض، ومرة على الشراء الهجومي، ومرة على جفاف السيولة البيعية).
-2. اكتب 3 نقاط قصيرة جداً (لا تتجاوز 3 أسطر) باستخدام HTML (•).
-3. لا تقم بسرد الأرقام كما هي بشكل ممل، بل ادمجها في التحليل (مثلاً: "تضاعف السيولة بـ {vol_ratio_val} مرات يؤكد...").
-4. ممنوع استخدام كلمات الإثارة (انفجار، صاروخ، فرصة ذهبية، هائل). حافظ على لغة مؤسساتية جافة.
+قواعد التفسير المالي (التزم بها حرفياً):
+1. ضغط الأوردر بوك: إذا كان < 1 (سيطرة بيعية/امتصاص). إذا > 1 (طلب هجومي).
+2. نسبة السيولة: إذا كانت < 1 (جفاف سيولة/تجميع صامت مخفي). إذا > 1 (ضخ سيولة نشط).
+3. مؤشر Z-Score: الأرقام السلبية تعني انضغاطاً في القاع.
 
-الناتج باللغة العربية فقط:
+شروط المخرجات (OUTPUT RULES):
+- إياك أن تكتب عبارات مثل: "بناءً على البيانات"، "نلاحظ"، "مما يشير إلى". ادخل في التحليل فوراً.
+- المخرج يجب أن يكون 3 نقاط فقط تبدأ برمز (•).
+- اربط الأرقام بالواقع (مثال: "جفاف في السيولة مع نسبة فوليوم {vol_ratio_val} يعكس تجميعاً صامتاً من الحيتان").
+- لغة جافة، خالية من العواطف والمبالغات.
 """
 
                 prompt_en = f"""
-You are a Quant Analyst at NaiF CHarT Intelligence Lab.
-Write a dynamic, real-time brief for {symbol} based on these metrics:
-- Z-Score (Silent Accumulation): {z_score_val}
-- Smart Money Inflow: {vol_ratio_val}x higher.
-- Orderbook Pressure: Buyers dominate by {ob_pressure_val}x.
-- Technical Confluence: {best_meta.get('confluence', 0)}
-- Trend Indicators: ADX: {best_meta['adx']} | RSI: {best_meta['rsi']}
+Act as a strict Quant Analyst. Task: Write EXACTLY 3 analytical bullet points. NO intro, NO outro, NO fluff.
+Raw Data for {symbol}:
+- Volume Anomaly (Z-Score): {z_score_val}
+- Volume Ratio (Current/Avg): {vol_ratio_val}
+- Orderbook Ratio (Bids/Asks): {ob_pressure_val}
+- Confluence: {best_meta.get('confluence', 0)}
+- Momentum: ADX: {best_meta['adx']} | RSI: {best_meta['rsi']}
 
-Strict Instructions:
-1. Variety: Do not use the same phrasing every time. Vary your analytical angle (e.g., focus on supply absorption, aggressive market buying, or liquidity dry-up).
-2. Write exactly 3 short bullet points using HTML (•). Maximum 3 lines total.
-3. Do not just robotically list the numbers. Weave them into the analysis (e.g., "A {vol_ratio_val}x volume spike indicates...").
-4. ZERO hype words (moon, massive, explosion, huge). Keep a dry, institutional tone.
+Financial Interpretation Rules:
+1. Orderbook Ratio: If < 1 (Supply overhang/absorption). If > 1 (Aggressive demand).
+2. Volume Ratio: If < 1 (Liquidity dry-up/silent accumulation). If > 1 (Active institutional inflow).
+3. Z-Score: Negative means bottom compression.
 
-Output in English only:
+Strict Output Format:
+- NEVER use phrases like "Based on the data", "We can see", or "This indicates". Start the bullet points immediately.
+- Output EXACTLY 3 points starting with (•).
+- Weave numbers naturally (e.g., "Orderbook shows supply absorption with a ratio of {ob_pressure_val}").
+- Keep the tone cold, dry, and institutional. Zero hype.
 """
+
 
 
                 insight_ar = await ask_groq(prompt_ar, lang="ar")
