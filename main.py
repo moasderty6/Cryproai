@@ -199,7 +199,9 @@ def train_xgboost_sync(records):
     df = pd.DataFrame(records)
     
     # تحديد المدخلات (Features) والمخرجات (Labels)
-    X = df[['z_score', 'cvd', 'imbalance', 'adx', 'rsi', 'whale_inflow_score']]
+        # تحديد المدخلات (11 بُعد مالي بدلاً من 6)
+    X = df[['z_score', 'cvd', 'imbalance', 'adx', 'rsi', 'whale_inflow_score', 
+            'ob_skewness', 'micro_volatility', 'cvd_divergence', 'funding_rate', 'volume_ratio']]
     y = df['label']
     
     # إعدادات متقدمة للبيانات المالية المليئة بالضوضاء
@@ -247,7 +249,20 @@ def predict_signal_sync(features: dict) -> float:
     if AI_QUANT_MODEL is None:
         return -1.0 # -1 تعني أن الذكاء الاصطناعي لم يتدرب بعد
         
-    input_data = pd.DataFrame([features])
+        input_data = pd.DataFrame([{
+        'z_score': features.get('z_score', 0),
+        'cvd': features.get('cvd_usd', 0),
+        'imbalance': features.get('ofi_imbalance', 0),
+        'adx': features.get('adx', 0),
+        'rsi': features.get('rsi', 0),
+        'whale_inflow_score': features.get('whale_inflow', 0),
+        'ob_skewness': features.get('ob_skewness', 1.0),
+        'micro_volatility': features.get('micro_volatility', 0.0),
+        'cvd_divergence': features.get('cvd_divergence', 0.0),
+        'funding_rate': features.get('funding_rate', 0.0),
+        'volume_ratio': features.get('volume_ratio', 1.0)
+    }])
+
     # استخراج احتمالية الفئة 1 (نجاح)
     prob = AI_QUANT_MODEL.predict_proba(input_data)[0][1]
     return float(prob) * 100 # إرجاع النسبة المئوية
@@ -560,85 +575,77 @@ import time
 
 async def detect_flash_spoofing_ws(symbol: str, duration: float = 4.0):
     """
-    تسجيل فيديو للأوردر بوك لمدة 4 ثوانٍ (بمعدل 10 إطارات في الثانية)
-    لكشف الجدران التي تظهر وتختفي بسرعة البرق (Flash Spoofing).
+    محرك Quant متقدم يحاكي Level 3 Data.
+    يقيس Order Flow Imbalance (OFI) و Orderbook Skew لكشف تلاعب الحيتان.
     """
     clean_symbol = symbol.replace("USDT", "").lower() + "usdt"
-    # نطلب أفضل 20 مستوى، بتحديث كل 100 ملي ثانية
     ws_url = f"wss://stream.binance.com:9443/ws/{clean_symbol}@depth20@100ms"
     
-    total_bids_vol = 0
-    total_asks_vol = 0
-    frames_count = 0
+    frames = []
     
-    # لتتبع حجم أكبر جدار شراء وبيع في كل إطار
-    max_bid_walls = []
-    max_ask_walls = []
-
     try:
-        # نفتح الاتصال لمدة محددة فقط (مثلاً 4 ثوانٍ)
         async with websockets.connect(ws_url, ping_interval=None) as ws:
             start_time = time.time()
-            
             while time.time() - start_time < duration:
                 try:
-                    # ننتظر التحديث (إذا تأخر أكثر من ثانية نتجاوزه)
                     msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
                     data = json.loads(msg)
+                    if not data.get('bids') or not data.get('asks'): continue
                     
-                    bids = data.get('bids', [])
-                    asks = data.get('asks', [])
+                    # استخراج الأسعار والأحجام لأول 10 مستويات فقط (السيولة الفعالة)
+                    bids = np.array([[float(p), float(v)] for p, v in data['bids'][:10]])
+                    asks = np.array([[float(p), float(v)] for p, v in data['asks'][:10]])
                     
-                    if not bids or not asks:
-                        continue
-
-                    # حساب السيولة في هذا الإطار (Frame)
-                    current_bids_vol = sum(float(b[0]) * float(b[1]) for b in bids)
-                    current_asks_vol = sum(float(a[0]) * float(a[1]) for a in asks)
-                    
-                    total_bids_vol += current_bids_vol
-                    total_asks_vol += current_asks_vol
-                    frames_count += 1
-                    
-                    # تسجيل أكبر جدار في هذه اللحظة (أكبر أوردر مفرد)
-                    max_bid_walls.append(max(float(b[0]) * float(b[1]) for b in bids))
-                    max_ask_walls.append(max(float(a[0]) * float(a[1]) for a in asks))
-
+                    frames.append({'bids': bids, 'asks': asks})
                 except asyncio.TimeoutError:
-                    continue # تجاهل التأخير المؤقت
-                    
+                    continue
     except Exception as e:
-        print(f"WS Depth Error for {symbol}: {e}")
         return None
 
-    if frames_count < 10: # إذا لم نلتقط بيانات كافية (أقل من 10 لقطات)
-        return None
+    if len(frames) < 10: return None
 
-    # --- محرك كشف التلاعب المالي (Quant Engine) ---
+    # --- 🧠 الرياضيات المؤسساتية لمحاكاة MBO ---
     
-    # 1. هل هناك جدار وهمي (Spoof) ظهر واختفى فجأة؟
-    # إذا كان أكبر جدار شراء مسجل أكبر بـ 5 أضعاف من متوسط الجدران الأخرى، فهذا يعني أنه جدار ظهر للحظة واختفى
-    avg_bid_wall = sum(max_bid_walls) / len(max_bid_walls)
-    max_recorded_bid = max(max_bid_walls)
-    is_bid_spoof = max_recorded_bid > (avg_bid_wall * 5.0)
+    # 1. Orderbook Skew (انحراف الأوردر بوك): هل السيولة مضغوطة أم متباعدة؟
+    # الحيتان تضغط الأسعار قريباً من السعر الحالي لترويع القطيع
+    last_frame = frames[-1]
+    bid_distances = last_frame['bids'][0, 0] - last_frame['bids'][:, 0]
+    ask_distances = last_frame['asks'][:, 0] - last_frame['asks'][0, 0]
+    
+    # إذا كانت المسافات بين طلبات الشراء صغيرة جداً مقارنة بالبيع، فهناك حوت يضغط السعر للأعلى
+    skewness = np.sum(ask_distances) / (np.sum(bid_distances) + 0.0001) 
 
-    avg_ask_wall = sum(max_ask_walls) / len(max_ask_walls)
-    max_recorded_ask = max(max_ask_walls)
-    is_ask_spoof = max_recorded_ask > (avg_ask_wall * 5.0)
+    # 2. Order Flow Imbalance (OFI): حساب التغير التفاضلي (التلاعب بالطلبات)
+    # هذا يغنينا عن الـ Order ID، فهو يقيس التغير الصافي في السيولة عبر اللقطات
+    ofi_score = 0
+    spoof_flags = 0
+    
+    for i in range(1, len(frames)):
+        prev_bids, curr_bids = frames[i-1]['bids'], frames[i]['bids']
+        prev_asks, curr_asks = frames[i-1]['asks'], frames[i]['asks']
+        
+        best_bid_prev, best_bid_curr = prev_bids[0, 0], curr_bids[0, 0]
+        best_ask_prev, best_ask_curr = prev_asks[0, 0], curr_asks[0, 0]
+        
+        bid_vol_prev, bid_vol_curr = np.sum(prev_bids[:, 1]), np.sum(curr_bids[:, 1])
+        ask_vol_prev, ask_vol_curr = np.sum(prev_asks[:, 1]), np.sum(curr_asks[:, 1])
 
-    # 2. الخلل العام في السيولة (Orderbook Imbalance)
-    avg_bids = total_bids_vol / frames_count
-    avg_asks = total_asks_vol / frames_count
-    imbalance = (avg_bids - avg_asks) / (avg_bids + avg_asks) if (avg_bids + avg_asks) > 0 else 0
+        # حساب הـ OFI
+        e_bid = bid_vol_curr if best_bid_curr >= best_bid_prev else -bid_vol_prev if best_bid_curr < best_bid_prev else bid_vol_curr - bid_vol_prev
+        e_ask = ask_vol_curr if best_ask_curr <= best_ask_prev else -ask_vol_prev if best_ask_curr > best_ask_prev else ask_vol_curr - ask_vol_prev
+        ofi_score += (e_bid - e_ask)
+        
+        # كشف الـ Spoofing الصارخ (جدار يختفي فجأة بدون تنفيذ صفقات)
+        if abs(bid_vol_curr - bid_vol_prev) > (bid_vol_prev * 2.0): spoof_flags -= 1 # سحب جدار شراء
+        if abs(ask_vol_curr - ask_vol_prev) > (ask_vol_prev * 2.0): spoof_flags += 1 # سحب جدار بيع
 
     return {
-        "imbalance": round(imbalance, 2), # من -1 (سيطرة بائعين) إلى 1 (سيطرة مشترين)
-        "is_bid_spoof": is_bid_spoof,     # فخ شراء وهمي (لتصريف العملة)
-        "is_ask_spoof": is_ask_spoof,     # فخ بيع وهمي (لتجميع العملة بسعر رخيص)
-        "real_support": avg_bids
+        "imbalance": round(ofi_score / len(frames), 2),
+        "skewness": round(skewness, 2), # متغير جديد للـ ML
+        "is_bid_spoof": spoof_flags < -2, 
+        "is_ask_spoof": spoof_flags > 2,
+        "real_support": np.sum(last_frame['bids'][:, 0] * last_frame['bids'][:, 1])
     }
-
-
 async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
     """
     جلب ودمج الأوردر بوك من 8 منصات لقراءة ضغط الحيتان
@@ -1108,13 +1115,32 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 # 2. تجهيز الملامح (Features) للذكاء الاصطناعي
                                 # 2. تجهيز الملامح (Features) للذكاء الاصطناعي
                                 # 2. تجهيز الملامح (Features) للذكاء الاصطناعي
+                                # 2. تجهيز مصفوفة بيانات مؤسساتية (Dimensionality Expansion)
+                
+                # حساب تقلب السعر الدقيق (Micro-Volatility) لآخر 20 شمعة
+                micro_volatility = df['close'].tail(20).pct_change().std() * 100
+                
+                # حساب انحراف مسار السيولة (CVD Divergence) - هل السعر يصعد بينما CVD يهبط؟
+                cvd_divergence = 1.0 if (price > ema200_val and delta_usd < 0) else -1.0 if (price < ema200_val and delta_usd > 0) else 0.0
+
+                # جلب معدل التمويل الحالي (Funding Rate) من مصفوفة الـ Futures التي حسبناها مسبقاً
+                # إذا كان التمويل سالباً بقوة، الحيتان تضغط السعر صعوداً لتصفية البائعين
+                funding_val = 0.0
+                if 'fund_data' in locals() and isinstance(locals().get('fund_data'), dict):
+                    funding_val = float(locals().get('fund_data').get('lastFundingRate', 0.0))
+
                 ml_features = {
                     'z_score': float(current_z),
-                    'cvd': float(delta_usd), # ✅ التعديل هنا: تمرير صافي السيولة الحقيقي بالدولار (إيجابي أو سلبي)
-                    'imbalance': float(locals().get('global_ob_pressure', 0)),
+                    'cvd_usd': float(delta_usd),
+                    'ofi_imbalance': float(depth_data['imbalance']) if 'depth_data' in locals() and depth_data else 0.0,
+                    'ob_skewness': float(depth_data['skewness']) if 'depth_data' in locals() and depth_data else 1.0,
                     'adx': float(current_adx),
                     'rsi': float(last_rsi),
-                    'whale_inflow_score': float(whale_inflow)
+                    'whale_inflow': float(whale_inflow),
+                    'micro_volatility': float(micro_volatility) if not pd.isna(micro_volatility) else 0.0,
+                    'cvd_divergence': float(cvd_divergence),
+                    'funding_rate': float(funding_val),
+                    'volume_ratio': float(current_vol_ratio)
                 }
                 
                 # 3. سؤال الذكاء الاصطناعي عن رأيه (في مسار خلفي)
@@ -1166,33 +1192,28 @@ async def handle_binance_rate_limit(retry_after: int = 60):
         # إرجاع الإشارة خضراء (تستيقظ جميع المهام وتكمل عملها تلقائياً)
         binance_rate_limit_event.set() 
 async def log_signal_for_ml(pool, symbol: str, price: float, features: dict):
-    """
-    تسجيل بيانات الإشارة في قاعدة البيانات فور التقاطها من الرادار (حتى قبل موافقة الأدمن).
-    يمنع التكرار: لا يسجل نفس العملة إذا تم تسجيلها في آخر 4 ساعات.
-    """
     async with pool.acquire() as conn:
-        # 🛡️ فلتر التكرار الذكي: إذا وصلت العملة للأدمن وعمل مسح (Clear)، لن تسجل كبيانات مكررة
         exists = await conn.fetchval("""
             SELECT 1 FROM ml_training_data 
             WHERE symbol = $1 AND signal_time > CURRENT_TIMESTAMP - INTERVAL '24 hours'
         """, symbol)
-        
-        if exists:
-            return # العملة مسجلة حديثاً، تجاهل التسجيل المزدوج لحماية جودة التدريب
+        if exists: return 
 
+        # إدخال البيانات الممتدة
         await conn.execute("""
             INSERT INTO ml_training_data 
-            (symbol, entry_price, z_score, cvd, imbalance, adx, rsi, whale_inflow_score)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            (symbol, entry_price, z_score, cvd, imbalance, adx, rsi, whale_inflow_score,
+             ob_skewness, micro_volatility, cvd_divergence, funding_rate, volume_ratio)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         """, 
         symbol, price, 
-        features.get('z_score', 0.0), 
-        features.get('cvd', 0.0), 
-        features.get('imbalance', 0.0), 
-        features.get('adx', 0.0), 
-        features.get('rsi', 0.0),
-        features.get('whale_inflow_score', 0.0)) # 👈 تم إضافة سكور الحيتان هنا
-
+        features.get('z_score', 0.0), features.get('cvd_usd', 0.0), 
+        features.get('ofi_imbalance', 0.0), features.get('adx', 0.0), 
+        features.get('rsi', 0.0), features.get('whale_inflow', 0.0),
+        features.get('ob_skewness', 1.0), features.get('micro_volatility', 0.0),
+        features.get('cvd_divergence', 0.0), features.get('funding_rate', 0.0),
+        features.get('volume_ratio', 1.0))
+        
         print(f"🧠 [ML Logger] Data captured for {symbol} at ${price}")
 
 async def ml_inspector_worker(pool):
@@ -2919,7 +2940,14 @@ async def on_startup(app):
         await conn.execute("ALTER TABLE paid_users ADD COLUMN IF NOT EXISTS expiry_date TIMESTAMP")
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS invited_by BIGINT")
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS ref_count INTEGER DEFAULT 0")
+                # 🧠 ترقية جدول الذكاء الاصطناعي (إضافة كل الأعمدة المؤسساتية الجديدة إن لم تكن موجودة)
         await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS whale_inflow_score DOUBLE PRECISION DEFAULT 0.0")
+        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS ob_skewness DOUBLE PRECISION DEFAULT 1.0")
+        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS micro_volatility DOUBLE PRECISION DEFAULT 0.0")
+        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS cvd_divergence DOUBLE PRECISION DEFAULT 0.0")
+        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS funding_rate DOUBLE PRECISION DEFAULT 0.0")
+        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS volume_ratio DOUBLE PRECISION DEFAULT 1.0")
+
         # 3. تفعيل حسابات الأدمن بشكل دائم
         initial_paid_users = {1317225334, 5527572646}
         for uid in initial_paid_users:
