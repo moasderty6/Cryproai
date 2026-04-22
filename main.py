@@ -990,7 +990,8 @@ async def analyze_radar_coin(c, client, market_regime, sem):
 
             # 2. فلتر CVD
                         # 2. فلتر CVD
-            micro_cvd_boost, micro_cvd_signal = await get_micro_cvd_absorption(f"{symbol}USDT", client)
+                        # 2. فلتر CVD
+            micro_cvd_boost, micro_cvd_signal, micro_cvd_trend = await get_micro_cvd_absorption(f"{symbol}USDT", client)
             score += micro_cvd_boost
             if micro_cvd_signal: 
                 tags.append(micro_cvd_signal)
@@ -2649,7 +2650,8 @@ async def run_analysis(cb: types.CallbackQuery):
                 futures_task = get_futures_liquidity(clean_sym, client, price, old_price_val)
                 
                 # استقبال البيانات مع القيمة الثالثة (funding_val)
-                (cvd_boost, cvd_sig), (delta_usd, buy_v, sell_v), (fut_boost, fut_sig, funding_val) = await asyncio.gather(
+                                # استقبال البيانات بشكل كامل دون فقدان أي قيمة
+                (cvd_boost, cvd_sig, cvd_trend_val), (delta_usd, buy_v, sell_v), (fut_boost, fut_sig, funding_val) = await asyncio.gather(
                     cvd_task, flow_task, futures_task
                 )
                 z_score, _, _ = calculate_volume_zscore(df, window=720)
