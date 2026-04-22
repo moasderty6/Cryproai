@@ -871,7 +871,7 @@ async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_
             old_oi = float(oi_data[0]["sumOpenInterest"])
             current_oi = float(oi_data[-1]["sumOpenInterest"])
             oi_change_pct = (current_oi - old_oi) / old_oi
-            price_change_pct = (current_price - old_price) / old_price
+            price_change_pct = (float(current_price) - float(old_price)) / float(old_price)
             funding_rate = float(fund_data.get("lastFundingRate", 0.0))
 
             score_modifier = 0.0
@@ -2604,7 +2604,7 @@ async def run_analysis(cb: types.CallbackQuery):
 
     lang = data.get('lang', 'ar')
     sym = data.get('sym')
-    price = data.get('price')
+    price = float(data.get('price', 0.0))
     volume_24h = data.get('volume_24h', 0)
     tf = cb.data.replace("tf_", "")
     
