@@ -901,6 +901,9 @@ def calculate_volume_zscore(df, window=720):
     محرك الشذوذ الإحصائي (Volume Z-Score).
     window=720 لأننا نستخدم فريم 1h (24 ساعة * 30 يوم = 720 شمعة).
     """
+    # 🛡️ إجبار تحويل عمود الفوليوم إلى أرقام لتدمير أي نصوص قد تسبب انهيار (TypeError: str and float)
+    df["volume"] = pd.to_numeric(df["volume"], errors='coerce')
+    
     # حساب المتوسط المتحرك (Mean) للفوليوم لآخر 30 يوم
     rolling_mean = df["volume"].rolling(window=window, min_periods=100).mean()
     
