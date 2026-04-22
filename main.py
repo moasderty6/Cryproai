@@ -201,7 +201,9 @@ def train_xgboost_sync(records):
     # تحديد المدخلات (Features) والمخرجات (Labels)
         # تحديد المدخلات (11 بُعد مالي بدلاً من 6)
     X = df[['z_score', 'cvd', 'imbalance', 'adx', 'rsi', 'whale_inflow_score', 
-            'ob_skewness', 'micro_volatility', 'cvd_divergence', 'funding_rate', 'volume_ratio']]
+            'ob_skewness', 'micro_volatility', 'cvd_divergence', 'funding_rate', 
+            'volume_ratio', 'sp500_trend', 'sentiment_score']]
+
     y = df['label']
     
     # إعدادات متقدمة للبيانات المالية المليئة بالضوضاء
@@ -260,8 +262,11 @@ def predict_signal_sync(features: dict) -> float:
         'micro_volatility': features.get('micro_volatility', 0.0),
         'cvd_divergence': features.get('cvd_divergence', 0.0),
         'funding_rate': features.get('funding_rate', 0.0),
-        'volume_ratio': features.get('volume_ratio', 1.0)
+        'volume_ratio': features.get('volume_ratio', 1.0),
+        'sp500_trend': features.get('sp500_trend', 0.0),
+        'sentiment_score': features.get('sentiment_score', 50.0)
     }])
+
 
     # استخراج احتمالية الفئة 1 (نجاح)
     prob = AI_QUANT_MODEL.predict_proba(input_data)[0][1]
@@ -1132,16 +1137,19 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 ml_features = {
                     'z_score': float(current_z),
                     'cvd_usd': float(delta_usd),
-                    'ofi_imbalance': float(depth_data['imbalance']) if 'depth_data' in locals() and depth_data else 0.0,
-                    'ob_skewness': float(depth_data['skewness']) if 'depth_data' in locals() and depth_data else 1.0,
+                    'ofi_imbalance': float(locals().get('depth_data', {}).get('imbalance', 0) if locals().get('depth_data') else 0.0),
+                    'ob_skewness': float(locals().get('depth_data', {}).get('skewness', 1.0) if locals().get('depth_data') else 1.0),
                     'adx': float(current_adx),
                     'rsi': float(last_rsi),
                     'whale_inflow': float(whale_inflow),
                     'micro_volatility': float(micro_volatility) if not pd.isna(micro_volatility) else 0.0,
                     'cvd_divergence': float(cvd_divergence),
                     'funding_rate': float(funding_val),
-                    'volume_ratio': float(current_vol_ratio)
+                    'volume_ratio': float(current_vol_ratio),
+                    'sp500_trend': float(MACRO_CACHE["sp500_trend"]),     # 🌍 بُعد الماكرو الجديد
+                    'sentiment_score': float(MACRO_CACHE["sentiment_score"]) # 🧠 بُعد المشاعر الجديد
                 }
+
                 
                 # 3. سؤال الذكاء الاصطناعي عن رأيه (في مسار خلفي)
                 ai_probability = await asyncio.to_thread(predict_signal_sync, ml_features)
@@ -1203,8 +1211,9 @@ async def log_signal_for_ml(pool, symbol: str, price: float, features: dict):
         await conn.execute("""
             INSERT INTO ml_training_data 
             (symbol, entry_price, z_score, cvd, imbalance, adx, rsi, whale_inflow_score,
-             ob_skewness, micro_volatility, cvd_divergence, funding_rate, volume_ratio)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+             ob_skewness, micro_volatility, cvd_divergence, funding_rate, volume_ratio,
+             sp500_trend, sentiment_score)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         """, 
         symbol, price, 
         features.get('z_score', 0.0), features.get('cvd_usd', 0.0), 
@@ -1212,7 +1221,9 @@ async def log_signal_for_ml(pool, symbol: str, price: float, features: dict):
         features.get('rsi', 0.0), features.get('whale_inflow', 0.0),
         features.get('ob_skewness', 1.0), features.get('micro_volatility', 0.0),
         features.get('cvd_divergence', 0.0), features.get('funding_rate', 0.0),
-        features.get('volume_ratio', 1.0))
+        features.get('volume_ratio', 1.0),
+        features.get('sp500_trend', 0.0), features.get('sentiment_score', 50.0))
+
         
         print(f"🧠 [ML Logger] Data captured for {symbol} at ${price}")
 
@@ -1278,6 +1289,59 @@ async def ml_inspector_worker(pool):
             print(f"⚠️ ML Inspector Error: {e}")
             
         await asyncio.sleep(600) # إعادة الفحص كل 10 دقائق
+# --- ذاكرة الماكرو والمشاعر اللحظية ---
+MACRO_CACHE = {
+    "sp500_trend": 0.0,      # نسبة تغير السوق الأمريكي اليوم
+    "sentiment_score": 50.0, # من 0 إلى 100
+}
+
+async def macro_data_worker():
+    """
+    عامل خلفي (Quant Macro Engine) يعمل كل 30 دقيقة.
+    يجلب مشاعر الكريبتو وحالة الأسهم الأمريكية ويخزنها في الذاكرة.
+    لا يستهلك أي ليمت ولا يؤثر على سرعة الرادار.
+    """
+    await asyncio.sleep(10) # انتظر حتى يعمل البوت
+    print("🌍 Macro Data Worker is live...")
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                # 1. جلب مؤشر المشاعر (Fear & Greed)
+                try:
+                    fng_res = await client.get("https://api.alternative.me/fng/?limit=1")
+                    if fng_res.status_code == 200:
+                        data = fng_res.json()
+                        MACRO_CACHE["sentiment_score"] = float(data['data'][0]['value'])
+                except Exception as e:
+                    print(f"⚠️ Sentiment API Error: {e}")
+
+                # 2. جلب حالة السوق الأمريكي (S&P 500 ETF - SPY)
+                try:
+                    spy_res = await client.get(
+                        "https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=1d&range=2d",
+                        headers=headers
+                    )
+                    if spy_res.status_code == 200:
+                        chart_data = spy_res.json()['chart']['result'][0]['indicators']['quote'][0]
+                        closes = chart_data['close']
+                        # حساب نسبة التغير بين إغلاق أمس والسعر الحالي
+                        if len(closes) >= 2 and closes[-1] and closes[-2]:
+                            pct_change = ((closes[-1] - closes[-2]) / closes[-2]) * 100
+                            MACRO_CACHE["sp500_trend"] = round(pct_change, 2)
+                except Exception as e:
+                    print(f"⚠️ S&P 500 API Error: {e}")
+                    
+                print(f"🔄 [Macro Updated] Sentiment: {MACRO_CACHE['sentiment_score']} | S&P500 Trend: {MACRO_CACHE['sp500_trend']}%")
+                
+        except Exception as e:
+            pass
+            
+        await asyncio.sleep(1800) # التحديث كل نصف ساعة
 
 async def ai_opportunity_radar(pool):
     print("🚀 تم تشغيل الرادار الشامل (وضع صيد القيعان)...")
@@ -2947,6 +3011,8 @@ async def on_startup(app):
         await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS cvd_divergence DOUBLE PRECISION DEFAULT 0.0")
         await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS funding_rate DOUBLE PRECISION DEFAULT 0.0")
         await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS volume_ratio DOUBLE PRECISION DEFAULT 1.0")
+        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS sp500_trend DOUBLE PRECISION DEFAULT 0.0")
+        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS sentiment_score DOUBLE PRECISION DEFAULT 50.0")
 
         # 3. تفعيل حسابات الأدمن بشكل دائم
         initial_paid_users = {1317225334, 5527572646}
@@ -2954,6 +3020,7 @@ async def on_startup(app):
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
 
     asyncio.create_task(smart_radar_watchdog(pool))
+    asyncio.create_task(macro_data_worker()) # 🌍 تشغيل عامل الماكرو
     asyncio.create_task(radar_worker_process(pool))
     asyncio.create_task(ai_trainer_worker(pool)) # 🧠 تشغيل مدرب الذكاء الاصطناعي
     asyncio.create_task(ml_inspector_worker(pool)) # 🧠 تشغيل محقق الذكاء الاصطناعي
