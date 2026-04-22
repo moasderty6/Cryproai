@@ -2604,7 +2604,7 @@ async def run_analysis(cb: types.CallbackQuery):
 
     lang = data.get('lang', 'ar')
     sym = data.get('sym')
-    price = float(data.get('price', 0.0))
+    price = data.get('price')
     volume_24h = data.get('volume_24h', 0)
     tf = cb.data.replace("tf_", "")
     
@@ -2681,20 +2681,31 @@ async def run_analysis(cb: types.CallbackQuery):
         if not is_dex: # 👈 حماية: لا تطلب بيانات مؤسساتية لعملات الديكس من بايننس
             try:
                 async with httpx.AsyncClient(timeout=10) as client:
-                    old_price_val = df["close"].iloc[-3] if len(df) > 3 else price
+                    # 1. إجبار تحويل السعر الحالي إلى رقم عشري لتدمير أي نص قادم من الذاكرة
+                    safe_price = float(price)
+                    
+                    # 2. إجبار السعر القديم ليكون رقماً عشرياً أيضاً
+                    if len(df) > 3:
+                        safe_old_price = float(df["close"].iloc[-3])
+                    else:
+                        safe_old_price = safe_price
+
                     cvd_task = get_micro_cvd_absorption(f"{clean_sym}USDT", client)
                     flow_task = get_institutional_orderflow(f"{clean_sym}USDT", client, minutes=15)
-                    futures_task = get_futures_liquidity(clean_sym, client, price, old_price_val)
+                    
+                    # 3. إرسال الأرقام المحمية (safe) للدالة
+                    futures_task = get_futures_liquidity(clean_sym, client, safe_price, safe_old_price)
                     
                     (cvd_boost, cvd_sig, cvd_trend_val), (delta_usd, buy_v, sell_v), (fut_boost, fut_sig, funding_val) = await asyncio.gather(
                         cvd_task, flow_task, futures_task
                     )
                     z_score, _, _ = calculate_volume_zscore(df, window=720)
             except Exception as e:
+                import traceback
                 print(f"⚠️ Data Fetch Error in Manual Analysis: {e}")
-            cvd_sig, buy_v, sell_v, fut_sig, z_score = None, 0, 0, None, 0
-            delta_usd, funding_val = 0.0, 0.0
-
+                traceback.print_exc() # هذا السطر سيكشف لنا رقم السطر الخفي الذي يسبب المشكلة إذا ظهرت
+                cvd_sig, buy_v, sell_v, fut_sig, z_score = None, 0, 0, None, 0
+                delta_usd, funding_val = 0.0, 0.0
 
         # 2. كشف الفخاخ وتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه
         ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
