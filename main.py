@@ -473,17 +473,18 @@ async def get_micro_cvd_absorption(symbol, client):
             
             # 🎯 معادلة القناص: السعر شبه ثابت (أقل من 1.5% حركة)، لكن الـ CVD يرتفع بانفجار (الحوت يمتص العروض)
                         # 🎯 معادلة القناص: السعر شبه ثابت (أقل من 2% حركة)، لكن الـ CVD يرتفع 
+                        # 🎯 معادلة القناص...
             if abs(price_change) < 0.02 and cvd_trend > (total_vol * 0.15):
-                return 30.0, "Micro_Silent_Accumulation" 
-            
+                return 30.0, "Micro_Silent_Accumulation", cvd_trend # 👈 التعديل هنا
+
             # كشف التصريف المخفي
             elif price_change > 0.02 and cvd_trend < -(total_vol * 0.15):
-                return -25.0, "Hidden_Distribution"
-
+                return -25.0, "Hidden_Distribution", cvd_trend # 👈 التعديل هنا
                 
     except Exception as e:
         pass
-    return 0.0, None
+    return 0.0, None, 0.0 # 👈 التعديل هنا
+
 async def get_institutional_orderflow(symbol, client, minutes=15):
     """ يسحب الصفقات المجمعة لآخر 15 دقيقة """
     import time
