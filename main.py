@@ -485,9 +485,7 @@ async def get_micro_cvd_absorption(symbol, client):
         pass
     return 0.0, None
 async def get_institutional_orderflow(symbol, client, minutes=15):
-    """
-    يسحب الصفقات المجمعة لآخر 15 دقيقة متجاوزاً فخ الصفقات الفردية الوهمية.
-    """
+    """ يسحب الصفقات المجمعة لآخر 15 دقيقة """
     import time
     end_time = int(time.time() * 1000)
     start_time = end_time - (minutes * 60 * 1000)
@@ -495,30 +493,31 @@ async def get_institutional_orderflow(symbol, client, minutes=15):
     try:
         base_url = get_random_binance_base()
         res = await client.get(f"{base_url}/api/v3/aggTrades", params={
-
             "symbol": symbol,
             "startTime": start_time,
-            "endTime": end_time
+            "endTime": end_time,
+            "limit": 1000  # 👈 التعديل: إضافة اللييمت ضروري جداً لبايننس
         }, timeout=5.0)
         
         if res.status_code == 200:
             trades = res.json()
+            if not trades: return 0.0, 0.0, 0.0 # إذا كانت العملة ميتة
+            
             buy_vol = 0.0
             sell_vol = 0.0
-            
             for t in trades:
                 amount = float(t['q']) * float(t['p'])
-                # 'm' == True تعني أن البائع هو صانع السوق (شخص ما قام بالبيع كـ Taker)
-                if t['m']: 
-                    sell_vol += amount
-                else: 
-                    buy_vol += amount
+                if t['m']: sell_vol += amount
+                else: buy_vol += amount
                     
             delta = buy_vol - sell_vol
             return delta, buy_vol, sell_vol
-    except Exception:
-        pass
+        else:
+            print(f"⚠️ AggTrades Failed: {res.status_code} - {res.text}")
+    except Exception as e:
+        print(f"⚠️ Flow Error: {e}")
     return 0.0, 0.0, 0.0
+
 
 import ta
 import pandas as pd
@@ -884,15 +883,16 @@ async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_
                 score_modifier -= 25.0
                 futures_signal = "Short_Covering"
             
+                        # ... كودك الحالي
             if funding_rate < -0.0005: 
                 score_modifier += 12.0
                 if not futures_signal: futures_signal = "Short_Squeeze"
             elif funding_rate > 0.0005:
                 score_modifier -= 10.0
 
-            return score_modifier, futures_signal
+            return score_modifier, futures_signal, funding_rate # 👈 التعديل: أضفنا funding_rate للناتج
     except Exception: pass
-    return 0.0, None
+    return 0.0, None, 0.0 # 👈 التعديل: أضفنا 0.0 للناتج في حال الخطأ
 
 def calculate_volume_zscore(df, window=720):
     """
@@ -993,8 +993,9 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             if micro_cvd_signal: 
                 tags.append(micro_cvd_signal)
             # 3. فلتر المشتقات
+                        # 3. فلتر المشتقات
             old_price_val = df["close"].iloc[-3] if len(df) > 3 else df["open"].iloc[0]
-            futures_boost, futures_signal = await get_futures_liquidity(symbol, client, price, old_price_val)
+            futures_boost, futures_signal, funding_val = await get_futures_liquidity(symbol, client, price, old_price_val)
             score += futures_boost
             if futures_signal: tags.append(futures_signal)
 
@@ -1130,9 +1131,6 @@ async def analyze_radar_coin(c, client, market_regime, sem):
 
                 # جلب معدل التمويل الحالي (Funding Rate) من مصفوفة الـ Futures التي حسبناها مسبقاً
                 # إذا كان التمويل سالباً بقوة، الحيتان تضغط السعر صعوداً لتصفية البائعين
-                funding_val = 0.0
-                if 'fund_data' in locals() and isinstance(locals().get('fund_data'), dict):
-                    funding_val = float(locals().get('fund_data').get('lastFundingRate', 0.0))
 
                 ml_features = {
                     'z_score': float(current_z),
@@ -2638,6 +2636,7 @@ async def run_analysis(cb: types.CallbackQuery):
         except: pass
 
         # 1. ⚡ جلب البيانات المؤسساتية أولاً لمعرفة النية المخفية (قبل وضع الأهداف)
+                # 1. ⚡ جلب البيانات المؤسساتية أولاً لمعرفة النية المخفية (قبل وضع الأهداف)
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 old_price_val = df["close"].iloc[-3] if len(df) > 3 else price
@@ -2645,12 +2644,16 @@ async def run_analysis(cb: types.CallbackQuery):
                 flow_task = get_institutional_orderflow(f"{clean_sym}USDT", client, minutes=15)
                 futures_task = get_futures_liquidity(clean_sym, client, price, old_price_val)
                 
-                (cvd_boost, cvd_sig), (delta_usd, buy_v, sell_v), (fut_boost, fut_sig) = await asyncio.gather(
+                # استقبال البيانات مع القيمة الثالثة (funding_val)
+                (cvd_boost, cvd_sig), (delta_usd, buy_v, sell_v), (fut_boost, fut_sig, funding_val) = await asyncio.gather(
                     cvd_task, flow_task, futures_task
                 )
                 z_score, _, _ = calculate_volume_zscore(df, window=720)
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ Data Fetch Error in Manual Analysis: {e}")
             cvd_sig, buy_v, sell_v, fut_sig, z_score = None, 0, 0, None, 0
+            delta_usd, funding_val = 0.0, 0.0
+
 
         # 2. كشف الفخاخ وتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه
         ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
