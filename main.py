@@ -49,7 +49,7 @@ BINANCE_HEADERS = {"X-MBX-APIKEY": BINANCE_API_KEY}
 GATE_API_KEY = "a3f6a57b42f6106011e6890049e57b2e"
 GATE_API_SECRET = "1ac18e0a690ce782f6854137908a6b16eb910cf02f5b95fa3c43b670758f79bc"
 GATE_BASE = "https://api.gateio.ws/api/v4/spot/candlesticks"
-BLACKLISTED_COINS = {"TOMO", "COCOS", "LRC", "BUSD", "TUSD", "USDC", "USDE", "BFUSD", "RLUSD", "POLY", "XUSD"}
+BLACKLISTED_COINS = {"TOMO", "COCOS", "LRC", "BUSD", "TUSD", "USDC", "USDE", "BFUSD", "RLUSD", "POLY", "XUSD", "U", "USDT", "DAI", "USDP", "FDUSD", "USDD", "PYUSD", "FRAX", "LUSD", "GUSD", "ZUSD", "VAI", "MAI", "DOLA", "EURC", "EURT", "EURS", "AEUR", "EURA", "TRY", "BRL", "ZAR"}
 GROQ_KEYS_STR = os.getenv("GROQ_API_KEYS", "")
 GROQ_API_KEYS = [k.strip() for k in GROQ_KEYS_STR.split(",") if k.strip()]
 WEBHOOK_URL = os.getenv("WEBHOOK_URL") 
@@ -1076,19 +1076,24 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             
             # 🟢 محرك تسمية الإشارة الذكي (Short & Punchy Signal Names)
                         # 🟢 محرك تسمية الإشارة الذكي (المصحح والمطور)
+                        # 🟢 محرك تسمية الإشارة الذكي (بدون مبالغة أو FOMO)
             final_signal = "High Probability Setup 🎯"
             
             # 1. إشارات الخطر (تمنع إرسال العملة)
             if "Fake_Pump" in tags or "Flash_Spoofing_Manipulation" in tags or "Short_Covering" in tags or "Late_FOMO" in tags or "Hidden_Distribution" in tags:
                 return None 
                 
-            # 2. الإشارات الأسطورية (سكور فوق 90)
-            if score >= 90.0:
-                final_signal = "Massive Institutional Accumulation 🐋"
+            # 🌟 2. مستوى الشذوذ المطلق (سكور فوق 95) - اسم تقني جاف
+            if score >= 95.0:
+                final_signal = "Deep Liquidity Absorption 🏦" # (امتصاص عميق للسيولة)
+                
+            # 🐋 3. مستوى الحيتان (سكور من 90 إلى 94.9)
+            elif score >= 90.0:
+                final_signal = "Institutional Orderflow 🐋" # (تدفق أوامر مؤسساتي)
             
-            # 3. الإشارات القوية المحددة (تم تصحيحها)
+            # 🦈 4. الإشارات القوية المحددة (تحت الـ 90)
             elif "Micro_Silent_Accumulation" in tags and "Institutional_Buy_Spike" in tags: 
-                final_signal = "Aggressive Whale Accumulation 🐋"
+                final_signal = "Active Accumulation 🦈" # (تجميع نشط - مسحنا كلمة هجومي)
             elif "Short_Squeeze" in tags: 
                 final_signal = "(Short Squeeze) 🔥"
             elif "Z_Anom_Silent" in tags and "OI_Rising" in tags: 
@@ -1096,9 +1101,10 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             elif "Squeeze" in tags and "OB_Buy" in tags: 
                 final_signal = "(Liquidity Breakout) ⚡"
             elif "Micro_Silent_Accumulation" in tags or "Wall_Absorption_Pre_Breakout" in tags: 
-                final_signal = "Silent Institutional Accumulation 🧲"
+                final_signal = "Silent Accumulation 🧲" 
             elif "Z_Anom_Silent" in tags or "Smart_Accumulation" in tags: 
                 final_signal = "Smart Money Inflow 💸"
+
 
             avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
             avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
