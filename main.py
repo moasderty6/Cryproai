@@ -1408,67 +1408,60 @@ async def log_signal_for_ml(pool, symbol: str, price: float, features: dict):
         print(f"🧠 [ML Logger] Data captured for {symbol} at ${price}")
 
 async def ml_inspector_worker(pool):
-    """
-    عامل خلفي يعمل بصمت. يفحص الإشارات التي مر عليها 4 ساعات.
-    يحسب أقصى قمة وصل لها السعر (Highest High) لتحديد الربح الفعلي.
-    """
-    await asyncio.sleep(120) # انتظار دقيقتين بعد تشغيل السيرفر ليهدأ
+    await asyncio.sleep(120)
     print("🕵️‍♂️ ML Inspector is running in the background...")
     
     while True:
         try:
+            # 1. افتح الاتصال لجلب البيانات فقط ثم اغلقه فوراً
             async with pool.acquire() as conn:
-                # جلب العملات المعلقة التي مر عليها أكثر من 4 ساعات
                 pending = await conn.fetch("""
                     SELECT id, symbol, entry_price, EXTRACT(EPOCH FROM signal_time) as sig_ts
                     FROM ml_training_data 
                     WHERE label = -1 AND signal_time <= CURRENT_TIMESTAMP - INTERVAL '24 hours'
                 """)
                 
-                if not pending:
-                    await asyncio.sleep(600) # ينام 10 دقائق إذا لم يجد شيئاً
-                    continue
+            if not pending:
+                await asyncio.sleep(600)
+                continue
+                
+            # 2. قم بالعمليات البطيئة (HTTP) خارج نطاق الاتصال بقاعدة البيانات
+            async with httpx.AsyncClient(timeout=10) as client:
+                for row in pending:
+                    sym = f"{row['symbol']}USDT"
+                    entry = row['entry_price']
+                    start_time_ms = int(row['sig_ts'] * 1000)
                     
-                async with httpx.AsyncClient(timeout=10) as client:
-                    for row in pending:
-                        sym = f"{row['symbol']}USDT"
-                        entry = row['entry_price']
-                        start_time_ms = int(row['sig_ts'] * 1000)
+                    base_url = get_random_binance_base()
+                    res = await client.get(
+                        f"{base_url}/api/v3/klines",
+                        params={"symbol": sym, "interval": "15m", "startTime": start_time_ms, "limit": 96}
+                    )
+                    
+                    if res.status_code == 200:
+                        klines = res.json()
+                        if not klines: continue
                         
-                        # جلب شموع 15 دقيقة لتغطي الـ 4 ساعات التالية للإشارة
-                        base_url = get_random_binance_base()
-                        res = await client.get(
-                            f"{base_url}/api/v3/klines",
-                            params={"symbol": sym, "interval": "15m", "startTime": start_time_ms, "limit": 96}
-                        )
+                        highest_high = max([float(k[2]) for k in klines])
+                        max_profit_pct = ((highest_high - entry) / entry) * 100
+                        label = 1 if max_profit_pct >= 5.0 else 0
                         
-                        if res.status_code == 200:
-                            klines = res.json()
-                            if not klines: continue
-                            
-                            # استخراج أعلى قمة وصل لها السعر في الـ 4 ساعات (الرقم 2 هو الـ High)
-                            highest_high = max([float(k[2]) for k in klines])
-                            
-                            # حساب أقصى نسبة ربح
-                            max_profit_pct = ((highest_high - entry) / entry) * 100
-                            
-                            # 🎯 التقييم: إذا صعدت 2% فأكثر نعتبرها صفقة ناجحة (1)، غير ذلك فاشلة (0)
-                            label = 1 if max_profit_pct >= 5.0 else 0
-                            
+                        # 3. افتح اتصالاً سريعاً جداً لتحديث السطر الواحد واغلقه
+                        async with pool.acquire() as conn:
                             await conn.execute("""
                                 UPDATE ml_training_data 
                                 SET max_profit_pct = $1, label = $2 
                                 WHERE id = $3
                             """, max_profit_pct, label, row['id'])
-                            
-                            print(f"📊 [ML Labeling] {sym} evaluated. Max Profit: {max_profit_pct:.2f}%. Label: {label}")
-                            
-                        await asyncio.sleep(0.5) # حماية الـ API
                         
+                        print(f"📊 [ML Labeling] {sym} evaluated. Max Profit: {max_profit_pct:.2f}%. Label: {label}")
+                        
+                    await asyncio.sleep(0.5) # حماية الـ API
+                    
         except Exception as e:
             print(f"⚠️ ML Inspector Error: {e}")
             
-        await asyncio.sleep(600) # إعادة الفحص كل 10 دقائق
+        await asyncio.sleep(600)
 # --- ذاكرة الماكرو والمشاعر اللحظية ---
 MACRO_CACHE = {
     "sp500_trend": 0.0,      # نسبة تغير السوق الأمريكي اليوم
