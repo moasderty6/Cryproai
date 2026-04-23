@@ -1103,24 +1103,24 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     ON CONFLICT (symbol) DO UPDATE 
                     SET vol_mean = EXCLUDED.vol_mean, vol_stddev = EXCLUDED.vol_stddev, z_score = EXCLUDED.z_score, last_updated = CURRENT_TIMESTAMP
                 """, symbol, vol_mean, vol_std, current_z)
-
-            # 1. فلتر الفوليوم
-            # 1. فلتر الفوليوم (بمنطق تجنب الـ FOMO)
-# نحسب حركة السعر في آخر 10 شموع لنتأكد أننا لا نشتري قمة
-                        # 1. فلتر الفوليوم (بمنطق تجنب الـ FOMO)
+            # 1. فلتر الفوليوم (بشروط قاسية جداً)
             recent_pump = (df["close"].iloc[-1] - df["close"].iloc[-10]) / df["close"].iloc[-10]
             
             if current_z >= 4.0:
-                if recent_pump > 0.05: 
-                    score -= 15.0 
+                if recent_pump > 0.02: # 👈 نزلنا السماحية لـ 2% فقط!
+                    score -= 30.0 # 👈 ضاعفنا الخصم لقتل العملة المرتفعة
                     tags.append("Late_FOMO")
                 else: 
-                    score += 25.0 
+                    score += 15.0 # 👈 قللنا المكافأة لتصعيب جمع النقاط
                     tags.append("Z_Anom_Silent")
             
-            elif 1.0 <= current_z <= 3.5: # خفضنا النطاق الذهبي ليبدأ من 1.0
-                score += 20.0
+            elif 1.0 <= current_z <= 3.5:
+                if recent_pump > 0.02:
+                    score -= 20.0 # 👈 عقاب جديد لمنع أي عملة متذبذبة من كسب نقاط
+                else:
+                    score += 10.0 # 👈 قللنا المكافأة (كانت 20)
                 tags.append("Smart_Accumulation")
+
             
             elif current_z < -0.5: # بدل 0، نعطي مساحة للعملات الهادئة جداً
                 return None
@@ -1197,13 +1197,22 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     elif depth_data['imbalance'] < -0.3:
                         score -= 15.0 # هروب مبكر لو البائعين مسيطرين
                                 # 🐋 محرك تتبع الحيتان الفعلي (زيادة/تنقيص بنظام النقاط المرنة)
+                                # ضريبة غياب الحيتان القاسية
                 whale_score = await detect_real_whale_trades(symbol, client)
-                score += whale_score
+                if whale_score > 0:
+                    score += whale_score
+                else:
+                    score -= 15.0 # 👈 عقاب صارم: إذا لم يكن هناك شراء حقيقي وكبير، اخسف السكور!
                 # فحص السيولة العالمية
                 global_ob_pressure = await get_aggregated_orderbook(client, symbol)
                 global_alt_volume = await verify_global_liquidity(symbol, client)
-                if global_ob_pressure >= 1.5: score += 10.0
-                elif global_ob_pressure < 0.8: score -= 15.0
+                
+                # 👈 نشترط أن يكون الطلب ضعف العرض (2.0) لنعطي نقاطاً!
+                if global_ob_pressure >= 2.0: 
+                    score += 10.0
+                # 👈 نعاقب العملة بخصم كبير إذا كانت طلبات البيع متفوقة ولو بشيء بسيط (أقل من 1.0)
+                elif global_ob_pressure < 1.0: 
+                    score -= 20.0
 
                 if global_alt_volume > 100000: score += 10.0
             # --- إضافة فلتر الاختراق الكاذب (Safe Filter) ---
