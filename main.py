@@ -1280,6 +1280,23 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             if current_cvd <= 0 and current_imbalance <= 0.1:
                 return None 
 
+            # ==========================================
+            # 🛡️ استرجاع شروط القناص النهائي والمتغيرات المفقودة
+            # ==========================================
+            avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
+            avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
+            current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
+
+            golden_tags = {"Z_Anom_Silent", "Smart_Accumulation", "Micro_Silent_Accumulation", "Institutional_Buy_Spike", "OB_Buy", "Squeeze"}
+            confluence_count = sum(1 for tag in tags if tag in golden_tags)
+
+            ema200_val = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else df["close"].ewm(span=50).mean().iloc[-1]
+            is_macro_downtrend = price < ema200_val
+            current_regime_trend = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
+
+            required_score = 65.0 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 55.0
+            required_confluence = 2 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 1
+            # ==========================================
 
             # إرجاع النتيجة فقط إذا تحقق السكور + الإجماع الفني + اجتياز الفيتو
             if score >= required_score and confluence_count >= required_confluence:    
