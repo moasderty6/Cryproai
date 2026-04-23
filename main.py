@@ -439,16 +439,21 @@ async def get_btc_trend(client):
         pass
     return True # افتراضي في حال فشل الـ API
  # افتراضي في حال فشل الـ API
-async def get_micro_cvd_absorption(symbol, client):
+async def get_micro_cvd_absorption(symbol, client, base_interval="1m"):
     """
-    يكتشف التجميع الصامت قبل الانفجار بجلب فريم الدقيقة لآخر 120 دقيقة.
+    يكتشف التجميع الصامت، يتأقلم مع الفريم الزمني المطلوب.
     """
-    cvd_trend = 0.0 # 👈 تهيئة المتغير مبكراً
+    cvd_trend = 0.0 
     try:
+        # إذا كان الفريم كبير (يومي/أسبوعي)، نوسع عدسة الـ CVD لتقرأ فريم 15 دقيقة
+        cvd_tf = "15m" if base_interval in ["1d", "1w"] else "1m"
+        limit = 200 if cvd_tf == "15m" else 120
+        
         base_url = get_random_binance_base()
         res = await client.get(f"{base_url}/api/v3/klines", params={
-            "symbol": symbol, "interval": "1m", "limit": 120
+            "symbol": symbol, "interval": cvd_tf, "limit": limit
         }, timeout=5.0)
+
         
         if res.status_code == 200:
             data = res.json()
@@ -1135,7 +1140,8 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             # ب. تقييم السيولة اللحظية (Micro CVD)
             # ----------------------------------------------------------------
             avg_vol_20 = df["volume"].tail(20).mean()
-            micro_cvd_boost, micro_cvd_signal, micro_cvd_trend = await get_micro_cvd_absorption(f"{symbol}USDT", client)
+            micro_cvd_boost, micro_cvd_signal, micro_cvd_trend = await get_micro_cvd_absorption(f"{symbol}USDT", client, "1h")
+
             
             if avg_vol_20 > 0:
                 # نسبة الـ CVD لمتوسط الفوليوم (0.3 تعتبر 100%)
@@ -2876,7 +2882,7 @@ async def run_analysis(cb: types.CallbackQuery):
                     else:
                         safe_old_price = safe_price
 
-                    cvd_task = get_micro_cvd_absorption(f"{clean_sym}USDT", client)
+                    cvd_task = get_micro_cvd_absorption(f"{clean_sym}USDT", client, gate_interval)
                     flow_task = get_institutional_orderflow(f"{clean_sym}USDT", client, minutes=15)
                     
                     # 3. إرسال الأرقام المحمية (safe) للدالة
@@ -2922,56 +2928,44 @@ async def run_analysis(cb: types.CallbackQuery):
         )
 
 
-        # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة
-                # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة
-                # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة
-        
-        # استخراج الهدف المغناطيسي (FVG) إن وجد للاحتفاظ به
-                # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة
-        
-        # استخراج الهدف المغناطيسي (FVG) وحالة الفوليوم للاحتفاظ بهما
+        # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة        # استخراج حالة الفوليوم والفجوة
         fvg_text = " [" + market_action.split("[")[1] if "[" in market_action else ""
         vol_text = " + فوليوم انفجاري" if "انفجاري" in market_action else (" + فوليوم ميت" if "ميت" in market_action else "")
 
+        # 🟢 تسميات قصيرة جداً ومباشرة
         if trend_dir == "Bullish":
             if classic_trend == "Bearish":
-                trend_str = "قوي (اكتشاف فخ بيعي وانعكاس)" if lang == "ar" else "Strong (Bear Trap Detected)"
-                market_action = ("فخ بيعي للقطيع | الحيتان تشتري سراً وتمتص العروض لانعكاس صاعد" if lang == "ar" else "Retail bear trap | Whales silently absorbing supply for a bullish reversal") + vol_text + fvg_text
+                trend_str = "(انعكاس من القاع)" if lang == "ar" else "(Bottom Reversal)"
+                market_action = ("امتصاص بيعي وتجميع لبداية صعود" if lang == "ar" else "Supply absorption for reversal") + vol_text + fvg_text
             elif fut_sig == "Short_Squeeze":
-                trend_str = "انفجار سعري وشيك" if lang == "ar" else "Imminent Squeeze"
-                market_action = ("ضغط شورت (Short Squeeze) | سيولة إجبارية تدفع السعر للأعلى" if lang == "ar" else "Short Squeeze | Forced liquidity pushing price up") + vol_text + fvg_text
-        
+                trend_str = "(انفجار وشيك)" if lang == "ar" else "(Imminent Squeeze)"
+                market_action = ("ضغط شورت سيؤدي لانفجار سعري" if lang == "ar" else "Short Squeeze pushing price") + vol_text + fvg_text
+                
         elif trend_dir == "Bearish":
             if classic_trend == "Bullish":
-                trend_str = "(تصريف مخفي في القمة)" if lang == "ar" else "(Hidden Distribution)"
-                market_action = ("فخ شرائي للقطيع | الحيتان تفرغ حمولتها بهدوء للهبوط" if lang == "ar" else "Retail bull trap | Whales quietly distributing for a drop") + vol_text + fvg_text
+                trend_str = "(تصريف قمة)" if lang == "ar" else "(Top Dist.)"
+                market_action = ("تفريغ كميات بهدوء تمهيداً للهبوط" if lang == "ar" else "Quiet distribution before drop") + vol_text + fvg_text
             elif fut_sig == "Short_Covering":
-                trend_str = "ضعيف - إغلاق شورت" if lang == "ar" else "Weak - Short Covering"
-                market_action = ("إغلاق صفقات بيع (شورت) يرفع السعر مؤقتاً بدون زخم شراء حقيقي" if lang == "ar" else "Short covering causing a temporary bounce without true buying momentum") + vol_text + fvg_text
+                trend_str = "(إغلاق شورت)" if lang == "ar" else "(Short Covering)"
+                market_action = ("ارتداد مؤقت بسبب إغلاق صفقات بيع" if lang == "ar" else "Temporary bounce from shorts closing") + vol_text + fvg_text
 
-
-        # 🟢 استعادة تعريف متغيرات RSI و MACD لتجنب خطأ NameError
+        # 🟢 استعادة تعريف متغيرات RSI و MACD
         macd_fmt = format_price(last_macd) if 'last_macd' in locals() and last_macd is not None else "0.0"
         safe_rsi = f"{last_rsi:.2f}" if 'last_rsi' in locals() and last_rsi is not None else "N/A"
         
+        # 🟢 تحديد الاتجاه بشكل صارم ومباشر (صاعد / هابط فقط)
+        real_trend = "صاعد 📈" if trend_dir == "Bullish" else "هابط 📉"
+        if lang != "ar": real_trend = "Bullish 📈" if trend_dir == "Bullish" else "Bearish 📉"
+        
         if lang == "ar":
-            real_trend = "صاعد" if trend_dir == "Bullish" else "هابط"
-            trend_strength = trend_str
-            
             prompt = f"""
 أنت محلل بيانات كمية (Quant) صارم في صندوق "NaiF CHarT". مهمتك صياغة التقرير الفني لعملة {clean_sym} بناءً على الأرقام فقط.
-⚠️ تحذير شديد: يمنع منعاً باتاً تغيير أرقام الدعم، المقاومة، الأهداف، أو الوقف. الأرقام محسوبة رياضياً ويجب نسخها كما هي في القالب.
+⚠️ تحذير شديد: يمنع منعاً باتاً تغيير أرقام الدعم، المقاومة، الأهداف، أو الوقف. 
 
-قواعد التفسير المالي (التزم بها حرفياً لصياغة النقاط):
-1. RSI: إذا > 70 (تشبع شرائي/خطر تصحيح). إذا < 30 (تشبع بيعي/فرصة ارتداد). بينهما (حيادي).
-2. ADX: إذا > 25 (ترند قوي). إذا < 25 (ترند ضعيف/مسار عرضي).
-3. MACD: موجب (زخم شرائي). سالب (زخم بيعي).
-4. السيولة: قم بإعادة صياغة الجملة المعطاة لك بأسلوب مؤسساتي جاف ومقنع.
-
-⚠️ انسخ هذا القالب بدقة، واكتب تعليقاً فنياً من سطر واحد ومباشر لكل مؤشر (بدون مقدمات وبدون نصائح استثمارية):
+⚠️ انسخ هذا القالب بدقة، واكتب تعليقاً فنياً من سطر واحد ومباشر لكل مؤشر:
 
 📊 <b>التحليل لـ {clean_sym}</b> | {tf} | <code>{format_price(price)}$</code>
-الاتجاه: {real_trend} ({trend_strength})
+الاتجاه: {real_trend} {trend_str}
 
 📉 <b>الدعم والمقاومة</b>
 الدعم الأقرب: <code>{format_price(calc_sup)}$</code>
@@ -2987,28 +2981,19 @@ Stop Loss: <code>{format_price(calc_sl)}</code>
 
 📈 <b>تحليل المؤشرات</b>
 • Liquidity: (أعد صياغة هذه الجملة باحترافية: {market_action})
-• RSI ({safe_rsi}): (اكتب سطر واحد يفسر الرقم بناءً على القواعد)
-• MACD ({macd_fmt}): (اكتب سطر واحد يفسر الزخم)
-• ADX ({adx_val:.1f}): (اكتب سطر واحد يفسر قوة الاتجاه)
+• RSI ({safe_rsi}): (تفسير مباشر للرقم)
+• MACD ({macd_fmt}): (تفسير مباشر للزخم)
+• ADX ({adx_val:.1f}): (تفسير مباشر لقوة الاتجاه)
 """
         else:
-            real_trend = "Bullish" if trend_dir == "Bullish" else "Bearish"
-            trend_strength = trend_str
-            
             prompt = f"""
-You are a strict Quant Analyst at "NaiF CHarT". Your task is to format the technical report for {clean_sym} based strictly on the provided data.
-⚠️ CRITICAL WARNING: DO NOT alter the Support, Resistance, TP, or SL numbers. They are mathematically calculated.
+You are a strict Quant Analyst at "NaiF CHarT". Format the report for {clean_sym} based strictly on the provided data.
+⚠️ CRITICAL WARNING: DO NOT alter the Support, Resistance, TP, or SL numbers.
 
-Financial Interpretation Rules (Follow strictly):
-1. RSI: > 70 (Overbought/Correction risk). < 30 (Oversold/Bounce opportunity). 30-70 (Neutral).
-2. ADX: > 25 (Strong trend). < 25 (Weak/Ranging).
-3. MACD: Positive (Bullish momentum). Negative (Bearish momentum).
-4. Liquidity: Rephrase the provided sentence into a cold, institutional tone.
-
-⚠️ Copy this exact HTML template, writing exactly ONE precise analytical line per indicator (No fluff, no financial advice):
+⚠️ Copy this exact HTML template, writing ONE precise analytical line per indicator:
 
 📊 <b>Analysis: {clean_sym}</b> | {tf} | <code>{format_price(price)}$</code>
-Trend: {real_trend} ({trend_strength})
+Trend: {real_trend} {trend_str}
 
 📉 <b>Support & Resistance</b>
 Nearest Support: <code>{format_price(calc_sup)}$</code>
@@ -3024,10 +3009,11 @@ Stop Loss: <code>{format_price(calc_sl)}</code>
 
 📈 <b>Indicator Analysis</b>
 • Liquidity: (Professionally rephrase this: {market_action})
-• RSI ({safe_rsi}): (One line interpreting the number based on the rules)
-• MACD ({macd_fmt}): (One line interpreting momentum)
-• ADX ({adx_val:.1f}): (One line interpreting trend strength)
+• RSI ({safe_rsi}): (Direct interpretation)
+• MACD ({macd_fmt}): (Direct interpretation)
+• ADX ({adx_val:.1f}): (Direct interpretation)
 """
+
 
     res = await ask_groq(prompt, lang=lang)
     await cb.message.answer(res, parse_mode=ParseMode.HTML)
