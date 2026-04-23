@@ -154,35 +154,33 @@ ON_CHAIN_CACHE = {"usdt_inflow_score": 0.0, "last_updated": 0}
 
 async def get_whale_inflow_score():
     """
-    تتبع حركة دخول الدولار الرقمي (USDT/USDC) لمنصات التداول.
-    حالياً نستخدم محاكاة (Mock) يمكن استبدالها بـ API حقيقي من CryptoQuant أو Glassnode مستقبلاً.
+    قراءة توجه الحيتان الحقيقي من منصة Binance مباشرة وبدون قيود.
+    (يقيس نسبة مراكز الشراء/البيع لأكبر المتداولين في السوق)
     """
-    current_time = time.time()
-    
-    # القراءة من الذاكرة إذا لم يمر 60 ثانية (حماية السيرفر والـ API)
-    if current_time - ON_CHAIN_CACHE["last_updated"] < 60:
-        return ON_CHAIN_CACHE["usdt_inflow_score"]
-
     try:
-        # 💡 [مستقبلاً]: هنا تضع طلب الـ API الفعلي لـ CryptoQuant مثلاً
-        # async with httpx.AsyncClient() as client:
-        #     res = await client.get("https://api.cryptoquant.com/v1/exchange-flows/inflow")
-        #     inflow_volume = res.json()['data']['volume']
-        
-        # محاكاة مؤقتة: توليد رقم عشوائي يمثل تدفق الحيتان (من 0 إلى 10)
-        # في الواقع، هذا سيقرأ حجم دخول الدولار للمنصة اللحظي
-        mock_inflow_volume = random.uniform(2_000_000, 50_000_000) 
-        
-        # تحويل الحجم إلى سكور من 0 إلى 10
-        score = min(max((mock_inflow_volume - 5_000_000) / 4_000_000, 0.0), 10.0)
-        
-        ON_CHAIN_CACHE["usdt_inflow_score"] = score
-        ON_CHAIN_CACHE["last_updated"] = current_time
-        
-        return score
+        # نستخدم البيتكوين كمؤشر رئيسي لتدفق السيولة للسوق بأكمله
+        url = "https://fapi.binance.com/futures/data/topLongShortAccountRatio"
+        params = {"symbol": "BTCUSDT", "period": "5m", "limit": 1}
+
+        async with httpx.AsyncClient() as client:
+            res = await client.get(url, params=params, timeout=5.0)
+
+            if res.status_code == 200:
+                data = res.json()
+                long_short_ratio = float(data[0]['longShortRatio'])
+
+                # تحويل النسبة الحقيقية لسكور من 0 إلى 10 للذكاء الاصطناعي
+                # نسبة 1.0 تعني تعادل. أعلى من 1 تعني الحيتان تشتري.
+                if long_short_ratio > 1.5: return 10.0
+                elif long_short_ratio > 1.2: return 7.5
+                elif long_short_ratio < 0.8: return 0.0
+                else: return 5.0
+
     except Exception as e:
-        print(f"⚠️ On-Chain Fetch Error: {e}")
-        return 0.0
+        print(f"⚠️ Binance Whale Inflow Error: {e}")
+        return 5.0 # قيمة محايدة بدلاً من العشوائية للحماية من تسمم البيانات
+
+    return 5.0
 import xgboost as xgb
 import pandas as pd
 import numpy as np
@@ -678,8 +676,8 @@ import time
 
 async def detect_flash_spoofing_ws(symbol: str, duration: float = 4.0):
     """
-    محرك Quant متقدم يحاكي Level 3 Data.
-    يقيس Order Flow Imbalance (OFI) و Orderbook Skew لكشف تلاعب الحيتان.
+    يتصل بـ Binance للعملة المطلوبة فقط، يجمع البيانات بأمان، ثم يغلق الاتصال فوراً.
+    صالح للعمل مع جميع العملات بشكل ديناميكي دون حظر السيرفر.
     """
     clean_symbol = symbol.replace("USDT", "").lower() + "usdt"
     ws_url = f"wss://stream.binance.com:9443/ws/{clean_symbol}@depth20@100ms"
@@ -687,39 +685,39 @@ async def detect_flash_spoofing_ws(symbol: str, duration: float = 4.0):
     frames = []
     
     try:
-        async with websockets.connect(ws_url, ping_interval=None) as ws:
+        # 🛡️ التعديل هنا: إغلاق الاتصال السريع ومنع التعليق
+        async with websockets.connect(ws_url, ping_interval=None, close_timeout=1) as ws:
             start_time = time.time()
+            
             while time.time() - start_time < duration:
                 try:
+                    # 🛡️ إجبار الكود على عدم الانتظار أكثر من ثانية لكل رسالة
                     msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
                     data = json.loads(msg)
                     if not data.get('bids') or not data.get('asks'): continue
                     
-                    # استخراج الأسعار والأحجام لأول 10 مستويات فقط (السيولة الفعالة)
                     bids = np.array([[float(p), float(v)] for p, v in data['bids'][:10]])
                     asks = np.array([[float(p), float(v)] for p, v in data['asks'][:10]])
                     
                     frames.append({'bids': bids, 'asks': asks})
+                
                 except asyncio.TimeoutError:
-                    continue
+                    continue # إذا تأخرت Binance، نكمل الدورة دون انهيار
+                except Exception:
+                    break # خروج آمن عند حدوث أخطاء غير متوقعة
+                    
     except Exception as e:
-        return None
+        return None # حماية من فشل الاتصال الجذري
 
     if len(frames) < 10: return None
 
-    # --- 🧠 الرياضيات المؤسساتية لمحاكاة MBO ---
-    
-    # 1. Orderbook Skew (انحراف الأوردر بوك): هل السيولة مضغوطة أم متباعدة؟
-    # الحيتان تضغط الأسعار قريباً من السعر الحالي لترويع القطيع
+    # --- 🧠 الرياضيات المؤسساتية الخاصة بك (كما هي بدون تغيير) ---
     last_frame = frames[-1]
     bid_distances = last_frame['bids'][0, 0] - last_frame['bids'][:, 0]
     ask_distances = last_frame['asks'][:, 0] - last_frame['asks'][0, 0]
     
-    # إذا كانت المسافات بين طلبات الشراء صغيرة جداً مقارنة بالبيع، فهناك حوت يضغط السعر للأعلى
     skewness = np.sum(ask_distances) / (np.sum(bid_distances) + 0.0001) 
 
-    # 2. Order Flow Imbalance (OFI): حساب التغير التفاضلي (التلاعب بالطلبات)
-    # هذا يغنينا عن الـ Order ID، فهو يقيس التغير الصافي في السيولة عبر اللقطات
     ofi_score = 0
     spoof_flags = 0
     
@@ -733,22 +731,21 @@ async def detect_flash_spoofing_ws(symbol: str, duration: float = 4.0):
         bid_vol_prev, bid_vol_curr = np.sum(prev_bids[:, 1]), np.sum(curr_bids[:, 1])
         ask_vol_prev, ask_vol_curr = np.sum(prev_asks[:, 1]), np.sum(curr_asks[:, 1])
 
-        # حساب הـ OFI
         e_bid = bid_vol_curr if best_bid_curr >= best_bid_prev else -bid_vol_prev if best_bid_curr < best_bid_prev else bid_vol_curr - bid_vol_prev
         e_ask = ask_vol_curr if best_ask_curr <= best_ask_prev else -ask_vol_prev if best_ask_curr > best_ask_prev else ask_vol_curr - ask_vol_prev
         ofi_score += (e_bid - e_ask)
         
-        # كشف الـ Spoofing الصارخ (جدار يختفي فجأة بدون تنفيذ صفقات)
-        if abs(bid_vol_curr - bid_vol_prev) > (bid_vol_prev * 2.0): spoof_flags -= 1 # سحب جدار شراء
-        if abs(ask_vol_curr - ask_vol_prev) > (ask_vol_prev * 2.0): spoof_flags += 1 # سحب جدار بيع
+        if abs(bid_vol_curr - bid_vol_prev) > (bid_vol_prev * 2.0): spoof_flags -= 1 
+        if abs(ask_vol_curr - ask_vol_prev) > (ask_vol_prev * 2.0): spoof_flags += 1 
 
     return {
         "imbalance": round(ofi_score / len(frames), 2),
-        "skewness": round(skewness, 2), # متغير جديد للـ ML
+        "skewness": round(skewness, 2), 
         "is_bid_spoof": spoof_flags < -2, 
         "is_ask_spoof": spoof_flags > 2,
         "real_support": np.sum(last_frame['bids'][:, 0] * last_frame['bids'][:, 1])
     }
+
 async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
     """
     جلب ودمج الأوردر بوك من 8 منصات لقراءة ضغط الحيتان
