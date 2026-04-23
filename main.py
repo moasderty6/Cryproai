@@ -1042,6 +1042,42 @@ def process_dataframe_sync(candles_data):
     current_z_val, vol_mean_val, vol_std_val = calculate_volume_zscore(df, window=720)
     
     return df, last_rsi_val, current_adx_val, current_z_val, vol_mean_val, vol_std_val
+async def detect_real_whale_trades(symbol: str, client: httpx.AsyncClient):
+    clean_sym = symbol.replace("USDT", "") + "USDT"
+    trades_url = f"{get_random_binance_base()}/api/v3/trades?symbol={clean_sym}&limit=1000"
+    
+    try:
+        res = await client.get(trades_url, timeout=5.0)
+        if res.status_code != 200:
+            return 0.0
+            
+        trades = res.json()
+        whale_buy_vol = 0.0
+        whale_sell_vol = 0.0
+        WHALE_THRESHOLD = 50_000 # صفقات الماركت التي تتجاوز 50 ألف دولار
+        
+        for t in trades:
+            trade_value_usd = float(t['qty']) * float(t['price'])
+            if trade_value_usd >= WHALE_THRESHOLD:
+                if not t['isBuyerMaker']: 
+                    whale_buy_vol += trade_value_usd 
+                else: 
+                    whale_sell_vol += trade_value_usd 
+                    
+        if whale_buy_vol == 0 and whale_sell_vol == 0:
+            return 0.0
+
+        whale_delta = whale_buy_vol - whale_sell_vol
+        
+        if whale_delta > 500_000: return 9.5
+        elif whale_delta > 200_000: return 5.5
+        elif whale_delta < -500_000: return -10.5
+        elif whale_delta < -200_000: return -6.5
+            
+        return 0.0
+        
+    except Exception:
+        return 0.0
 
 async def analyze_radar_coin(c, client, market_regime, sem):
     async with sem:  
@@ -1147,21 +1183,9 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                         tags.append("OB_Buy")
                     elif depth_data['imbalance'] < -0.3:
                         score -= 15.0 # هروب مبكر لو البائعين مسيطرين
-
-
-            
-                # فحص السيولة المؤسساتية لآخر 15 دقيقة
-                                # فحص السيولة المؤسساتية لآخر 15 دقيقة
-                delta_usd, buy_v, sell_v = await get_institutional_orderflow(f"{symbol}USDT", client, minutes=15)
-
-                
-                # إذا كان حجم الشراء ضعف حجم البيع، والسيولة ضخمة (أكثر من نصف مليون دولار في 15 دقيقة)
-                if buy_v > (sell_v * 2.0) and buy_v > 500_000:
-                    score += 25.0
-                    tags.append("Institutional_Buy_Spike")
-                elif sell_v > (buy_v * 1.5):
-                    score -= 20.0 # هروب مبكر
-            
+                                # 🐋 محرك تتبع الحيتان الفعلي (زيادة/تنقيص بنظام النقاط المرنة)
+                whale_score = await detect_real_whale_trades(symbol, client)
+                score += whale_score
                 # فحص السيولة العالمية
                 global_ob_pressure = await get_aggregated_orderbook(client, symbol)
                 global_alt_volume = await verify_global_liquidity(symbol, client)
@@ -1250,14 +1274,15 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 micro_volatility = df['close'].tail(20).pct_change().std() * 100
                 
                 # حساب انحراف مسار السيولة (CVD Divergence) - هل السعر يصعد بينما CVD يهبط؟
-                cvd_divergence = 1.0 if (price > ema200_val and delta_usd < 0) else -1.0 if (price < ema200_val and delta_usd > 0) else 0.0
+                cvd_divergence = 1.0 if (price > ema200_val and locals().get('whale_score', 0) < 0) else -1.0 if (price < ema200_val and locals().get('whale_score', 0) > 0) else 0.0
+
 
                 # جلب معدل التمويل الحالي (Funding Rate) من مصفوفة الـ Futures التي حسبناها مسبقاً
                 # إذا كان التمويل سالباً بقوة، الحيتان تضغط السعر صعوداً لتصفية البائعين
 
                 ml_features = {
                     'z_score': float(current_z),
-                    'cvd_usd': float(delta_usd),
+                    'cvd_usd': float(locals().get('whale_score', 0.0)),
                     'ofi_imbalance': float(locals().get('depth_data', {}).get('imbalance', 0) if locals().get('depth_data') else 0.0),
                     'ob_skewness': float(locals().get('depth_data', {}).get('skewness', 1.0) if locals().get('depth_data') else 1.0),
                     'adx': float(current_adx),
