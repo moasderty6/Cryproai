@@ -343,30 +343,27 @@ async def smart_radar_watchdog(pool):
                             old_price = old_data['price']
                             time_diff = current_time - old_data['last_update']
 
-      
                             if time_diff >= 60 and old_vol > 0:
-                                # حساب كم دولار حقيقي تم تداوله في هذه الـ 60 ثانية تحديداً
+                                # حساب التجميع الصامت ...
                                 traded_usd_in_minute = current_vol - old_vol 
                                 price_change = (current_price - old_price) / old_price
                                 
-                                MAX_PRICE_SPIKE = 0.005 # السعر ثابت (أقل من 0.5% حركة)
-                                MIN_MINUTE_VOLUME = 200_000 # حوت ضخ 200 ألف دولار على الأقل في دقيقة
-                                
-                                # إذا تم ضخ سيولة ضخمة فجأة والسعر لم يتحرك (يمتص العروض) = تجميع حقيقي
                                 if traded_usd_in_minute >= MIN_MINUTE_VOLUME and abs(price_change) <= MAX_PRICE_SPIKE:
                                     print(f"👀 Silent Accumulation Alert {symbol} | Injected: ${traded_usd_in_minute:,.0f} in {time_diff:.0f}s") 
-                                    
                                     coin_mock_data = {
                                         "symbol": symbol.replace("USDT", ""),
                                         "quote": {"USD": {"price": current_price}}
                                     }
                                     await radar_processing_queue.put(coin_mock_data)
-                            
-
-                                    
-                            live_market_memory[symbol] = {'volume': current_vol, 'price': current_price, 'last_update': current_time}
+                                
+                                # ✅ الحل: وضعنا سطر التحديث هنا (داخل شرط الـ 60 ثانية)
+                                # ليتم تصفير العداد والبدء في مراقبة الدقيقة التالية
+                                live_market_memory[symbol] = {'volume': current_vol, 'price': current_price, 'last_update': current_time}
+                                
                         else:
+                            # إذا كانت العملة جديدة أول مرة تدخل الرادار
                             live_market_memory[symbol] = {'volume': current_vol, 'price': current_price, 'last_update': current_time}
+
 
         except Exception as e:
             print(f"⚠️ خطأ في الرادار اللحظي: {e} - إعادة الاتصال...")
