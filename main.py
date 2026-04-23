@@ -1206,6 +1206,18 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             # ----------------------------------------------------------------
             tech_raw = 50.0
             
+            # 👇 تم استرجاع حسابات البولينجر باند المفقودة هنا 👇
+            sma20_bb = df["close"].rolling(20).mean()
+            std20_bb = df["close"].rolling(20).std(ddof=0)
+            upper_band = sma20_bb + 2 * std20_bb
+            lower_band = sma20_bb - 2 * std20_bb
+            bb_width = (upper_band - lower_band) / sma20_bb
+            
+            # حماية من الأخطاء إذا كانت بيانات العملة أقل من 100 شمعة
+            avg_bb_width = bb_width.rolling(100).mean().iloc[-1] if len(bb_width) >= 100 else float('nan')
+            current_bb_width = bb_width.iloc[-1]
+            # 👆 نهاية الحسابات 👆
+
             # انضغاط البولينجر باند (Squeeze)
             if not pd.isna(current_bb_width) and not pd.isna(avg_bb_width):
                 if current_bb_width < (avg_bb_width * 0.5):
@@ -1224,10 +1236,11 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             if fake_out_penalty < 0: 
                 tech_raw *= 0.3 # عقاب قاسي فنياً
                 tags.append("Fake_Breakout_Trap")
-                        # (أضف هذا قبل سطر: scores["tech"] = max(0, min(tech_raw, 100)))
-            rs_score = await detect_btc_relative_strength(symbol, client)
-            tech_raw += (rs_score * 3.0) # تعزيز سكور الهيكلة الفنية إذا كانت العملة متمردة
 
+            # التمرد ضد البيتكوين (القوة النسبية)
+            rs_score = await detect_btc_relative_strength(symbol, client)
+            tech_raw += (rs_score * 3.0) 
+                
             scores["tech"] = max(0, min(tech_raw, 100))
 
             # ====================================================================
