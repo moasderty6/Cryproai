@@ -2931,17 +2931,20 @@ async def run_analysis(cb: types.CallbackQuery):
 
         # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة        # استخراج حالة الفوليوم والفجوة
                 # استخراج حالة الفوليوم والفجوة
+                # استخراج حالة الفوليوم والفجوة
         fvg_text = " [" + market_action.split("[")[1] if "[" in market_action else ""
         vol_text = " + فوليوم انفجاري" if "انفجاري" in market_action else (" + فوليوم ميت" if "ميت" in market_action else "")
 
-        # 🟢 فحص مكان السعر (هل نحن في قمة أم في قاع؟) لتصحيح المسميات
-        is_near_high = price > (df["high"].rolling(50).max().iloc[-1] * 0.85)
+        # 🟢 فحص الماكرو: هل نحن فعلاً في ترند صاعد لكي نسميها قمة؟
+        ema200_val = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else df["close"].ewm(span=50).mean().iloc[-1]
+        is_macro_bull = price > ema200_val
+        is_near_local_high = price > (df["high"].rolling(50).max().iloc[-1] * 0.90)
 
         # 🟢 قيم افتراضية محمية
         trend_str = "ترند مستقر" if lang == "ar" else "Stable Trend"
         market_action_text = ("سيولة طبيعية تدعم السعر" if lang == "ar" else "Normal liquidity supporting price") + vol_text + fvg_text
 
-        # 🟢 تسميات مباشرة بدون أقواس (لأن الأقواس موجودة في البرومبت أصلاً)
+        # 🟢 تسميات مباشرة
         if trend_dir == "Bullish":
             if classic_trend == "Bearish":
                 trend_str = "انعكاس من القاع" if lang == "ar" else "Bottom Reversal"
@@ -2952,12 +2955,13 @@ async def run_analysis(cb: types.CallbackQuery):
                 
         elif trend_dir == "Bearish":
             if classic_trend == "Bullish":
-                if is_near_high:
+                # الشرط الصارم: لا نسميها قمة أبداً إلا إذا كان السعر فوق EMA200
+                if is_macro_bull and is_near_local_high:
                     trend_str = "تصريف قمة" if lang == "ar" else "Top Dist."
                     market_action_text = ("تفريغ كميات بهدوء تمهيداً للهبوط" if lang == "ar" else "Quiet distribution before drop") + vol_text + fvg_text
                 else:
-                    trend_str = "فقدان زخم" if lang == "ar" else "Losing Momentum"
-                    market_action_text = ("ضعف في القوة الشرائية وتذبذب" if lang == "ar" else "Weak buying power and ranging") + vol_text + fvg_text
+                    trend_str = "فشل ارتداد" if lang == "ar" else "Failed Bounce"
+                    market_action_text = ("ضعف شرائي وفشل في اختراق المقاومات" if lang == "ar" else "Weak buying power, failed breakout") + vol_text + fvg_text
             elif fut_sig == "Short_Covering":
                 trend_str = "إغلاق شورت" if lang == "ar" else "Short Covering"
                 market_action_text = ("ارتداد مؤقت بسبب إغلاق صفقات بيع" if lang == "ar" else "Temporary bounce from shorts closing") + vol_text + fvg_text
@@ -2966,13 +2970,14 @@ async def run_analysis(cb: types.CallbackQuery):
         macd_fmt = format_price(last_macd) if 'last_macd' in locals() and last_macd is not None else "0.0"
         safe_rsi = f"{last_rsi:.2f}" if 'last_rsi' in locals() and last_rsi is not None else "N/A"
         
-        # 🟢 تحديد الاتجاه بشكل صارم ومباشر (صاعد / هابط فقط)
+        # 🟢 تحديد الاتجاه
         real_trend = "صاعد" if trend_dir == "Bullish" else "هابط"
         if lang != "ar": real_trend = "Bullish" if trend_dir == "Bullish" else "Bearish"
         
-        # 🟢 ربط المتغير ليقرأه البرومبت بدون تغيير حرف واحد فيه
+        # ربط المتغير
         trend_strength = trend_str 
         market_action = market_action_text
+
 
         if lang == "ar":
             prompt = f"""
