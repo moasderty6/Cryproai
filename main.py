@@ -1084,215 +1084,189 @@ async def analyze_radar_coin(c, client, market_regime, sem):
 
                         # --- هذا هو الكود البديل (سطر واحد يستدعي الدالة اللي فوق في الخلفية) ---
             df, last_rsi, current_adx, current_z, vol_mean, vol_std = await asyncio.to_thread(process_dataframe_sync, candles)
-
-            # 🟢 البداية من سكور 20 لتوزيع النسب باحترافية
-            score = 20.0
+                        # ====================================================================
+            # 🧠 محرك التقييم الديناميكي المؤسساتي (Dynamic Quant Scoring Engine)
+            # ====================================================================
+            
             tags = [] # قائمة لتجميع نوع الحركات
             
-            pool = dp['db_pool']
-            async with pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO market_memory (symbol, vol_mean, vol_stddev, z_score, last_updated)
-                    VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
-                    ON CONFLICT (symbol) DO UPDATE 
-                    SET vol_mean = EXCLUDED.vol_mean, vol_stddev = EXCLUDED.vol_stddev, z_score = EXCLUDED.z_score, last_updated = CURRENT_TIMESTAMP
-                """, symbol, vol_mean, vol_std, current_z)
-            # 1. فلتر الفوليوم (بشروط قاسية جداً)
+            # 1. مصفوفة الأوزان الديناميكية بناءً على بيئة السوق (Market Regime)
+            # المجموع دائماً 1.0 (أي 100%)
+            REGIME_WEIGHTS = {
+                "Trending_Bull": {"vol": 0.30, "cvd": 0.25, "ob": 0.20, "deriv": 0.15, "tech": 0.10},
+                "Trending_Bear": {"vol": 0.10, "cvd": 0.35, "ob": 0.30, "deriv": 0.15, "tech": 0.10},
+                "Ranging":       {"vol": 0.15, "cvd": 0.35, "ob": 0.35, "deriv": 0.05, "tech": 0.10},
+                "Unknown":       {"vol": 0.20, "cvd": 0.20, "ob": 0.20, "deriv": 0.20, "tech": 0.20}
+            }
+
+            current_regime = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
+            weights = REGIME_WEIGHTS.get(current_regime, REGIME_WEIGHTS["Unknown"])
+
+            # 2. تهيئة محفظة النقاط (كل مؤشر سيتم تقييمه من 0 إلى 100)
+            scores = {"vol": 0.0, "cvd": 0.0, "ob": 0.0, "deriv": 0.0, "tech": 0.0}
+
+            # ----------------------------------------------------------------
+            # أ. تقييم الفوليوم (Z-Score & Pump Penalty) - دوال متصلة
+            # ----------------------------------------------------------------
             recent_pump = (df["close"].iloc[-1] - df["close"].iloc[-10]) / df["close"].iloc[-10]
             
-            if current_z >= 4.0:
-                if recent_pump > 0.02: # 👈 نزلنا السماحية لـ 2% فقط!
-                    score -= 30.0 # 👈 ضاعفنا الخصم لقتل العملة المرتفعة
-                    tags.append("Late_FOMO")
-                else: 
-                    score += 15.0 # 👈 قللنا المكافأة لتصعيب جمع النقاط
+            if current_z > 0:
+                # تحويل الـ Z-Score إلى نسبة مئوية (الذروة الصحية عند 3.5)
+                vol_raw = min((current_z / 3.5) * 100, 100) 
+                
+                # خنق السكور (Continuous Penalty) إذا كان هناك بمب عالي متأخر
+                if current_z >= 3.5 and recent_pump > 0.02:
+                    penalty_factor = max(0.0, 1.0 - (recent_pump * 15)) # يخنق السكور تدريجياً
+                    vol_raw *= penalty_factor
+                    if vol_raw < 30: tags.append("Late_FOMO")
+                
+                elif 1.0 <= current_z <= 3.5 and recent_pump <= 0.02:
+                    tags.append("Smart_Accumulation")
+                elif current_z > 3.5 and recent_pump <= 0.02:
                     tags.append("Z_Anom_Silent")
-            
-            elif 1.0 <= current_z <= 3.5:
-                if recent_pump > 0.02:
-                    score -= 20.0 # 👈 عقاب جديد لمنع أي عملة متذبذبة من كسب نقاط
-                else:
-                    score += 10.0 # 👈 قللنا المكافأة (كانت 20)
-                tags.append("Smart_Accumulation")
+                    
+                scores["vol"] = vol_raw
+            # (أضف هذا تحت سطر: scores["vol"] = vol_raw)
+                global_alt_volume = await verify_global_liquidity(symbol, client)
+                if global_alt_volume > 100000: 
+                    scores["vol"] = min(scores["vol"] + 15, 100) # تعزيز سلس لسكور الفوليوم
 
-            
-            elif current_z < -0.5: # بدل 0، نعطي مساحة للعملات الهادئة جداً
-                return None
-
-
-            # 2. فلتر CVD
-                        # 2. فلتر CVD
-                        # 2. فلتر CVD
+            # ----------------------------------------------------------------
+            # ب. تقييم السيولة اللحظية (Micro CVD)
+            # ----------------------------------------------------------------
+            avg_vol_20 = df["volume"].tail(20).mean()
             micro_cvd_boost, micro_cvd_signal, micro_cvd_trend = await get_micro_cvd_absorption(f"{symbol}USDT", client)
-            score += micro_cvd_boost
-            if micro_cvd_signal: 
-                tags.append(micro_cvd_signal)
-            # 3. فلتر المشتقات
-                        # 3. فلتر المشتقات
+            
+            if avg_vol_20 > 0:
+                # نسبة الـ CVD لمتوسط الفوليوم (0.3 تعتبر 100%)
+                cvd_ratio = micro_cvd_trend / avg_vol_20
+                
+                if cvd_ratio > 0:
+                    scores["cvd"] = min((cvd_ratio / 0.3) * 100, 100)
+                    if cvd_ratio > 0.15 and abs(recent_pump) <= 0.015:
+                        tags.append("Micro_Silent_Accumulation")
+                else:
+                    scores["cvd"] = 0 # تجميع سلبي
+                    if cvd_ratio < -0.15 and recent_pump > 0.02:
+                        tags.append("Hidden_Distribution")
+
+            # ----------------------------------------------------------------
+            # ج. تقييم الأوردر بوك (Spoofing & Global Pressure)
+            # ----------------------------------------------------------------
+            ob_raw = 50.0 # نقطة التعادل
+            
+            depth_data = await detect_flash_spoofing_ws(symbol, duration=4.0)
+            global_ob_pressure = await get_aggregated_orderbook(client, symbol)
+            
+            if depth_data:
+                imbalance = depth_data.get('imbalance', 0)
+                ob_raw += (imbalance * 40) # Imbalance يضيف أو يخصم بطريقة سلسة
+                
+                if depth_data['is_bid_spoof']:
+                    ob_raw *= 0.2 # تدمير السكور لخطورته
+                    tags.append("Flash_Spoofing_Manipulation")
+                elif depth_data['is_ask_spoof'] and scores["cvd"] > 50:
+                    ob_raw = min(ob_raw + 30, 100)
+                    tags.append("Whale_Spoofing_Accumulation")
+                elif imbalance > 0.3:
+                    tags.append("OB_Buy")
+
+            if global_ob_pressure > 0:
+                # ضغط الأوردر بوك العالمي يرفع السكور بنعومة
+                ob_raw += min((global_ob_pressure / 2.0) * 20, 20)
+                
+            scores["ob"] = max(0, min(ob_raw, 100))
+
+            # ----------------------------------------------------------------
+            # د. تقييم المشتقات والحيتان (Derivatives & Whales)
+            # ----------------------------------------------------------------
+            deriv_raw = 50.0
             old_price_val = df["close"].iloc[-3] if len(df) > 3 else df["open"].iloc[0]
-            futures_boost, futures_signal, funding_val = await get_futures_liquidity(symbol, client, price, old_price_val)
-            score += futures_boost
-            if futures_signal: tags.append(futures_signal)
+            _, futures_signal, funding_val = await get_futures_liquidity(symbol, client, price, old_price_val)
+            whale_score = await detect_real_whale_trades(symbol, client)
+            
+            if futures_signal == "OI_Rising": deriv_raw += 30; tags.append("OI_Rising")
+            elif futures_signal == "Short_Covering": deriv_raw -= 30; tags.append("Short_Covering")
+            
+            if funding_val < -0.0005: 
+                deriv_raw += 20; tags.append("Short_Squeeze")
+                
+            if whale_score > 0:
+                deriv_raw += min((whale_score / 10.0) * 30, 30) # أقصاها 30 نقطة إضافية
+            else:
+                deriv_raw *= 0.6 # ضريبة غياب سيولة الحيتان الكبيرة
+                            # (أضف هذا قبل سطر: scores["deriv"] = max(0, min(deriv_raw, 100)))
+            div_score = await detect_spot_perp_divergence(symbol, client)
+            deriv_raw += (div_score * 2.5) # نضربها في 2.5 لتتناسب مع مقياس المئة نقطة
 
-            # 4. المؤشرات الكلاسيكية                  
-            sma20 = df["close"].rolling(20).mean()
-            std20 = df["close"].rolling(20).std(ddof=0)
-            df["upper_band"] = sma20 + 2*std20
-            df["lower_band"] = sma20 - 2*std20
-            
-            # حساب المسافة الحالية للبولينجر باند
-            bb_width = (df["upper_band"] - df["lower_band"]) / sma20
-            
-            # مقارنة الانضغاط الحالي بمتوسط الانضغاط لآخر 100 شمعة لهذه العملة تحديداً
-            avg_bb_width = bb_width.rolling(100).mean().iloc[-1]
-            current_bb_width = bb_width.iloc[-1]
-            
-            # 🛠️ حماية الكود من الانهيار إذا كانت العملة جديدة جداً (أقل من 100 شمعة)
-            if pd.isna(current_bb_width) or pd.isna(avg_bb_width):
-                pass # لا نعطي أي نقاط إذا كانت بيانات العملة غير كافية
-            elif current_bb_width < (avg_bb_width * 0.5): 
-                score += 10.0
-                tags.append("Squeeze")
-                        # --- إضافة تأكيد قوة الشمعة (Candle Strength) ---
-            candle_score = detect_candle_strength(df)
-            if candle_score > 0:
-                score += candle_score # يضيف نقاط قوة عند رؤية ذيول شرائية
-                tags.append("Bullish_Hammer_Absorption")
-            elif candle_score < 0:
-                score += candle_score # يخصم نقاط إذا كان هناك ذيل علوي طويل (تصريف)
-                tags.append("Upper_Wick_Pressure")
+            scores["deriv"] = max(0, min(deriv_raw, 100))
 
+            # ----------------------------------------------------------------
+            # هـ. تقييم الهيكلة الفنية (Technical Structure)
+            # ----------------------------------------------------------------
+            tech_raw = 50.0
+            
+            # انضغاط البولينجر باند (Squeeze)
+            if not pd.isna(current_bb_width) and not pd.isna(avg_bb_width):
+                if current_bb_width < (avg_bb_width * 0.5):
+                    tech_raw += 20
+                    tags.append("Squeeze")
+                    
             ema200_val = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else df["close"].ewm(span=50).mean().iloc[-1]
             if price < ema200_val and last_rsi > 30 and df["rsi"].iloc[-10:-1].min() < 30:
-                score += 10.0 
-                tags.append("RSI_Div")
-
-            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)            # 5. الفحص العميق (Order Flow + Global)# --- استبدال الفحص العميق رقم 5 بالتالي ---            # 5. الفحص العميق (Order Flow + Global)
-            if score >= 35.0:
-                # 🔴 التحديث الجديد: تشغيل فيديو الأوردر بوك لمدة 4 ثوانٍ
-                depth_data = await detect_flash_spoofing_ws(symbol, duration=4.0)
+                tech_raw += 20; tags.append("RSI_Div")
                 
-                if depth_data:
-                    # 🚫 كشف فخ الشراء: حوت يضع جدار شراء ضخم ويسحبه ليوهمنا بالصعود (يصرف علينا)
-                    if depth_data['is_bid_spoof']:
-                        score -= 25.0 
-                        tags.append("Flash_Spoofing_Manipulation") # 👈 مسحنا كلمة (Trap) ليتطابق مع الفلتر
-
-                    
-                    # ✅ كشف فخ البيع: حوت يضع جدار بيع ضخم ويسحبه لكي يضغط السعر ويجمع براحته
-                    elif depth_data['is_ask_spoof'] and micro_cvd_boost > 0:
-                        score += 20.0 
-                        tags.append("Whale_Spoofing_Accumulation")
-                    
-                    # الخلل الحقيقي المستقر لصالح المشترين
-                    elif depth_data['imbalance'] > 0.3:
-                        score += 15.0 
-                        tags.append("OB_Buy")
-                    elif depth_data['imbalance'] < -0.3:
-                        score -= 15.0 # هروب مبكر لو البائعين مسيطرين
-                                # 🐋 محرك تتبع الحيتان الفعلي (زيادة/تنقيص بنظام النقاط المرنة)
-                                # ضريبة غياب الحيتان القاسية
-                whale_score = await detect_real_whale_trades(symbol, client)
-                if whale_score > 0:
-                    score += whale_score
-                else:
-                    score -= 15.0 # 👈 عقاب صارم: إذا لم يكن هناك شراء حقيقي وكبير، اخسف السكور!
-                # فحص السيولة العالمية
-                global_ob_pressure = await get_aggregated_orderbook(client, symbol)
-                global_alt_volume = await verify_global_liquidity(symbol, client)
-                
-                # 👈 نشترط أن يكون الطلب ضعف العرض (2.0) لنعطي نقاطاً!
-                if global_ob_pressure >= 2.0: 
-                    score += 10.0
-                # 👈 نعاقب العملة بخصم كبير إذا كانت طلبات البيع متفوقة ولو بشيء بسيط (أقل من 1.0)
-                elif global_ob_pressure < 1.0: 
-                    score -= 20.0
-
-                if global_alt_volume > 100000: score += 10.0
-            # --- إضافة فلتر الاختراق الكاذب (Safe Filter) ---
+            # الفخاخ الفنية (Fakeouts & Candle Strength)
+            candle_score = detect_candle_strength(df)
             fake_out_penalty = detect_fake_breakout(df)
-            if fake_out_penalty < 0:
-                score += fake_out_penalty # سيخصم 20 نقطة من السكور
+            
+            if candle_score > 0: tech_raw += 15; tags.append("Bullish_Hammer_Absorption")
+            if fake_out_penalty < 0: 
+                tech_raw *= 0.3 # عقاب قاسي فنياً
                 tags.append("Fake_Breakout_Trap")
-
-            # 6. الماكرو
-            if isinstance(market_regime, dict):
-                if market_regime['trend'] == "Trending_Bear" and ("Z_Anom" in tags or "OI_Rising" in tags):
-                    score -= 15.0
-                elif market_regime['trend'] == "Trending_Bull":
-                    score += 5.0
-
-            # 1. إضافة نقاط تباين السيولة (Spot/Perp)
-            div_score = await detect_spot_perp_divergence(symbol, client)
-            score += div_score
-
-            # 2. إضافة نقاط التمرد والقوة النسبية (BTC Relative Strength)
+                        # (أضف هذا قبل سطر: scores["tech"] = max(0, min(tech_raw, 100)))
             rs_score = await detect_btc_relative_strength(symbol, client)
-            score += rs_score
+            tech_raw += (rs_score * 3.0) # تعزيز سكور الهيكلة الفنية إذا كانت العملة متمردة
 
-            # 🟢 ضبط السكور ليكون مستحيلاً وصوله 100 (أقصى شيء بالواقع 95-97)
-            score = round(max(0.0, min(score, 98.5)), 1)
+            scores["tech"] = max(0, min(tech_raw, 100))
 
+            # ====================================================================
+            # ⚖️ الدمج النهائي بناءً على الأوزان المؤسساتية
+            # ====================================================================
+            final_weighted_score = (
+                (scores["vol"]   * weights["vol"]) +
+                (scores["cvd"]   * weights["cvd"]) +
+                (scores["ob"]    * weights["ob"]) +
+                (scores["deriv"] * weights["deriv"]) +
+                (scores["tech"]  * weights["tech"])
+            )
+
+            # 🟢 ضبط السكور ليكون واقعياً (الكمال مستحيل)
+            score = round(max(0.0, min(final_weighted_score, 98.5)), 1)
+
+            # --- جدار الفيتو الإجباري والفلترة (تم نقله هنا ليعمل كحارس أخير) ---
             final_signal = "High Probability Setup 🎯"
-# أضفنا "Fake_Breakout_Trap" للقائمة السوداء
+            
             if "Fake_Pump" in tags or "Fake_Breakout_Trap" in tags or "Flash_Spoofing_Manipulation" in tags or "Short_Covering" in tags or "Late_FOMO" in tags or "Hidden_Distribution" in tags:
                 return None 
- 
-                
-            # 🌟 2. مستوى الشذوذ المطلق (سكور فوق 95) - اسم تقني جاف
-            if score >= 95.0:
-                final_signal = "Deep Liquidity Absorption 🏦" # (امتصاص عميق للسيولة)
-                
-            # 🐋 3. مستوى الحيتان (سكور من 90 إلى 94.9)
-            elif score >= 90.0:
-                final_signal = "Institutional Orderflow 🐋" # (تدفق أوامر مؤسساتي)
-            
-            # 🦈 4. الإشارات القوية المحددة (تحت الـ 90)
-            elif "Micro_Silent_Accumulation" in tags and "Institutional_Buy_Spike" in tags: 
-                final_signal = "Active Accumulation 🦈" # (تجميع نشط - مسحنا كلمة هجومي)
-            elif "Short_Squeeze" in tags: 
-                final_signal = "(Short Squeeze) 🔥"
-            elif "Z_Anom_Silent" in tags and "OI_Rising" in tags: 
-                final_signal = "(Derivatives Pump) 🚀"
-            elif "Squeeze" in tags and "OB_Buy" in tags: 
-                final_signal = "(Liquidity Breakout) ⚡"
-            elif "Micro_Silent_Accumulation" in tags or "Wall_Absorption_Pre_Breakout" in tags: 
-                final_signal = "Silent Accumulation 🧲" 
-            elif "Z_Anom_Silent" in tags or "Smart_Accumulation" in tags: 
-                final_signal = "Smart Money Inflow 💸"
 
+            if score >= 95.0: final_signal = "Deep Liquidity Absorption 🏦"
+            elif score >= 90.0: final_signal = "Institutional Orderflow 🐋"
+            elif "Micro_Silent_Accumulation" in tags and "OB_Buy" in tags: final_signal = "Active Accumulation 🦈"
+            elif "Short_Squeeze" in tags: final_signal = "(Short Squeeze) 🔥"
+            elif "Z_Anom_Silent" in tags and "OI_Rising" in tags: final_signal = "(Derivatives Pump) 🚀"
+            elif "Squeeze" in tags and "OB_Buy" in tags: final_signal = "(Liquidity Breakout) ⚡"
+            elif "Micro_Silent_Accumulation" in tags: final_signal = "Silent Accumulation 🧲"
+            elif "Smart_Accumulation" in tags: final_signal = "Smart Money Inflow 💸"
 
-            avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
-            avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
-            current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
-
-            # 🟢 1. تحديد الإشارات الحيوية (تم تصحيح المفاتيح الذهبية)
-            golden_tags = {"Z_Anom_Silent", "Smart_Accumulation", "Micro_Silent_Accumulation", "Institutional_Buy_Spike", "OB_Buy", "Squeeze"}
-            
-            # كم إشارة ذهبية اجتمعت في هذه العملة؟
-            confluence_count = sum(1 for tag in tags if tag in golden_tags)
-
-            # 🟢 2. فلتر الاتجاه المعاكس (لا تشتري سكين تسقط)
-            is_macro_downtrend = price < ema200_val
-
-            # 🟢 3. شروط القناص النهائي:
-            required_score = 65.0 if (market_regime['trend'] == "Trending_Bear" or is_macro_downtrend) else 55.0
-            required_confluence = 2 if (market_regime['trend'] == "Trending_Bear" or is_macro_downtrend) else 1
-
-                        # ==========================================
-            # 🧱 جدار الفيتو الإجباري (شرط الحيتان)
-            # ==========================================
-            # 1. سحب بيانات الشراء اللحظي (CVD) من الذاكرة المحلية للدالة
-            # 🟢 الإصلاح: استدعاء المتغير الصحيح (micro_cvd_trend) وضربه بالسعر ليكون بالدولار
+            # استدعاء المتغيرات للفيتو
             current_cvd = float(locals().get('micro_cvd_trend', 0.0)) * price
-            
-            # 2. سحب بيانات ضغط الأوردر بوك (Imbalance)
             current_imbalance = float(locals().get('depth_data', {}).get('imbalance', 0) if locals().get('depth_data') else 0.0)
             
-            # 3. الفيتو: إذا لم يكن هناك شراء ماركت قوي (CVD) ولا طلبات معلقة قوية (Imbalance)، نرفض العملة
+            # الفيتو: إذا لم يكن هناك شراء ماركت قوي (CVD) ولا طلبات معلقة (Imbalance)
             if current_cvd <= 0 and current_imbalance <= 0.1:
-                return None # 🚫 رفض قاطع: المؤشرات ممتازة لكن لا توجد سيولة حقيقية تدفع السعر!
-            # ==========================================
+                return None 
+
 
             # إرجاع النتيجة فقط إذا تحقق السكور + الإجماع الفني + اجتياز الفيتو
             if score >= required_score and confluence_count >= required_confluence:    
