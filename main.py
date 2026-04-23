@@ -1298,21 +1298,9 @@ async def analyze_radar_coin(c, client, market_regime, sem):
 
             # إرجاع النتيجة فقط إذا تحقق السكور + الإجماع الفني + اجتياز الفيتو
             if score >= required_score and confluence_count >= required_confluence:    
-                
-                # 1. جلب بيانات السلسلة (On-Chain)
-            # إرجاع النتيجة فقط إذا تحقق السكور + الإجماع الفني
-                        # --- 🧠 التكامل مع الذكاء الاصطناعي وبيانات السلسلة ---
-            if score >= required_score and confluence_count >= required_confluence:    
-                
                 # 1. جلب بيانات السلسلة (On-Chain)
                 whale_inflow = await get_whale_inflow_score()
                 
-                # 2. تجهيز الملامح (Features) للذكاء الاصطناعي
-                                # 2. تجهيز الملامح (Features) للذكاء الاصطناعي
-                                # 2. تجهيز الملامح (Features) للذكاء الاصطناعي
-                                # 2. تجهيز مصفوفة بيانات مؤسساتية (Dimensionality Expansion)
-                
-                # حساب تقلب السعر الدقيق (Micro-Volatility) لآخر 20 شمعة
                 micro_volatility = df['close'].tail(20).pct_change().std() * 100
                 
                 # حساب انحراف مسار السيولة (CVD Divergence) - هل السعر يصعد بينما CVD يهبط؟
