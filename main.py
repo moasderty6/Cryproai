@@ -2956,7 +2956,7 @@ async def run_analysis(cb: types.CallbackQuery):
         # 🟢 تحديد الاتجاه بشكل صارم ومباشر (صاعد / هابط فقط)
         real_trend = "صاعد" if trend_dir == "Bullish" else "هابط"
         if lang != "ar": real_trend = "Bullish" if trend_dir == "Bullish" else "Bearish"
-        
+        trend_strength = trend_str
         if lang == "ar":
             prompt = f"""
 أنت محلل بيانات كمية (Quant) صارم في صندوق "NaiF CHarT". مهمتك صياغة التقرير الفني لعملة {clean_sym} بناءً على الأرقام فقط.
