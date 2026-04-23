@@ -519,6 +519,50 @@ async def get_institutional_orderflow(symbol, client, minutes=15):
         print(f"⚠️ Flow Error: {e}")
     return 0.0, 0.0, 0.0
 
+async def detect_spot_perp_divergence(symbol: str, client: httpx.AsyncClient):
+    clean_sym = symbol.replace("USDT", "") + "USDT"
+    spot_url = f"{get_random_binance_base()}/api/v3/klines?symbol={clean_sym}&interval=1m&limit=60"
+    fapi_url = f"https://fapi.binance.com/fapi/v1/klines?symbol={clean_sym}&interval=1m&limit=60"
+    
+    try:
+        spot_res, fapi_res = await asyncio.gather(
+            client.get(spot_url, timeout=5.0),
+            client.get(fapi_url, timeout=5.0)
+        )
+        
+        if spot_res.status_code != 200 or fapi_res.status_code != 200:
+            return 0.0
+
+        spot_data, fapi_data = spot_res.json(), fapi_res.json()
+        if len(spot_data) < 60 or len(fapi_data) < 60:
+            return 0.0
+
+        spot_buy_vol = sum(float(c[9]) for c in spot_data)
+        spot_total_vol = sum(float(c[5]) for c in spot_data)
+        spot_delta = spot_buy_vol - (spot_total_vol - spot_buy_vol)
+        
+        fapi_buy_vol = sum(float(c[9]) for c in fapi_data)
+        fapi_total_vol = sum(float(c[5]) for c in fapi_data)
+        fapi_delta = fapi_buy_vol - (fapi_total_vol - fapi_buy_vol)
+
+        if spot_total_vol == 0 or fapi_total_vol == 0:
+            return 0.0
+
+        # نظام زيادة وتنقيص النقاط البسيط
+        if spot_delta > (spot_total_vol * 0.10) and fapi_delta < -(fapi_total_vol * 0.15):
+            return 7.5  # حيتان السبوت تشتري بقوة
+        elif spot_delta < -(spot_total_vol * 0.10) and fapi_delta > (fapi_total_vol * 0.15):
+            return -8.5 # حيتان السبوت تصرف
+        elif spot_delta > 0 and fapi_delta < 0:
+            return 2.5  # تباين خفيف إيجابي
+        elif spot_delta < 0 and fapi_delta > 0:
+            return -2.5 # تباين خفيف سلبي
+            
+        return 0.0
+
+    except Exception:
+        return 0.0
+
 
 import ta
 import pandas as pd
@@ -1079,8 +1123,13 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 elif market_regime['trend'] == "Trending_Bull":
                     score += 5.0
 
+            # إضافة أو تنقيص نقاط التباين
+            div_score = await detect_spot_perp_divergence(symbol, client)
+            score += div_score
+
             # 🟢 ضبط السكور ليكون مستحيلاً وصوله 100 (أقصى شيء بالواقع 95-97)
             score = round(max(0.0, min(score, 98.5)), 1)
+
             
             # 🟢 محرك تسمية الإشارة الذكي (Short & Punchy Signal Names)
                         # 🟢 محرك تسمية الإشارة الذكي (المصحح والمطور)
