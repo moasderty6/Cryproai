@@ -2954,18 +2954,24 @@ async def run_analysis(cb: types.CallbackQuery):
         safe_rsi = f"{last_rsi:.2f}" if 'last_rsi' in locals() and last_rsi is not None else "N/A"
         
         # 🟢 تحديد الاتجاه بشكل صارم ومباشر (صاعد / هابط فقط)
-        real_trend = "صاعد 📈" if trend_dir == "Bullish" else "هابط 📉"
-        if lang != "ar": real_trend = "Bullish 📈" if trend_dir == "Bullish" else "Bearish 📉"
+        real_trend = "صاعد" if trend_dir == "Bullish" else "هابط"
+        if lang != "ar": real_trend = "Bullish" if trend_dir == "Bullish" else "Bearish"
         
         if lang == "ar":
             prompt = f"""
 أنت محلل بيانات كمية (Quant) صارم في صندوق "NaiF CHarT". مهمتك صياغة التقرير الفني لعملة {clean_sym} بناءً على الأرقام فقط.
-⚠️ تحذير شديد: يمنع منعاً باتاً تغيير أرقام الدعم، المقاومة، الأهداف، أو الوقف. 
+⚠️ تحذير شديد: يمنع منعاً باتاً تغيير أرقام الدعم، المقاومة، الأهداف، أو الوقف. الأرقام محسوبة رياضياً ويجب نسخها كما هي في القالب.
 
-⚠️ انسخ هذا القالب بدقة، واكتب تعليقاً فنياً من سطر واحد ومباشر لكل مؤشر:
+قواعد التفسير المالي (التزم بها حرفياً لصياغة النقاط):
+1. RSI: إذا > 70 (تشبع شرائي/خطر تصحيح). إذا < 30 (تشبع بيعي/فرصة ارتداد). بينهما (حيادي).
+2. ADX: إذا > 25 (ترند قوي). إذا < 25 (ترند ضعيف/مسار عرضي).
+3. MACD: موجب (زخم شرائي). سالب (زخم بيعي).
+4. السيولة: قم بإعادة صياغة الجملة المعطاة لك بأسلوب مؤسساتي جاف ومقنع.
+
+⚠️ انسخ هذا القالب بدقة، واكتب تعليقاً فنياً من سطر واحد ومباشر لكل مؤشر (بدون مقدمات وبدون نصائح استثمارية):
 
 📊 <b>التحليل لـ {clean_sym}</b> | {tf} | <code>{format_price(price)}$</code>
-الاتجاه: {real_trend} {trend_str}
+الاتجاه: {real_trend} ({trend_strength})
 
 📉 <b>الدعم والمقاومة</b>
 الدعم الأقرب: <code>{format_price(calc_sup)}$</code>
@@ -2981,19 +2987,28 @@ Stop Loss: <code>{format_price(calc_sl)}</code>
 
 📈 <b>تحليل المؤشرات</b>
 • Liquidity: (أعد صياغة هذه الجملة باحترافية: {market_action})
-• RSI ({safe_rsi}): (تفسير مباشر للرقم)
-• MACD ({macd_fmt}): (تفسير مباشر للزخم)
-• ADX ({adx_val:.1f}): (تفسير مباشر لقوة الاتجاه)
+• RSI ({safe_rsi}): (اكتب سطر واحد يفسر الرقم بناءً على القواعد)
+• MACD ({macd_fmt}): (اكتب سطر واحد يفسر الزخم)
+• ADX ({adx_val:.1f}): (اكتب سطر واحد يفسر قوة الاتجاه)
 """
         else:
+            real_trend = "Bullish" if trend_dir == "Bullish" else "Bearish"
+            trend_strength = trend_str
+            
             prompt = f"""
-You are a strict Quant Analyst at "NaiF CHarT". Format the report for {clean_sym} based strictly on the provided data.
-⚠️ CRITICAL WARNING: DO NOT alter the Support, Resistance, TP, or SL numbers.
+You are a strict Quant Analyst at "NaiF CHarT". Your task is to format the technical report for {clean_sym} based strictly on the provided data.
+⚠️ CRITICAL WARNING: DO NOT alter the Support, Resistance, TP, or SL numbers. They are mathematically calculated.
 
-⚠️ Copy this exact HTML template, writing ONE precise analytical line per indicator:
+Financial Interpretation Rules (Follow strictly):
+1. RSI: > 70 (Overbought/Correction risk). < 30 (Oversold/Bounce opportunity). 30-70 (Neutral).
+2. ADX: > 25 (Strong trend). < 25 (Weak/Ranging).
+3. MACD: Positive (Bullish momentum). Negative (Bearish momentum).
+4. Liquidity: Rephrase the provided sentence into a cold, institutional tone.
+
+⚠️ Copy this exact HTML template, writing exactly ONE precise analytical line per indicator (No fluff, no financial advice):
 
 📊 <b>Analysis: {clean_sym}</b> | {tf} | <code>{format_price(price)}$</code>
-Trend: {real_trend} {trend_str}
+Trend: {real_trend} ({trend_strength})
 
 📉 <b>Support & Resistance</b>
 Nearest Support: <code>{format_price(calc_sup)}$</code>
@@ -3009,9 +3024,9 @@ Stop Loss: <code>{format_price(calc_sl)}</code>
 
 📈 <b>Indicator Analysis</b>
 • Liquidity: (Professionally rephrase this: {market_action})
-• RSI ({safe_rsi}): (Direct interpretation)
-• MACD ({macd_fmt}): (Direct interpretation)
-• ADX ({adx_val:.1f}): (Direct interpretation)
+• RSI ({safe_rsi}): (One line interpreting the number based on the rules)
+• MACD ({macd_fmt}): (One line interpreting momentum)
+• ADX ({adx_val:.1f}): (One line interpreting trend strength)
 """
 
 
