@@ -345,20 +345,23 @@ async def smart_radar_watchdog(pool):
 
       
                             if time_diff >= 60 and old_vol > 0:
-                                vol_change = (current_vol - old_vol) / old_vol
+                                # حساب كم دولار حقيقي تم تداوله في هذه الـ 60 ثانية تحديداً
+                                traded_usd_in_minute = current_vol - old_vol 
                                 price_change = (current_price - old_price) / old_price
-                            
-                                # التعديل الجذري: السعر يجب أن يكون ثابتاً تقريباً (أقل من 0.5% حركة) مع دخول فوليوم ضخم = تجميع صامت
-                                MAX_PRICE_SPIKE = 0.005 
-                            
-                                if current_vol >= MIN_VOLUME_USD and vol_change >= VOLUME_SPIKE_THRESHOLD and abs(price_change) <= MAX_PRICE_SPIKE:
-                                    print(f"👀 WebSocket is watching {symbol} | Vol: {current_vol}") 
-                                    # إرسال العملة إلى الطابور فوراً للتحليل العميق
+                                
+                                MAX_PRICE_SPIKE = 0.005 # السعر ثابت (أقل من 0.5% حركة)
+                                MIN_MINUTE_VOLUME = 200_000 # حوت ضخ 200 ألف دولار على الأقل في دقيقة
+                                
+                                # إذا تم ضخ سيولة ضخمة فجأة والسعر لم يتحرك (يمتص العروض) = تجميع حقيقي
+                                if traded_usd_in_minute >= MIN_MINUTE_VOLUME and abs(price_change) <= MAX_PRICE_SPIKE:
+                                    print(f"👀 Silent Accumulation Alert {symbol} | Injected: ${traded_usd_in_minute:,.0f} in {time_diff:.0f}s") 
+                                    
                                     coin_mock_data = {
                                         "symbol": symbol.replace("USDT", ""),
                                         "quote": {"USD": {"price": current_price}}
                                     }
                                     await radar_processing_queue.put(coin_mock_data)
+                            
 
                                     
                             live_market_memory[symbol] = {'volume': current_vol, 'price': current_price, 'last_update': current_time}
@@ -1137,18 +1140,23 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             score += futures_boost
             if futures_signal: tags.append(futures_signal)
 
-            # 4. المؤشرات الكلاسيكية
-                        # 4. المؤشرات الكلاسيكية
+            # 4. المؤشرات الكلاسيكية                  
             sma20 = df["close"].rolling(20).mean()
             std20 = df["close"].rolling(20).std(ddof=0)
             df["upper_band"] = sma20 + 2*std20
             df["lower_band"] = sma20 - 2*std20
-            squeeze_pct = (df["upper_band"].iloc[-1] - df["lower_band"].iloc[-1]) / sma20.iloc[-1]
             
-            # 🛠️ حماية الكود من الانهيار إذا كانت العملة جديدة جداً ولا تملك 20 شمعة
-            if pd.isna(squeeze_pct):
-                squeeze_pct = 1.0 # قيمة افتراضية آمنة
-            elif squeeze_pct < 0.05: 
+            # حساب المسافة الحالية للبولينجر باند
+            bb_width = (df["upper_band"] - df["lower_band"]) / sma20
+            
+            # مقارنة الانضغاط الحالي بمتوسط الانضغاط لآخر 100 شمعة لهذه العملة تحديداً
+            avg_bb_width = bb_width.rolling(100).mean().iloc[-1]
+            current_bb_width = bb_width.iloc[-1]
+            
+            # 🛠️ حماية الكود من الانهيار إذا كانت العملة جديدة جداً (أقل من 100 شمعة)
+            if pd.isna(current_bb_width) or pd.isna(avg_bb_width):
+                pass # لا نعطي أي نقاط إذا كانت بيانات العملة غير كافية
+            elif current_bb_width < (avg_bb_width * 0.5): 
                 score += 10.0
                 tags.append("Squeeze")
             
@@ -1537,16 +1545,16 @@ async def ai_opportunity_radar(pool):
                     
                     # 🟢 الفلترة السحرية: 
                     if vol_usd >= 1_000_000 and -10.0 <= price_change <= 5.0:
-                        # تغليف البيانات لتطابق هيكلة كودك القديمة تماماً عشان ما ينكسر دالة التحليل
                         coins.append({
                             "symbol": clean_sym,
                             "quote": {"USD": {"price": float(t["lastPrice"])}},
-                            "volume": vol_usd # 👈 أضفنا الفوليوم هنا للترتيب
+                            "volume": vol_usd,
+                            "priceChangePercent": price_change # 👈 أضفنا هذا السطر لكي تتعرف عليه دالة الترتيب
                         })
                 
-                # 👈 التعديل هنا: نرتب باستخدام x["volume"] 
-                                # 👈 التعديل هنا: نرتب باستخدام x["volume"] 
-                coins = sorted(coins, key=lambda x: x["volume"], reverse=True)[:300]
+                # الفرز بناءً على أضيق نسبة تغير في السعر (من الأقرب للصفر) لاصطياد العملات المضغوطة
+                coins = sorted(coins, key=lambda x: abs(float(x.get("priceChangePercent", 0))))[:200]
+
                 
                 # ✅ التعديل الجديد: إرسال الطلبات بالتدريج لحماية الـ API من الحظر
                 tasks = []
