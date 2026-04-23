@@ -2438,12 +2438,41 @@ def compute_momentum(df):
     return -5
 
 def detect_fake_breakout(df):
-    recent_high = df["high"].rolling(20).max().iloc[-2]
+    """
+    محرك كشف الفخاخ (Fakeout Detection) المعتمد على السعر + الفوليوم.
+    """
+    if len(df) < 21: return 0
+    
+    recent_high = df["high"].iloc[-21:-1].max() # أعلى قمة في آخر 20 شمعة (تجاهل الحالية)
+    avg_vol = df["volume"].iloc[-21:-1].mean()  # متوسط الفوليوم السابق
+    
     last = df.iloc[-1]
-
-    if last["high"] > recent_high and last["close"] < recent_high:
-        return -20
+    
+    # حساب هندسة الشمعة الحالية
+    candle_range = last["high"] - last["low"]
+    if candle_range == 0: return 0
+    upper_wick = last["high"] - max(last["open"], last["close"])
+    
+    # شروط الاختراق الكاذب القاتل (Bull Trap):
+    # 1. السعر اخترق القمة السابقة
+    # 2. السعر أغلق تحت القمة السابقة
+    # 3. الفوليوم وقت الاختراق كان أقل من المتوسط (اختراق ضعيف السيولة)
+    # 4. الذيل العلوي يمثل أكثر من 40% من حجم الشمعة (رفض سعري قوي)
+    
+    if (last["high"] > recent_high) and (last["close"] < recent_high):
+        if (last["volume"] < avg_vol) and (upper_wick > candle_range * 0.4):
+            return -25 # فخ بيعي مؤكد للمحترفين
+            
+    # شروط الكسر الكاذب (Bear Trap) - كسر قاع وهمي
+    recent_low = df["low"].iloc[-21:-1].min()
+    lower_wick = min(last["open"], last["close"]) - last["low"]
+    
+    if (last["low"] < recent_low) and (last["close"] > recent_low):
+        if (last["volume"] < avg_vol) and (lower_wick > candle_range * 0.4):
+            return 25 # فخ شرائي مؤكد (صيد قيعان)
+            
     return 0
+
 def detect_nearest_fvg(df, current_price, trend_direction):
     """
     محرك اكتشاف فجوات السيولة (FVG) المطور.
@@ -2864,25 +2893,28 @@ async def run_analysis(cb: types.CallbackQuery):
                 cvd_sig, buy_v, sell_v, fut_sig, z_score = None, 0, 0, None, 0
                 delta_usd, funding_val = 0.0, 0.0
 
-        # 2. كشف الفخاخ وتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه
+        # 2. كشف الفخاخ وتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه بطريقة مؤسساتية (Quant Trend Unification)
         ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
         ema50 = df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
         classic_trend = "Bullish" if ema20 > ema50 else "Bearish"
         
         final_trend_dir = classic_trend
+        avg_vol_20 = df["volume"].tail(20).mean()
+        current_vol = df["volume"].iloc[-1]
         
-        # أ. شروط انعكاس الاتجاه من هابط إلى صاعد (اصطياد القاع)
+        # أ. شروط انعكاس الاتجاه من هابط إلى صاعد (اصطياد القاع الآمن)
         if classic_trend == "Bearish":
-            # إما الحيتان تشتري الآن، أو المؤشرات (RSI/MACD) تؤكد ارتداداً صريحاً من القاع
-            if (cvd_sig == "Micro_Silent_Accumulation" or buy_v > sell_v * 1.5) or (last_rsi < 40 and last_macd > 0):
+            # لا نعتمد على RSI وحده! نطلب إما دخول قوي للحيتان (CVD)، أو دايفرجنس إيجابي مع فوليوم أعلى من المتوسط
+            vol_surge = current_vol > (avg_vol_20 * 1.5)
+            if (cvd_sig == "Micro_Silent_Accumulation" or buy_v > sell_v * 1.5) or (last_rsi < 35 and last_macd > 0 and vol_surge):
                 final_trend_dir = "Bullish" 
                 
         # ب. شروط انعكاس الاتجاه من صاعد إلى هابط (الهروب من القمة المخادعة)
         elif classic_trend == "Bullish":
-            # إما الحيتان تصرف الآن، أو المؤشرات تؤكد تشبعاً بيعياً مع تقاطع سلبي
-            if (cvd_sig == "Hidden_Distribution" or sell_v > buy_v * 1.5) or (last_rsi > 70 and last_macd < 0):
+            # نطلب تصريف مخفي (CVD سلبي) أو تشبع بيعي مع فوليوم بيع عالي
+            vol_surge = current_vol > (avg_vol_20 * 1.5)
+            if (cvd_sig == "Hidden_Distribution" or sell_v > buy_v * 1.5) or (last_rsi > 75 and last_macd < 0 and vol_surge):
                 final_trend_dir = "Bearish" 
-
         # 3. حساب الدعم والمقاومة والأهداف بناءً على الاتجاه "المُوحّد" لمنع التضارب
                 # 3. حساب الدعم والمقاومة والأهداف في الخلفية لمنع التضارب والتعليق
         trend_dir, trend_str, market_action, adx_val, calc_sl, calc_tp1, calc_tp2, calc_tp3, calc_sup, calc_res = await asyncio.to_thread(
