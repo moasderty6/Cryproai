@@ -1276,6 +1276,24 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             required_score = 65.0 if (market_regime['trend'] == "Trending_Bear" or is_macro_downtrend) else 55.0
             required_confluence = 2 if (market_regime['trend'] == "Trending_Bear" or is_macro_downtrend) else 1
 
+            # ==========================================
+            # 🧱 جدار الفيتو الإجباري (شرط الحيتان)
+            # ==========================================
+            # 1. سحب بيانات الشراء اللحظي (CVD) من الذاكرة المحلية للدالة
+            current_cvd = float(locals().get('whale_score', 0.0))
+            
+            # 2. سحب بيانات ضغط الأوردر بوك (Imbalance)
+            current_imbalance = float(locals().get('depth_data', {}).get('imbalance', 0) if locals().get('depth_data') else 0.0)
+            
+            # 3. الفيتو: إذا لم يكن هناك شراء ماركت قوي (CVD) ولا طلبات معلقة قوية (Imbalance)، نرفض العملة
+            if current_cvd <= 0 and current_imbalance <= 0.1:
+                return None # 🚫 رفض قاطع: المؤشرات ممتازة لكن لا توجد سيولة حقيقية تدفع السعر!
+            # ==========================================
+
+            # إرجاع النتيجة فقط إذا تحقق السكور + الإجماع الفني + اجتياز الفيتو
+            if score >= required_score and confluence_count >= required_confluence:    
+                
+                # 1. جلب بيانات السلسلة (On-Chain)
             # إرجاع النتيجة فقط إذا تحقق السكور + الإجماع الفني
                         # --- 🧠 التكامل مع الذكاء الاصطناعي وبيانات السلسلة ---
             if score >= required_score and confluence_count >= required_confluence:    
