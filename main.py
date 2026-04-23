@@ -1631,8 +1631,9 @@ async def ai_opportunity_radar(pool):
 
 قواعد التفسير المالي (التزم بها حرفياً):
 1. ضغط الأوردر بوك: إذا كان < 1 (سيطرة بيعية/امتصاص). إذا > 1 (طلب هجومي).
-2. نسبة السيولة: إذا كانت < 1 (جفاف سيولة/تجميع صامت مخفي). إذا > 1 (ضخ سيولة نشط).
-3. مؤشر Z-Score: الأرقام السلبية تعني انضغاطاً في القاع.
+2. نسبة السيولة: إذا كانت < 1 (جفاف سيولة/تجميع صامت مخفي). إذا > 1 (ضخ سيولة مؤسساتي نشط).
+3. مؤشر Z-Score: الأرقام السلبية تعني انضغاطاً في القاع. الأرقام الإيجابية العالية (>2) تعني انفجاراً استثنائياً في الفوليوم.
+4. الإجماع الفني: هو عدد صحيح من (1 إلى 6). وجود رقم (1 أو أعلى) يعني إجماعاً قوياً جداً وتأكيداً مؤكداً للفرصة.
 
 شروط المخرجات (OUTPUT RULES):
 - إياك أن تكتب عبارات مثل: "بناءً على البيانات"، "نلاحظ"، "مما يشير إلى". ادخل في التحليل فوراً.
@@ -1651,10 +1652,11 @@ Raw Data for {symbol}:
 - Confluence: {best_meta.get('confluence', 0)}
 - Momentum: ADX: {best_meta['adx']} | RSI: {best_meta['rsi']}
 
-Financial Interpretation Rules:
-1. Orderbook Ratio: If < 1 (Supply overhang/absorption). If > 1 (Aggressive demand).
-2. Volume Ratio: If < 1 (Liquidity dry-up/silent accumulation). If > 1 (Active institutional inflow).
-3. Z-Score: Negative means bottom compression.
+Financial Interpretation Rules (Follow strictly):
+1. Orderbook Ratio: If < 1 (Supply control/absorption). If > 1 (Aggressive demand).
+2. Volume Ratio: If < 1 (Liquidity dry-up/silent hidden accumulation). If > 1 (Active institutional inflow).
+3. Z-Score: Negative numbers mean bottom compression. High positive numbers (>2) mean exceptional volume explosion.
+4. Confluence: It is an integer from (1 to 6). A number of (1 or higher) means very strong consensus and a confirmed setup.
 
 Strict Output Format:
 - NEVER use phrases like "Based on the data", "We can see", or "This indicates". Start the bullet points immediately.
@@ -1663,6 +1665,7 @@ Strict Output Format:
 - Keep the tone cold, dry, and institutional. Zero hype.
 - Writing Style: Use 'Flash Notes' format. Do not explain metrics in isolation; fuse them into a cohesive narrative (e.g., 'Aggressive bid stacking at {ob_pressure_val}x aligns with silent liquidity absorption {vol_ratio_val}x at compressed lows').
 """
+
 
 
 
