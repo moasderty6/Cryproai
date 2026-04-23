@@ -1290,7 +1290,10 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             # 🧱 جدار الفيتو الإجباري (شرط الحيتان)
             # ==========================================
             # 1. سحب بيانات الشراء اللحظي (CVD) من الذاكرة المحلية للدالة
-            current_cvd = float(locals().get('whale_score', 0.0))
+                        # 1. سحب بيانات الشراء اللحظي (CVD) من الذاكرة المحلية للدالة
+            # 🟢 الإصلاح: استدعاء القيمة الحقيقية للـ CVD بالدولار وليس نظام النقاط
+            actual_cvd_usd = float(locals().get('cvd_trend_val', 0.0))
+            current_cvd = actual_cvd_usd
             
             # 2. سحب بيانات ضغط الأوردر بوك (Imbalance)
             current_imbalance = float(locals().get('depth_data', {}).get('imbalance', 0) if locals().get('depth_data') else 0.0)
@@ -1307,8 +1310,8 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 
                 micro_volatility = df['close'].tail(20).pct_change().std() * 100
                 
-                # حساب انحراف مسار السيولة (CVD Divergence) - هل السعر يصعد بينما CVD يهبط؟
-                cvd_divergence = 1.0 if (price > ema200_val and locals().get('whale_score', 0) < 0) else -1.0 if (price < ema200_val and locals().get('whale_score', 0) > 0) else 0.0
+                # 🟢 الإصلاح: حساب انحراف مسار السيولة (CVD Divergence) باستخدام القيمة الحقيقية
+                cvd_divergence = 1.0 if (price > ema200_val and actual_cvd_usd < 0) else -1.0 if (price < ema200_val and actual_cvd_usd > 0) else 0.0
 
 
                 # جلب معدل التمويل الحالي (Funding Rate) من مصفوفة الـ Futures التي حسبناها مسبقاً
@@ -1316,18 +1319,18 @@ async def analyze_radar_coin(c, client, market_regime, sem):
 
                 ml_features = {
                     'z_score': float(current_z),
-                    'cvd_usd': float(locals().get('whale_score', 0.0)),
-                    'ofi_imbalance': float(locals().get('depth_data', {}).get('imbalance', 0) if locals().get('depth_data') else 0.0),
+                    'cvd_usd': float(actual_cvd_usd), # 👈 تم إصلاح التغذية بالدولار الحقيقي
+                    'ofi_imbalance': float(current_imbalance),
                     'ob_skewness': float(locals().get('depth_data', {}).get('skewness', 1.0) if locals().get('depth_data') else 1.0),
                     'adx': float(current_adx),
                     'rsi': float(last_rsi),
                     'whale_inflow': float(whale_inflow),
                     'micro_volatility': float(micro_volatility) if not pd.isna(micro_volatility) else 0.0,
-                    'cvd_divergence': float(cvd_divergence),
+                    'cvd_divergence': float(cvd_divergence), # 👈 تم الإصلاح
                     'funding_rate': float(funding_val),
                     'volume_ratio': float(current_vol_ratio),
-                    'sp500_trend': float(MACRO_CACHE["sp500_trend"]),     # 🌍 بُعد الماكرو الجديد
-                    'sentiment_score': float(MACRO_CACHE["sentiment_score"]) # 🧠 بُعد المشاعر الجديد
+                    'sp500_trend': float(MACRO_CACHE.get("sp500_trend", 0.0)),     # 🌍 حماية من أخطاء الذاكرة
+                    'sentiment_score': float(MACRO_CACHE.get("sentiment_score", 50.0)) # 🧠 حماية من أخطاء الذاكرة
                 }
 
                 
@@ -1335,9 +1338,9 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 ai_probability = await asyncio.to_thread(predict_signal_sync, ml_features)
                 
                 # 4. قرار الفلترة المزدوج:
-                # إذا كان الـ AI متدرباً، نعتمد على رأيه (مثلاً يرفض أي صفقة احتمال نجاحها أقل من 60%)
                 if ai_probability != -1.0:
-                    if ai_probability < 60.0:
+                    # 👈 تم رفع الخنق هنا لـ 75% كما اتفقنا سابقاً بدلاً من 60%
+                    if ai_probability < 75.0:
                         return None # الذكاء الاصطناعي يرفض الصفقة رغم أن السكور الكلاسيكي عالي!
                     final_score = ai_probability # نستبدل السكور القديم بنسبة النجاح الذكية
                     ai_status = "Active 🧠"
@@ -1360,6 +1363,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
         except Exception as e:
             print(f"Error in analyze_radar_coin: {e}")
             return None  
+
 
 
 
