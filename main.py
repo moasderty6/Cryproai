@@ -1279,14 +1279,12 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             required_score = 65.0 if (market_regime['trend'] == "Trending_Bear" or is_macro_downtrend) else 55.0
             required_confluence = 2 if (market_regime['trend'] == "Trending_Bear" or is_macro_downtrend) else 1
 
-            # ==========================================
+                        # ==========================================
             # 🧱 جدار الفيتو الإجباري (شرط الحيتان)
             # ==========================================
             # 1. سحب بيانات الشراء اللحظي (CVD) من الذاكرة المحلية للدالة
-                        # 1. سحب بيانات الشراء اللحظي (CVD) من الذاكرة المحلية للدالة
-            # 🟢 الإصلاح: استدعاء القيمة الحقيقية للـ CVD بالدولار وليس نظام النقاط
-            actual_cvd_usd = float(locals().get('cvd_trend_val', 0.0))
-            current_cvd = actual_cvd_usd
+            # 🟢 الإصلاح: استدعاء المتغير الصحيح (micro_cvd_trend) وضربه بالسعر ليكون بالدولار
+            current_cvd = float(locals().get('micro_cvd_trend', 0.0)) * price
             
             # 2. سحب بيانات ضغط الأوردر بوك (Imbalance)
             current_imbalance = float(locals().get('depth_data', {}).get('imbalance', 0) if locals().get('depth_data') else 0.0)
@@ -1304,15 +1302,15 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 micro_volatility = df['close'].tail(20).pct_change().std() * 100
                 
                 # 🟢 الإصلاح: حساب انحراف مسار السيولة (CVD Divergence) باستخدام القيمة الحقيقية
-                cvd_divergence = 1.0 if (price > ema200_val and actual_cvd_usd < 0) else -1.0 if (price < ema200_val and actual_cvd_usd > 0) else 0.0
-
+                                # حساب انحراف مسار السيولة (CVD Divergence) - هل السعر يصعد بينما CVD يهبط؟
+                cvd_divergence = 1.0 if (price > ema200_val and current_cvd < 0) else -1.0 if (price < ema200_val and current_cvd > 0) else 0.0
 
                 # جلب معدل التمويل الحالي (Funding Rate) من مصفوفة الـ Futures التي حسبناها مسبقاً
                 # إذا كان التمويل سالباً بقوة، الحيتان تضغط السعر صعوداً لتصفية البائعين
 
                 ml_features = {
                     'z_score': float(current_z),
-                    'cvd_usd': float(actual_cvd_usd), # 👈 تم إصلاح التغذية بالدولار الحقيقي
+                    'cvd_usd': current_cvd, # 👈 سحبنا المتغير الجاهز والمصحح
                     'ofi_imbalance': float(current_imbalance),
                     'ob_skewness': float(locals().get('depth_data', {}).get('skewness', 1.0) if locals().get('depth_data') else 1.0),
                     'adx': float(current_adx),
