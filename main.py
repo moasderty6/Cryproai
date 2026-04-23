@@ -1159,7 +1159,15 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             elif current_bb_width < (avg_bb_width * 0.5): 
                 score += 10.0
                 tags.append("Squeeze")
-            
+                        # --- إضافة تأكيد قوة الشمعة (Candle Strength) ---
+            candle_score = detect_candle_strength(df)
+            if candle_score > 0:
+                score += candle_score # يضيف نقاط قوة عند رؤية ذيول شرائية
+                tags.append("Bullish_Hammer_Absorption")
+            elif candle_score < 0:
+                score += candle_score # يخصم نقاط إذا كان هناك ذيل علوي طويل (تصريف)
+                tags.append("Upper_Wick_Pressure")
+
             ema200_val = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else df["close"].ewm(span=50).mean().iloc[-1]
             if price < ema200_val and last_rsi > 30 and df["rsi"].iloc[-10:-1].min() < 30:
                 score += 10.0 
@@ -1198,6 +1206,11 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 elif global_ob_pressure < 0.8: score -= 15.0
 
                 if global_alt_volume > 100000: score += 10.0
+            # --- إضافة فلتر الاختراق الكاذب (Safe Filter) ---
+            fake_out_penalty = detect_fake_breakout(df)
+            if fake_out_penalty < 0:
+                score += fake_out_penalty # سيخصم 20 نقطة من السكور
+                tags.append("Fake_Breakout_Trap")
 
             # 6. الماكرو
             if isinstance(market_regime, dict):
@@ -1218,10 +1231,10 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             score = round(max(0.0, min(score, 98.5)), 1)
 
             final_signal = "High Probability Setup 🎯"
-            
-            # 1. إشارات الخطر (تمنع إرسال العملة)
-            if "Fake_Pump" in tags or "Flash_Spoofing_Manipulation" in tags or "Short_Covering" in tags or "Late_FOMO" in tags or "Hidden_Distribution" in tags:
+# أضفنا "Fake_Breakout_Trap" للقائمة السوداء
+            if "Fake_Pump" in tags or "Fake_Breakout_Trap" in tags or "Flash_Spoofing_Manipulation" in tags or "Short_Covering" in tags or "Late_FOMO" in tags or "Hidden_Distribution" in tags:
                 return None 
+ 
                 
             # 🌟 2. مستوى الشذوذ المطلق (سكور فوق 95) - اسم تقني جاف
             if score >= 95.0:
