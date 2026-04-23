@@ -347,7 +347,7 @@ async def smart_radar_watchdog(pool):
                                 
                                 # 🟢 السطرين اللي انحذفوا بالغلط رجعناهم هنا:
                                 MAX_PRICE_SPIKE = 0.005 # السعر ثابت (أقل من 0.5% حركة)
-                                MIN_MINUTE_VOLUME = 200_000 # حوت ضخ 200 ألف دولار على الأقل في دقيقة
+                                MIN_MINUTE_VOLUME = 100_000 # حوت ضخ 200 ألف دولار على الأقل في دقيقة
                                 
                                 if traded_usd_in_minute >= MIN_MINUTE_VOLUME and abs(price_change) <= MAX_PRICE_SPIKE:
                                     print(f"👀 Silent Accumulation Alert {symbol} | Injected: ${traded_usd_in_minute:,.0f} in {time_diff:.0f}s") 
