@@ -154,11 +154,10 @@ ON_CHAIN_CACHE = {"usdt_inflow_score": 0.0, "last_updated": 0}
 
 async def get_whale_inflow_score():
     """
-    قراءة توجه الحيتان الحقيقي من منصة Binance مباشرة وبدون قيود.
-    (يقيس نسبة مراكز الشراء/البيع لأكبر المتداولين في السوق)
+    قراءة توجه الحيتان الحقيقي من منصة Binance مباشرة.
+    (تم التعديل لإرجاع النسبة الخام لتدريب الذكاء الاصطناعي بدقة متناهية)
     """
     try:
-        # نستخدم البيتكوين كمؤشر رئيسي لتدفق السيولة للسوق بأكمله
         url = "https://fapi.binance.com/futures/data/topLongShortAccountRatio"
         params = {"symbol": "BTCUSDT", "period": "5m", "limit": 1}
 
@@ -167,18 +166,16 @@ async def get_whale_inflow_score():
 
             if res.status_code == 200:
                 data = res.json()
-                long_short_ratio = float(data[0]['longShortRatio'])
-
-                # تحويل النسبة الحقيقية لسكور من 0 إلى 10 للذكاء الاصطناعي
-                # نسبة 1.0 تعني تعادل. أعلى من 1 تعني الحيتان تشتري.
-                if long_short_ratio > 1.5: return 10.0
-                elif long_short_ratio > 1.2: return 7.5
-                elif long_short_ratio < 0.8: return 0.0
-                else: return 5.0
+                # 🟢 نرجع النسبة الحقيقية كما هي (مثلاً 1.45 أو 0.82) ليفهمها الـ AI
+                return float(data[0]['longShortRatio'])
 
     except Exception as e:
         print(f"⚠️ Binance Whale Inflow Error: {e}")
-        return 5.0 # قيمة محايدة بدلاً من العشوائية للحماية من تسمم البيانات
+        # 🟢 1.0 هو الرقم الصحيح هنا لأنه يعني (تعادل 50% شراء و 50% بيع) 
+        # وضع 5.0 في حالة الخطأ كان سيدمر بيانات الـ AI ويجعله يعتقد أن هناك شراء جنوني!
+        return 1.0 
+
+    return 1.0
 
     return 5.0
 import xgboost as xgb
@@ -446,11 +443,10 @@ async def get_micro_cvd_absorption(symbol, client):
     """
     يكتشف التجميع الصامت قبل الانفجار بجلب فريم الدقيقة لآخر 120 دقيقة.
     """
+    cvd_trend = 0.0 # 👈 تهيئة المتغير مبكراً
     try:
-        # جلب بيانات دقيقة جداً لآخر ساعتين
         base_url = get_random_binance_base()
         res = await client.get(f"{base_url}/api/v3/klines", params={
-
             "symbol": symbol, "interval": "1m", "limit": 120
         }, timeout=5.0)
         
@@ -458,34 +454,31 @@ async def get_micro_cvd_absorption(symbol, client):
             data = res.json()
             df = pd.DataFrame(data, columns=["t", "o", "h", "l", "c", "v", "ct", "qv", "trades", "tbv", "tqav", "ignore"])
             
-            # تحويل البيانات إلى أرقام
             df["v"] = pd.to_numeric(df["v"])
-            df["tbv"] = pd.to_numeric(df["tbv"]) # Taker Buy Volume
+            df["tbv"] = pd.to_numeric(df["tbv"]) 
             df["c"] = pd.to_numeric(df["c"])
             
-            # حساب الدلتا اللحظية لكل دقيقة
             df["sell_vol"] = df["v"] - df["tbv"]
             df["delta"] = df["tbv"] - df["sell_vol"]
             df["cvd"] = df["delta"].cumsum()
             
-            # قياس الشذوذ بين السعر والسيولة
             price_change = (df["c"].iloc[-1] - df["c"].iloc[0]) / df["c"].iloc[0]
             cvd_trend = df["cvd"].iloc[-1] - df["cvd"].iloc[0]
             total_vol = df["v"].sum()
             
-            # 🎯 معادلة القناص: السعر شبه ثابت (أقل من 1.5% حركة)، لكن الـ CVD يرتفع بانفجار (الحوت يمتص العروض)
-                        # 🎯 معادلة القناص: السعر شبه ثابت (أقل من 2% حركة)، لكن الـ CVD يرتفع 
-                        # 🎯 معادلة القناص...
             if abs(price_change) < 0.02 and cvd_trend > (total_vol * 0.15):
-                return 30.0, "Micro_Silent_Accumulation", cvd_trend # 👈 التعديل هنا
+                return 30.0, "Micro_Silent_Accumulation", cvd_trend 
 
-            # كشف التصريف المخفي
             elif price_change > 0.02 and cvd_trend < -(total_vol * 0.15):
-                return -25.0, "Hidden_Distribution", cvd_trend # 👈 التعديل هنا
+                return -25.0, "Hidden_Distribution", cvd_trend 
+            
+            # 🟢 الإصلاح الجذري: إرجاع قيمة الـ CVD الحقيقية للذكاء الاصطناعي حتى لو لم يكن هناك شذوذ!
+            return 0.0, None, cvd_trend
                 
     except Exception as e:
         pass
-    return 0.0, None, 0.0 # 👈 التعديل هنا
+    
+    return 0.0, None, cvd_trend # 👈 إرجاع القيمة بدلاً من الأصفار المطلقة
 async def detect_btc_relative_strength(symbol: str, client: httpx.AsyncClient):
     """
     محرك القوة النسبية الحقيقية (Decoupling)
