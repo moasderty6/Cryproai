@@ -484,6 +484,60 @@ async def get_micro_cvd_absorption(symbol, client):
     except Exception as e:
         pass
     return 0.0, None, 0.0 # 👈 التعديل هنا
+async def detect_btc_relative_strength(symbol: str, client: httpx.AsyncClient):
+    """
+    محرك القوة النسبية الحقيقية (Decoupling)
+    يصطاد العملات التي يشتريها الحيتان بينما ينهار البيتكوين.
+    """
+    clean_sym = symbol.replace("USDT", "") + "USDT"
+    
+    # نجلب آخر 4 شموع على فريم 15 دقيقة (تعادل آخر ساعة) للعملة وللبيتكوين
+    alt_url = f"{get_random_binance_base()}/api/v3/klines?symbol={clean_sym}&interval=15m&limit=4"
+    btc_url = f"{get_random_binance_base()}/api/v3/klines?symbol=BTCUSDT&interval=15m&limit=4"
+    
+    try:
+        alt_res, btc_res = await asyncio.gather(
+            client.get(alt_url, timeout=5.0),
+            client.get(btc_url, timeout=5.0)
+        )
+        
+        if alt_res.status_code != 200 or btc_res.status_code != 200:
+            return 0.0
+            
+        alt_data, btc_data = alt_res.json(), btc_res.json()
+        if len(alt_data) < 4 or len(btc_data) < 4:
+            return 0.0
+            
+        # حساب نسبة التغير في آخر ساعة (إغلاق الشمعة الحالية مقارنة بافتتاح الشمعة الأولى)
+        alt_open = float(alt_data[0][1])
+        alt_close = float(alt_data[-1][4])
+        alt_change = ((alt_close - alt_open) / alt_open) * 100
+        
+        btc_open = float(btc_data[0][1])
+        btc_close = float(btc_data[-1][4])
+        btc_change = ((btc_close - btc_open) / btc_open) * 100
+        
+        # الفارق بين أداء العملة وأداء البيتكوين
+        divergence = alt_change - btc_change
+        
+        # 🎯 نظام توزيع النقاط الدقيق
+        if btc_change < -0.5 and alt_change > 0.5:
+            # البيتكوين ينزف والعملة خضراء! (امتصاص مؤسساتي مرعب قبل الانفجار)
+            return 8.5
+        elif btc_change > 0.5 and alt_change < -0.5:
+            # البيتكوين يصعد والعملة تنزف (تصريف مخفي، الحيتان تستغل صعود السوق للبيع)
+            return -6.5
+        elif divergence > 2.0:
+            # العملة تتفوق على أداء البيتكوين بـ 2% في ساعة واحدة (زخم قوي)
+            return 4.5
+        elif divergence < -2.0:
+            # العملة أضعف بكثير من البيتكوين (عملة ميتة حالياً)
+            return -3.5
+            
+        return 0.0
+        
+    except Exception:
+        return 0.0
 
 async def get_institutional_orderflow(symbol, client, minutes=15):
     """ يسحب الصفقات المجمعة لآخر 15 دقيقة """
@@ -1123,17 +1177,17 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 elif market_regime['trend'] == "Trending_Bull":
                     score += 5.0
 
-            # إضافة أو تنقيص نقاط التباين
+            # 1. إضافة نقاط تباين السيولة (Spot/Perp)
             div_score = await detect_spot_perp_divergence(symbol, client)
             score += div_score
+
+            # 2. إضافة نقاط التمرد والقوة النسبية (BTC Relative Strength)
+            rs_score = await detect_btc_relative_strength(symbol, client)
+            score += rs_score
 
             # 🟢 ضبط السكور ليكون مستحيلاً وصوله 100 (أقصى شيء بالواقع 95-97)
             score = round(max(0.0, min(score, 98.5)), 1)
 
-            
-            # 🟢 محرك تسمية الإشارة الذكي (Short & Punchy Signal Names)
-                        # 🟢 محرك تسمية الإشارة الذكي (المصحح والمطور)
-                        # 🟢 محرك تسمية الإشارة الذكي (بدون مبالغة أو FOMO)
             final_signal = "High Probability Setup 🎯"
             
             # 1. إشارات الخطر (تمنع إرسال العملة)
