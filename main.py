@@ -855,47 +855,6 @@ async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
     
     return total_bids_usd / total_asks_usd
 
-async def update_market_memory_loop(pool):
-    """مهمة خلفية لتحديث ذاكرة السوق لكل العملات بشكل دوري"""
-    # ننتظر 10 ثواني بعد تشغيل البوت عشان نتأكد إن الداتا بيز اتصلت
-    await asyncio.sleep(10) 
-    
-    while True:
-        try:
-            print("🔄 جاري سحب وتحديث ذاكرة الفوليوم (Market Memory) من CMC...")
-            headers = {"X-CMC_PRO_API_KEY": CMC_KEY}
-            async with httpx.AsyncClient(timeout=30) as client:
-                res = await client.get(
-                    "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest",
-                    headers=headers,
-                    params={"limit": "5000"} # جلب أهم 250 عملة
-                )
-                
-                if res.status_code == 200:
-                    coins = res.json()["data"]
-                    
-                    async with pool.acquire() as conn:
-                        for c in coins:
-                            symbol = c["symbol"]
-                            # جلب نسبة التغير
-                            vol_change = float(c["quote"]["USD"].get("volume_change_24h", 0))
-                            
-                            # تخزينها في قاعدة البيانات
-                            await conn.execute("""
-                                INSERT INTO market_memory (symbol, volume_change, last_updated)
-                                VALUES ($1, $2, CURRENT_TIMESTAMP)
-                                ON CONFLICT (symbol) DO UPDATE 
-                                SET volume_change = EXCLUDED.volume_change, last_updated = CURRENT_TIMESTAMP
-                            """, symbol, f"{vol_change:.1f}%")
-                            
-                    print("✅ تم تعبئة ذاكرة السوق بنجاح! البوت الآن يمتلك نظرة شاملة.")
-        except Exception as e:
-            print(f"Market Memory Loop Error: {e}")
-        
-        # ينام ويحدث البيانات كل 4 ساعات (14400 ثانية)
-        await asyncio.sleep(900)
-
-
 async def verify_global_liquidity(symbol: str, client: httpx.AsyncClient):
     """
     التحقق من أن الفوليوم الانفجاري مدعوم من منصات أخرى 
@@ -3366,16 +3325,7 @@ async def on_startup(app):
         await conn.execute("CREATE TABLE IF NOT EXISTS users_info (user_id BIGINT PRIMARY KEY, lang TEXT, last_active DATE)")
         await conn.execute("CREATE TABLE IF NOT EXISTS paid_users (user_id BIGINT PRIMARY KEY, expiry_date TIMESTAMP)")
         await conn.execute("CREATE TABLE IF NOT EXISTS trial_users (user_id BIGINT PRIMARY KEY)")
-           # 🔥 الجديد: إنشاء جدول الذاكرة للفوليوم
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS market_memory (
-                symbol TEXT PRIMARY KEY,
-                market_phase TEXT,
-                volume_change TEXT,
-                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-             
+
         # 🟢 الجديد: إنشاء جدول تتبع العملات المكتشفة في الرادار
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS radar_history (
@@ -3401,11 +3351,6 @@ async def on_startup(app):
         """)
         # فهرس لتسريع بحث العامل الخلفي (Performance Optimization)
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_ml_pending ON ml_training_data(label, signal_time)")
-
-                # ترقية جدول الذاكرة ليعمل بنظام الشذوذ الإحصائي
-        await conn.execute("ALTER TABLE market_memory ADD COLUMN IF NOT EXISTS vol_mean DOUBLE PRECISION DEFAULT 0")
-        await conn.execute("ALTER TABLE market_memory ADD COLUMN IF NOT EXISTS vol_stddev DOUBLE PRECISION DEFAULT 0")
-        await conn.execute("ALTER TABLE market_memory ADD COLUMN IF NOT EXISTS z_score DOUBLE PRECISION DEFAULT 0")
         # 2. إجبار تحديث الجداول القديمة (للمشتركين الحاليين)
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS last_active DATE")
         await conn.execute("ALTER TABLE paid_users ADD COLUMN IF NOT EXISTS expiry_date TIMESTAMP")
