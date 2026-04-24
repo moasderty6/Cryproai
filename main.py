@@ -3106,7 +3106,7 @@ async def run_analysis(cb: types.CallbackQuery):
         trend_strength = trend_str 
         market_action = market_action_text if not is_dex else (f"(تحليل شبكة DEX) | {market_action_text}" if lang == "ar" else f"(DEX Network) | {market_action_text}")
 
-                if lang == "ar":
+        if lang == "ar":
             prompt = f"""
 أنت محلل كمي (Quant) صارم. مهمتك صياغة التقرير الفني لعملة {clean_sym}.
 ⚠️ قواعد صارمة جداً إياك مخالفتها:
