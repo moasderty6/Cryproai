@@ -1828,7 +1828,7 @@ async def ai_opportunity_radar(pool):
 
                 insight_ar = (
                     f"• <b>السيولة:</b> {vol_ar}\n"
-                    f"• <b>التدفق (Flow):</b> {cvd_ar} {ob_ar}\n"
+                    f"• <b>التدفق:</b> {cvd_ar} {ob_ar}\n"
                     f"• <b>المشتقات:</b> {fund_ar}\n"
                     f"• <b>الهيكلة:</b> {tech_ar}"
                 )
@@ -3151,7 +3151,7 @@ async def run_analysis(cb: types.CallbackQuery):
                 market_action_text = f"{market_action} | سيطرة بيعية خفية تعاكس الاتجاه الصاعد." if lang == "ar" else f"{market_action} | Hidden selling countering uptrend."
             else:
                 # السعر صاعد، والحيتان تشتري
-                trend_str = "قوي جداً" if lang == "ar" else "Very Strong"
+                trend_str = "قوي" if lang == "ar" else "Strong"
                 market_action_text = f"{market_action} | ضخ سيولة مؤسساتي يدعم استمرار الصعود." if lang == "ar" else f"{market_action} | Institutional inflow supporting uptrend."
                 
         else: # classic_trend == "Bearish"
@@ -3224,7 +3224,7 @@ TP3: <code>{format_price(calc_tp3)}</code>
 Stop Loss: <code>{format_price(calc_sl)}</code>
 
 📈 <b>تحليل المؤشرات</b>
-• السيولة: (أعد صياغة هذه الجملة باحترافية: {market_action})
+• السيولة: (أعد صياغة هذه الجملة باحترافية بسطر واحد وبدون تناقضات: {market_action})
 • مؤشر(RSI) ({safe_rsi}): (اكتب سطر واحد يفسر الرقم بناءً على القواعد)
 • مؤشر(MACD) ({macd_fmt}): (اكتب سطر واحد يفسر الزخم)
 • مؤشر(ADX) ({adx_val:.1f}): (اكتب سطر واحد يفسر قوة الاتجاه)
