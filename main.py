@@ -3048,9 +3048,10 @@ async def run_analysis(cb: types.CallbackQuery):
                     hollowness_task = measure_ob_hollowness(clean_sym, client, safe_price) # 👈 أضفنا هذا
                     
                     # نفذهم جميعاً في نفس اللحظة (صفر تأخير إضافي)
-                    (cvd_boost, cvd_sig, cvd_trend_val), (delta_usd, buy_v, sell_v), (fut_boost, fut_sig, funding_val), is_orderbook_hollow = await asyncio.gather(
+                    (cvd_boost, cvd_sig, cvd_trend_val), (delta_usd, buy_v, sell_v, limit_abs_signal), (fut_boost, fut_sig, funding_val), is_orderbook_hollow = await asyncio.gather(
                         cvd_task, flow_task, futures_task, hollowness_task
                     )
+
 
                     z_score, _, _ = calculate_volume_zscore(df, window=720)
             except Exception as e:
