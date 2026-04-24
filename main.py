@@ -3002,35 +3002,35 @@ async def run_analysis(cb: types.CallbackQuery):
     cvd_sig, fut_sig = None, None
     buy_v, sell_v, z_score = 0, 0, 0
         
-        if not is_dex: # 👈 حماية: لا تطلب بيانات مؤسساتية لعملات الديكس من بايننس
-            try:
-                async with httpx.AsyncClient(timeout=10) as client:
+    if not is_dex: # 👈 حماية: لا تطلب بيانات مؤسساتية لعملات الديكس من بايننس
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
                     # 1. إجبار تحويل السعر الحالي إلى رقم عشري لتدمير أي نص قادم من الذاكرة
-                    safe_price = float(price)
+                safe_price = float(price)
                     
                     # 2. إجبار السعر القديم ليكون رقماً عشرياً أيضاً
-                    if len(df) > 3:
-                        safe_old_price = float(df["close"].iloc[-3])
-                    else:
-                        safe_old_price = safe_price
+                if len(df) > 3:
+                    safe_old_price = float(df["close"].iloc[-3])
+                else:
+                    safe_old_price = safe_price
 
-                    cvd_task = get_micro_cvd_absorption(f"{clean_sym}USDT", client, gate_interval)
-                    flow_task = get_institutional_orderflow(f"{clean_sym}USDT", client, minutes=15)
-                    futures_task = get_futures_liquidity(clean_sym, client, safe_price, safe_old_price)
-                    hollowness_task = measure_ob_hollowness(clean_sym, client, safe_price) # 👈 أضفنا هذا
+                cvd_task = get_micro_cvd_absorption(f"{clean_sym}USDT", client, gate_interval)
+                flow_task = get_institutional_orderflow(f"{clean_sym}USDT", client, minutes=15)
+                futures_task = get_futures_liquidity(clean_sym, client, safe_price, safe_old_price)
+                hollowness_task = measure_ob_hollowness(clean_sym, client, safe_price) # 👈 أضفنا هذا
                     
                     # نفذهم جميعاً في نفس اللحظة (صفر تأخير إضافي)
-                    (cvd_boost, cvd_sig, cvd_trend_val), (delta_usd, buy_v, sell_v), (fut_boost, fut_sig, funding_val), is_orderbook_hollow = await asyncio.gather(
+                (cvd_boost, cvd_sig, cvd_trend_val), (delta_usd, buy_v, sell_v), (fut_boost, fut_sig, funding_val), is_orderbook_hollow = await asyncio.gather(
                         cvd_task, flow_task, futures_task, hollowness_task
                     )
 
-                    z_score, _, _ = calculate_volume_zscore(df)
-            except Exception as e:
-                import traceback
-                print(f"⚠️ Data Fetch Error in Manual Analysis: {e}")
-                traceback.print_exc() # هذا السطر سيكشف لنا رقم السطر الخفي الذي يسبب المشكلة إذا ظهرت
-                cvd_sig, buy_v, sell_v, fut_sig, z_score = None, 0, 0, None, 0
-                delta_usd, funding_val = 0.0, 0.0
+                z_score, _, _ = calculate_volume_zscore(df)
+        except Exception as e:
+            import traceback
+            print(f"⚠️ Data Fetch Error in Manual Analysis: {e}")
+            traceback.print_exc() # هذا السطر سيكشف لنا رقم السطر الخفي الذي يسبب المشكلة إذا ظهرت
+            cvd_sig, buy_v, sell_v, fut_sig, z_score = None, 0, 0, None, 0
+            delta_usd, funding_val = 0.0, 0.0
 
         # 2. كشف الفخاخ وتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه بطريقة مؤسساتية (Quant Trend Unification)
         ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
