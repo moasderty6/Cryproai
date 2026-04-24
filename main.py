@@ -696,76 +696,52 @@ import json
 import asyncio
 import time
 
-async def detect_flash_spoofing_ws(symbol: str, duration: float = 4.0):
+async def detect_flash_spoofing_ws(symbol: str, duration: float = 12.0):
     """
-    يتصل بـ Binance للعملة المطلوبة فقط، يجمع البيانات بأمان، ثم يغلق الاتصال فوراً.
-    صالح للعمل مع جميع العملات بشكل ديناميكي دون حظر السيرفر.
+    نسخة مطورة: نافذة 12 ثانية مع تحليل الانحراف المعياري لكشف الـ Iceberg 
+    والتلاعب المؤسساتي العميق (Anti-Whale Algorithm).
     """
     clean_symbol = symbol.replace("USDT", "").lower() + "usdt"
-    ws_url = f"wss://stream.binance.com:9443/ws/{clean_symbol}@depth20@100ms"
+    # استخدام 250ms يعطينا عمقاً زمنياً أكبر دون استهلاك الرام
+    ws_url = f"wss://stream.binance.com:9443/ws/{clean_symbol}@depth20@250ms"
     
     frames = []
-    
     try:
-        # 🛡️ التعديل هنا: إغلاق الاتصال السريع ومنع التعليق
         async with websockets.connect(ws_url, ping_interval=None, close_timeout=1) as ws:
             start_time = time.time()
-            
             while time.time() - start_time < duration:
                 try:
-                    # 🛡️ إجبار الكود على عدم الانتظار أكثر من ثانية لكل رسالة
-                    msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                    msg = await asyncio.wait_for(ws.recv(), timeout=1.5)
                     data = json.loads(msg)
                     if not data.get('bids') or not data.get('asks'): continue
                     
-                    bids = np.array([[float(p), float(v)] for p, v in data['bids'][:10]])
-                    asks = np.array([[float(p), float(v)] for p, v in data['asks'][:10]])
-                    
-                    frames.append({'bids': bids, 'asks': asks})
-                
-                except asyncio.TimeoutError:
-                    continue # إذا تأخرت Binance، نكمل الدورة دون انهيار
-                except Exception:
-                    break # خروج آمن عند حدوث أخطاء غير متوقعة
-                    
-    except Exception as e:
-        return None # حماية من فشل الاتصال الجذري
+                    bids = np.array([[float(p), float(v)] for p, v in data['bids'][:15]])
+                    asks = np.array([[float(p), float(v)] for p, v in data['asks'][:15]])
+                    frames.append({'bids': bids, 'asks': asks, 'ts': time.time()})
+                except: break
+    except: return None
 
-    if len(frames) < 10: return None
+    if len(frames) < 15: return None
 
-    # --- 🧠 الرياضيات المؤسساتية الخاصة بك (كما هي بدون تغيير) ---
+    # --- حساب الثبات الإحصائي (Detection of Fake Walls) ---
+    bid_vols = [np.sum(f['bids'][:, 1]) for f in frames]
+    ask_vols = [np.sum(f['asks'][:, 1]) for f in frames]
+    
+    # إذا كان الفوليوم يظهر ويختفي بسرعة (انحراف معياري عالٍ)، فهو Spoofing مؤكد
+    bid_std = np.std(bid_vols) / (np.mean(bid_vols) + 1e-6)
+    ask_std = np.std(ask_vols) / (np.mean(ask_vols) + 1e-6)
+
+    # حساب الـ Imbalance النهائي
     last_frame = frames[-1]
-    bid_distances = last_frame['bids'][0, 0] - last_frame['bids'][:, 0]
-    ask_distances = last_frame['asks'][:, 0] - last_frame['asks'][0, 0]
-    
-    skewness = np.sum(ask_distances) / (np.sum(bid_distances) + 0.0001) 
-
-    ofi_score = 0
-    spoof_flags = 0
-    
-    for i in range(1, len(frames)):
-        prev_bids, curr_bids = frames[i-1]['bids'], frames[i]['bids']
-        prev_asks, curr_asks = frames[i-1]['asks'], frames[i]['asks']
-        
-        best_bid_prev, best_bid_curr = prev_bids[0, 0], curr_bids[0, 0]
-        best_ask_prev, best_ask_curr = prev_asks[0, 0], curr_asks[0, 0]
-        
-        bid_vol_prev, bid_vol_curr = np.sum(prev_bids[:, 1]), np.sum(curr_bids[:, 1])
-        ask_vol_prev, ask_vol_curr = np.sum(prev_asks[:, 1]), np.sum(curr_asks[:, 1])
-
-        e_bid = bid_vol_curr if best_bid_curr >= best_bid_prev else -bid_vol_prev if best_bid_curr < best_bid_prev else bid_vol_curr - bid_vol_prev
-        e_ask = ask_vol_curr if best_ask_curr <= best_ask_prev else -ask_vol_prev if best_ask_curr > best_ask_prev else ask_vol_curr - ask_vol_prev
-        ofi_score += (e_bid - e_ask)
-        
-        if abs(bid_vol_curr - bid_vol_prev) > (bid_vol_prev * 2.0): spoof_flags -= 1 
-        if abs(ask_vol_curr - ask_vol_prev) > (ask_vol_prev * 2.0): spoof_flags += 1 
+    skewness = np.sum(last_frame['asks'][:, 0] - last_frame['asks'][0, 0]) / \
+               (np.sum(last_frame['bids'][0, 0] - last_frame['bids'][:, 0]) + 1e-6)
 
     return {
-        "imbalance": round(ofi_score / len(frames), 2),
-        "skewness": round(skewness, 2), 
-        "is_bid_spoof": spoof_flags < -2, 
-        "is_ask_spoof": spoof_flags > 2,
-        "real_support": np.sum(last_frame['bids'][:, 0] * last_frame['bids'][:, 1])
+        "imbalance": round((np.mean(bid_vols) - np.mean(ask_vols)) / (np.mean(bid_vols) + np.mean(ask_vols) + 1e-6), 2),
+        "skewness": round(skewness, 2),
+        "is_bid_spoof": bid_std > 0.8, # تذبذب الجدران أكثر من 80% يعني وهمية
+        "is_ask_spoof": ask_std > 0.8,
+        "is_iceberg_buying": bid_std < 0.1 and np.mean(bid_vols) > np.mean(ask_vols) # ثبات الجدران مع ضغط شرائي
     }
 
 async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
@@ -1392,18 +1368,21 @@ async def analyze_radar_coin(c, client, market_regime, sem):
 
                 
                 # 3. سؤال الذكاء الاصطناعي عن رأيه (في مسار خلفي)
-                ai_probability = await asyncio.to_thread(predict_signal_sync, ml_features)
+                                # 3. سؤال الذكاء الاصطناعي (وضع التعليق والتعلم الصامت)
+                # ai_probability = await asyncio.to_thread(predict_signal_sync, ml_features) 
                 
-                # 4. قرار الفلترة المزدوج:
+                # إجبار البوت على تجاهل الـ AI حالياً والاعتماد على السكور الكلاسيكي المطور
+                ai_probability = -1.0 
+                
+                # 4. قرار الفلترة (سيعتمد دائماً على السكور الكلاسيكي لأن ai_probability = -1)
                 if ai_probability != -1.0:
-                    # 👈 تم رفع الخنق هنا لـ 75% كما اتفقنا سابقاً بدلاً من 60%
-                    if ai_probability < 75.0:
-                        return None # الذكاء الاصطناعي يرفض الصفقة رغم أن السكور الكلاسيكي عالي!
-                    final_score = ai_probability # نستبدل السكور القديم بنسبة النجاح الذكية
+                    if ai_probability < 75.0: return None
+                    final_score = ai_probability
                     ai_status = "Active 🧠"
                 else:
-                    final_score = score # نستخدم السكور القديم لأن الـ AI يجمع البيانات حالياً
-                    ai_status = "Learning ⏳"
+                    final_score = score # الاعتماد الكلي على معادلاتك الكمية الاحترافية
+                    ai_status = "Training & Learning ⏳"
+
                 
                 return {
                     "symbol": symbol, "price": price, "score": final_score,
