@@ -550,6 +550,68 @@ async def detect_btc_relative_strength(symbol: str, client: httpx.AsyncClient):
         
     except Exception:
         return 0.0
+def calculate_vwap_zscore(df, window=24):
+    """
+    محرك كشف الفومو (Late FOMO) باستخدام الانحراف المعياري للسعر عن VWAP
+    window=24 تعني أننا نحسب الانحراف لآخر 24 ساعة (دورة يومية كاملة)
+    """
+    # 1. حساب السعر النموذجي (Typical Price)
+    typical_price = (df['high'] + df['low'] + df['close']) / 3
+    pv = typical_price * df['volume']
+    
+    # 2. حساب الـ VWAP المتحرك
+    rolling_vol = df['volume'].rolling(window=window, min_periods=1).sum()
+    rolling_pv = pv.rolling(window=window, min_periods=1).sum()
+    local_vwap = rolling_pv / rolling_vol
+    
+    # 3. حساب الانحراف المعياري للسعر
+    rolling_std = typical_price.rolling(window=window, min_periods=1).std(ddof=0)
+    
+    # 4. استخراج Z-Score للسعر
+    # (السعر الحالي - VWAP) / الانحراف المعياري
+    vwap_zscore = (df['close'] - local_vwap) / (rolling_std + 1e-8) # 1e-8 لمنع القسمة على صفر
+    
+    return float(vwap_zscore.iloc[-1]), float(local_vwap.iloc[-1])
+async def measure_ob_hollowness(symbol: str, client: httpx.AsyncClient, current_price: float):
+    """
+    يكتشف الجدران الوهمية (Hollow Orderbook).
+    إذا كانت السيولة في أول 1% ضخمة، لكن لا يوجد شيء يحميها حتى 5%، فهذا فخ سيولة.
+    """
+    clean_sym = symbol.replace("USDT", "") + "USDT"
+    url = f"{get_random_binance_base()}/api/v3/depth?symbol={clean_sym}&limit=500"
+    
+    try:
+        await binance_rate_limit_event.wait()
+        res = await client.get(url, timeout=3.0)
+        if res.status_code != 200: return False # في حال الفشل نمررها لتجنب تعطيل الرادار
+        
+        data = res.json()
+        
+        inner_bid_vol = 0.0 # حائط الصد الأول (0% إلى 1% تحت السعر)
+        outer_bid_vol = 0.0 # العمق الداعم (1% إلى 5% تحت السعر)
+        
+        for b in data.get('bids', []):
+            p, v = float(b[0]), float(b[1])
+            drop_pct = (current_price - p) / current_price
+            
+            if drop_pct <= 0.01:
+                inner_bid_vol += (p * v)
+            elif drop_pct <= 0.05:
+                outer_bid_vol += (p * v)
+                
+        # إذا كان العمق فارغاً تماماً
+        if outer_bid_vol == 0: return True 
+        
+        # نسبة الهشاشة: إذا كان الجدار الأمامي أكبر من العمق الداعم بـ 3 أضعاف، فهو جدار وهمي (Spoof)
+        hollowness_ratio = inner_bid_vol / outer_bid_vol
+        
+        if hollowness_ratio > 3.0:
+            return True # 🚨 تحذير: أوردر بوك هش ومفرغ من الداخل!
+            
+        return False
+        
+    except Exception:
+        return False
 
 async def get_institutional_orderflow(symbol, client, minutes=15):
     """ يسحب الصفقات المجمعة لآخر 15 دقيقة """
@@ -1068,7 +1130,9 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                         # ====================================================================
             # 🛡️ THE RUTHLESS FILTER: Liquidity Absorption Ratio (LAR) & Spot Lead
             # ====================================================================
-            
+            # أضف هذا السطر أينما كنت تحسب Z-Score للفوليوم
+            current_vwap_z, current_vwap_price = calculate_vwap_zscore(df, window=24)
+
             # 1. حساب نسبة التذبذب للشمعة الحالية (Price Spread Percentage)
             current_high = df["high"].iloc[-1]
             current_low = df["low"].iloc[-1]
@@ -1297,14 +1361,28 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             current_cvd = float(locals().get('micro_cvd_trend', 0.0)) * price
             current_imbalance = float(locals().get('depth_data', {}).get('imbalance', 0) if locals().get('depth_data') else 0.0)
             
-                   # ==========================================
-            # 🛡️ الفيتو الإجباري المطور (Anti-Spoofing & Dead Market Veto)
+            # ==========================================
+            # 🛡️ الفيتو الإجباري المطور (Institutional Veto)
             # ==========================================
             
-            # 1. فخ الجدران الوهمية (Spoofing Trap):
+            # 1. كشف الفومو وجني الأرباح (Late FOMO / Mean Reversion)
+            if current_vwap_z > 2.8:
+                tags.append("Late_FOMO_Pump_VWAP")
+                print(f"🗑️ {symbol} - مرفوض: السعر انحرف عن VWAP بأكثر من 2.8 (منطقة جني أرباح)")
+                return None 
+                
+            # 2. كشف الفراغ السيولي والهشاشة (Liquidity Void)
+            # 🟢 التعديل الأمني هنا لتجنب انهيار الكود مع عملات الـ DEX
+            if locals().get('is_orderbook_hollow', False) and current_cvd < 0:
+                tags.append("Liquidity_Void_Trap")
+                print(f"🗑️ {symbol} - مرفوض: جدران شراء وهمية والعمق الداعم فارغ تماماً!")
+                return None 
+
+            # 3. فخ الجدران الوهمية (Spoofing Trap):
             if global_ob_pressure > 1.1 and current_cvd < 0:
                 tags.append("Spoofing_Distribution_Trap")
                 return None 
+
 
             # 2. انعدام الشراء الحقيقي:
             if current_cvd <= 0 and current_imbalance <= 0.1 and global_ob_pressure < 1.1:
@@ -2926,13 +3004,14 @@ async def run_analysis(cb: types.CallbackQuery):
 
                     cvd_task = get_micro_cvd_absorption(f"{clean_sym}USDT", client, gate_interval)
                     flow_task = get_institutional_orderflow(f"{clean_sym}USDT", client, minutes=15)
-                    
-                    # 3. إرسال الأرقام المحمية (safe) للدالة
                     futures_task = get_futures_liquidity(clean_sym, client, safe_price, safe_old_price)
+                    hollowness_task = measure_ob_hollowness(clean_sym, client, safe_price) # 👈 أضفنا هذا
                     
-                    (cvd_boost, cvd_sig, cvd_trend_val), (delta_usd, buy_v, sell_v), (fut_boost, fut_sig, funding_val) = await asyncio.gather(
-                        cvd_task, flow_task, futures_task
+                    # نفذهم جميعاً في نفس اللحظة (صفر تأخير إضافي)
+                    (cvd_boost, cvd_sig, cvd_trend_val), (delta_usd, buy_v, sell_v), (fut_boost, fut_sig, funding_val), is_orderbook_hollow = await asyncio.gather(
+                        cvd_task, flow_task, futures_task, hollowness_task
                     )
+
                     z_score, _, _ = calculate_volume_zscore(df, window=720)
             except Exception as e:
                 import traceback
