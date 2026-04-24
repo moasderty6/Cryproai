@@ -1261,6 +1261,9 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             depth_data = await detect_flash_spoofing_ws(symbol, duration=4.0)
             global_ob_pressure = await get_aggregated_orderbook(client, symbol)
             
+            # 👈 السطر الجديد الذي سيقوم بفحص هشاشة الأوردر بوك وتخزين النتيجة
+            is_orderbook_hollow = await measure_ob_hollowness(symbol, client, price)
+            
             if depth_data:
                 imbalance = depth_data.get('imbalance', 0)
                 ob_raw += (imbalance * 40) # Imbalance يضيف أو يخصم بطريقة سلسة
