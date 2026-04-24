@@ -1323,21 +1323,26 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             current_cvd = float(locals().get('micro_cvd_trend', 0.0)) * price
             current_imbalance = float(locals().get('depth_data', {}).get('imbalance', 0) if locals().get('depth_data') else 0.0)
             
-            # ==========================================
+                   # ==========================================
             # 🛡️ الفيتو الإجباري المطور (Anti-Spoofing & Dead Market Veto)
             # ==========================================
             
-            # 1. فخ الجدران الوهمية (Spoofing Trap - GALA Fix): 
-            # الأوردر بوك إيجابي (حيتان تضع جدران شراء وهمية) لكن الشراء الحقيقي ماركت (CVD) سلبي = تصريف مخفي.
+            # 1. فخ الجدران الوهمية (Spoofing Trap):
             if global_ob_pressure > 1.1 and current_cvd < 0:
                 tags.append("Spoofing_Distribution_Trap")
                 return None 
 
-            # 2. انعدام الشراء الحقيقي (العملات الميتة):
-            # لا يوجد CVD، ولا يوجد Imbalance لحظي، ولا يوجد ضغط من المنصات الثمانية.
+            # 2. انعدام الشراء الحقيقي:
             if current_cvd <= 0 and current_imbalance <= 0.1 and global_ob_pressure < 1.1:
                 return None 
 
+            # 3. فخ السكاكين الساقطة (Falling Knife / Pump & Dump Trap) - (GALA FIX):
+            # إذا كان السعر في ترند هابط (تحت متوسط 200) وزخم السوق ميت تماماً (ADX < 20)،
+            # فإن أي انفجار فوليوم هو مجرد "فخ" أو ارتداد مؤقت قبل انهيار جديد.
+            ema200_veto = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else df["close"].ewm(span=50).mean().iloc[-1]
+            if price < ema200_veto and current_adx < 20.0 and current_z > 2.0:
+                tags.append("Dead_Trend_Pump_Trap")
+                return None 
 
             # ==========================================
             # 🛡️ استرجاع شروط القناص النهائي والمتغيرات المفقودة
