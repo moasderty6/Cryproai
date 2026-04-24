@@ -3067,15 +3067,21 @@ async def run_analysis(cb: types.CallbackQuery):
                     else:
                         safe_old_price = safe_price
 
-                    cvd_task = get_micro_cvd_absorption(f"{clean_sym}USDT", client, gate_interval)
-                    flow_task = get_institutional_orderflow(f"{clean_sym}USDT", client, minutes=15)
-                    futures_task = get_futures_liquidity(clean_sym, client, safe_price, safe_old_price)
-                    hollowness_task = measure_ob_hollowness(clean_sym, client, safe_price) # 👈 أضفنا هذا
-                    
-                    # نفذهم جميعاً في نفس اللحظة (صفر تأخير إضافي)
-                    (cvd_boost, cvd_sig, cvd_trend_val), (delta_usd, buy_v, sell_v, limit_abs_signal), (fut_boost, fut_sig, funding_val), is_orderbook_hollow = await asyncio.gather(
-                        cvd_task, flow_task, futures_task, hollowness_task
-                    )
+                cvd_task = get_micro_cvd_absorption(f"{clean_sym}USDT", client, gate_interval)
+                flow_task = get_institutional_orderflow(f"{clean_sym}USDT", client, minutes=15)
+                futures_task = get_futures_liquidity(clean_sym, client, safe_price, safe_old_price)
+                
+                # 👈 استخدام المحرك الكمي الجديد بدلاً من الدالة المحذوفة
+                depth_task = analyze_orderbook_spoofing_instant(clean_sym, client, safe_price) 
+
+                # نفذهم جميعاً في نفس اللحظة (صفر تأخير إضافي)
+                (cvd_boost, cvd_sig, cvd_trend_val), (delta_usd, buy_v, sell_v, limit_abs_signal), (fut_boost, fut_sig, funding_val), depth_data = await asyncio.gather(
+                    cvd_task, flow_task, futures_task, depth_task
+                )
+                
+                # استخراج البيانات من قاموس المحرك الجديد بأمان
+                is_orderbook_hollow = depth_data.get('is_hollow', False) if isinstance(depth_data, dict) else False
+                is_spoofed = depth_data.get('is_spoofed', False) if isinstance(depth_data, dict) else False
 
 
                     z_score, _, _ = calculate_volume_zscore(df, window=720)
