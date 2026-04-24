@@ -3084,7 +3084,7 @@ async def run_analysis(cb: types.CallbackQuery):
                 is_spoofed = depth_data.get('is_spoofed', False) if isinstance(depth_data, dict) else False
 
 
-                    z_score, _, _ = calculate_volume_zscore(df, window=720)
+                z_score, _, _ = calculate_volume_zscore(df, window=720)
             except Exception as e:
                 import traceback
                 print(f"⚠️ Data Fetch Error in Manual Analysis: {e}")
