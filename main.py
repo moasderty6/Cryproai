@@ -498,14 +498,12 @@ async def get_micro_cvd_absorption(symbol, client, base_interval="1m"):
     return 0.0, None, cvd_trend # 👈 إرجاع القيمة بدلاً من الأصفار المطلقة
 async def detect_btc_relative_strength(symbol: str, client: httpx.AsyncClient):
     """
-    محرك القوة النسبية الحقيقية (Decoupling)
-    يصطاد العملات التي يشتريها الحيتان بينما ينهار البيتكوين.
+    [UPGRADED] Statistical Beta Decoupling Engine
     """
     clean_sym = symbol.replace("USDT", "") + "USDT"
     
-    # نجلب آخر 4 شموع على فريم 15 دقيقة (تعادل آخر ساعة) للعملة وللبيتكوين
-    alt_url = f"{get_random_binance_base()}/api/v3/klines?symbol={clean_sym}&interval=15m&limit=4"
-    btc_url = f"{get_random_binance_base()}/api/v3/klines?symbol=BTCUSDT&interval=15m&limit=4"
+    alt_url = f"{get_random_binance_base()}/api/v3/klines?symbol={clean_sym}&interval=1m&limit=60"
+    btc_url = f"{get_random_binance_base()}/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=60"
     
     try:
         alt_res, btc_res = await asyncio.gather(
@@ -513,43 +511,33 @@ async def detect_btc_relative_strength(symbol: str, client: httpx.AsyncClient):
             client.get(btc_url, timeout=5.0)
         )
         
-        if alt_res.status_code != 200 or btc_res.status_code != 200:
-            return 0.0
+        if alt_res.status_code != 200 or btc_res.status_code != 200: return 0.0
             
         alt_data, btc_data = alt_res.json(), btc_res.json()
-        if len(alt_data) < 4 or len(btc_data) < 4:
-            return 0.0
+        if len(alt_data) < 60 or len(btc_data) < 60: return 0.0
             
-        # حساب نسبة التغير في آخر ساعة (إغلاق الشمعة الحالية مقارنة بافتتاح الشمعة الأولى)
-        alt_open = float(alt_data[0][1])
-        alt_close = float(alt_data[-1][4])
-        alt_change = ((alt_close - alt_open) / alt_open) * 100
+        alt_returns = pd.Series([float(c[4]) for c in alt_data]).pct_change().dropna()
+        btc_returns = pd.Series([float(c[4]) for c in btc_data]).pct_change().dropna()
         
-        btc_open = float(btc_data[0][1])
-        btc_close = float(btc_data[-1][4])
-        btc_change = ((btc_close - btc_open) / btc_open) * 100
+        # Calculate rolling Beta
+        covariance = alt_returns.cov(btc_returns)
+        btc_variance = btc_returns.var()
         
-        # الفارق بين أداء العملة وأداء البيتكوين
-        divergence = alt_change - btc_change
+        beta = covariance / btc_variance if btc_variance != 0 else 1.0
+        btc_total_change = btc_returns.sum() * 100
+        alt_total_change = alt_returns.sum() * 100
+
+        # Institutional Logic: Decoupling during a dump
+        if btc_total_change < -0.5 and alt_total_change > 0:
+            if beta < 0.5: # True decoupling
+                return 10.0 # Massive hidden buyer
+        elif btc_total_change > 0.5 and alt_total_change < -0.5:
+             if beta < 0.5:
+                return -8.0 # Hidden distribution
+                
+        return 2.0 if beta > 1.2 and btc_total_change > 0 else 0.0
         
-        # 🎯 نظام توزيع النقاط الدقيق
-        if btc_change < -0.5 and alt_change > 0.5:
-            # البيتكوين ينزف والعملة خضراء! (امتصاص مؤسساتي مرعب قبل الانفجار)
-            return 8.5
-        elif btc_change > 0.5 and alt_change < -0.5:
-            # البيتكوين يصعد والعملة تنزف (تصريف مخفي، الحيتان تستغل صعود السوق للبيع)
-            return -6.5
-        elif divergence > 2.0:
-            # العملة تتفوق على أداء البيتكوين بـ 2% في ساعة واحدة (زخم قوي)
-            return 4.5
-        elif divergence < -2.0:
-            # العملة أضعف بكثير من البيتكوين (عملة ميتة حالياً)
-            return -3.5
-            
-        return 0.0
-        
-    except Exception:
-        return 0.0
+    except Exception: return 0.0
 def calculate_vwap_zscore(df, window=24):
     """
     محرك كشف الفومو (Late FOMO) باستخدام الانحراف المعياري للسعر عن VWAP
@@ -614,42 +602,66 @@ async def measure_ob_hollowness(symbol: str, client: httpx.AsyncClient, current_
         return False
 
 async def get_institutional_orderflow(symbol, client, minutes=15):
-    """ يسحب الصفقات المجمعة لآخر 15 دقيقة """
+    """ 
+    [UPGRADED] Tick-Level Footprint & Limit Absorption Detection 
+    """
     import time
     end_time = int(time.time() * 1000)
     start_time = end_time - (minutes * 60 * 1000)
     
     try:
-        # 🛑 حارس حماية الـ API
         await binance_rate_limit_event.wait()
-        
         base_url = get_random_binance_base()
         res = await client.get(f"{base_url}/api/v3/aggTrades", params={
             "symbol": symbol,
             "startTime": start_time,
             "endTime": end_time,
-            "limit": 1000  # 👈 التعديل: إضافة اللييمت ضروري جداً لبايننس
+            "limit": 1000 
         }, timeout=5.0)
-# ... يكمل باقي الكود كما هو ...
         
         if res.status_code == 200:
             trades = res.json()
-            if not trades: return 0.0, 0.0, 0.0 # إذا كانت العملة ميتة
+            if not trades: return 0.0, 0.0, 0.0, None
             
             buy_vol = 0.0
             sell_vol = 0.0
+            cvd_array = []
+            prices = []
+            current_cvd = 0.0
+
             for t in trades:
-                amount = float(t['q']) * float(t['p'])
-                if t['m']: sell_vol += amount
-                else: buy_vol += amount
+                price = float(t['p'])
+                amount = float(t['q']) * price
+                prices.append(price)
+
+                if t['m']: # Seller is maker (Aggressive Sell)
+                    sell_vol += amount
+                    current_cvd -= amount
+                else:      # Buyer is maker (Aggressive Buy)
+                    buy_vol += amount
+                    current_cvd += amount
+                
+                cvd_array.append(current_cvd)
                     
             delta = buy_vol - sell_vol
-            return delta, buy_vol, sell_vol
-        else:
-            print(f"⚠️ AggTrades Failed: {res.status_code} - {res.text}")
+            
+            # --- Limit Absorption Engine ---
+            price_series = pd.Series(prices)
+            price_range_pct = (price_series.max() - price_series.min()) / price_series.min()
+            
+            signal = None
+            total_vol = buy_vol + sell_vol
+            
+            # If price is ranging (< 0.5% movement) but CVD is exploding upwards
+            if price_range_pct <= 0.005 and delta > (total_vol * 0.25):
+                signal = "Limit_Absorption"
+            
+            return delta, buy_vol, sell_vol, signal
+            
     except Exception as e:
         print(f"⚠️ Flow Error: {e}")
-    return 0.0, 0.0, 0.0
+    return 0.0, 0.0, 0.0, None
+
 
 async def detect_spot_perp_divergence(symbol: str, client: httpx.AsyncClient):
     clean_sym = symbol.replace("USDT", "") + "USDT"
@@ -760,11 +772,9 @@ import time
 
 async def detect_flash_spoofing_ws(symbol: str, duration: float = 12.0):
     """
-    نسخة مطورة: نافذة 12 ثانية مع تحليل الانحراف المعياري لكشف الـ Iceberg 
-    والتلاعب المؤسساتي العميق (Anti-Whale Algorithm).
+    [UPGRADED] True Order Flow Imbalance (OFI) & Delta Tracking
     """
     clean_symbol = symbol.replace("USDT", "").lower() + "usdt"
-    # استخدام 250ms يعطينا عمقاً زمنياً أكبر دون استهلاك الرام
     ws_url = f"wss://stream.binance.com:9443/ws/{clean_symbol}@depth20@250ms"
     
     frames = []
@@ -777,34 +787,45 @@ async def detect_flash_spoofing_ws(symbol: str, duration: float = 12.0):
                     data = json.loads(msg)
                     if not data.get('bids') or not data.get('asks'): continue
                     
-                    bids = np.array([[float(p), float(v)] for p, v in data['bids'][:15]])
-                    asks = np.array([[float(p), float(v)] for p, v in data['asks'][:15]])
-                    frames.append({'bids': bids, 'asks': asks, 'ts': time.time()})
+                    bids = np.array([[float(p), float(v)] for p, v in data['bids'][:5]]) # Focus on top 5 levels for true OFI
+                    asks = np.array([[float(p), float(v)] for p, v in data['asks'][:5]])
+                    frames.append({'bids': bids, 'asks': asks})
                 except: break
     except: return None
 
-    if len(frames) < 15: return None
+    if len(frames) < 5: return None
 
-    # --- حساب الثبات الإحصائي (Detection of Fake Walls) ---
+    # --- Advanced OFI Engine ---
+    ofi_score = 0
+    for i in range(1, len(frames)):
+        prev_bid_vol = np.sum(frames[i-1]['bids'][:, 1])
+        curr_bid_vol = np.sum(frames[i]['bids'][:, 1])
+        prev_ask_vol = np.sum(frames[i-1]['asks'][:, 1])
+        curr_ask_vol = np.sum(frames[i]['asks'][:, 1])
+        
+        # OFI Logic: Bid additions or Ask consumptions add to positive OFI
+        delta_bid = curr_bid_vol - prev_bid_vol
+        delta_ask = curr_ask_vol - prev_ask_vol
+        
+        if delta_bid > 0: ofi_score += 1
+        if delta_ask < 0: ofi_score += 1
+        if delta_bid < 0: ofi_score -= 1
+        if delta_ask > 0: ofi_score -= 1
+
     bid_vols = [np.sum(f['bids'][:, 1]) for f in frames]
     ask_vols = [np.sum(f['asks'][:, 1]) for f in frames]
     
-    # إذا كان الفوليوم يظهر ويختفي بسرعة (انحراف معياري عالٍ)، فهو Spoofing مؤكد
     bid_std = np.std(bid_vols) / (np.mean(bid_vols) + 1e-6)
     ask_std = np.std(ask_vols) / (np.mean(ask_vols) + 1e-6)
 
-    # حساب الـ Imbalance النهائي
-    last_frame = frames[-1]
-    skewness = np.sum(last_frame['asks'][:, 0] - last_frame['asks'][0, 0]) / \
-               (np.sum(last_frame['bids'][0, 0] - last_frame['bids'][:, 0]) + 1e-6)
-
     return {
         "imbalance": round((np.mean(bid_vols) - np.mean(ask_vols)) / (np.mean(bid_vols) + np.mean(ask_vols) + 1e-6), 2),
-        "skewness": round(skewness, 2),
-        "is_bid_spoof": bid_std > 0.8, # تذبذب الجدران أكثر من 80% يعني وهمية
+        "ofi_trend": ofi_score, # + Score = Bulls adding liquidity, - Score = Bears adding liquidity
+        "is_bid_spoof": bid_std > 0.8,
         "is_ask_spoof": ask_std > 0.8,
-        "is_iceberg_buying": bid_std < 0.1 and np.mean(bid_vols) > np.mean(ask_vols) # ثبات الجدران مع ضغط شرائي
+        "is_iceberg_buying": bid_std < 0.1 and np.mean(bid_vols) > np.mean(ask_vols)
     }
+
 
 async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
     """
@@ -1262,27 +1283,43 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             # ----------------------------------------------------------------
             # د. تقييم المشتقات والحيتان (Derivatives & Whales)
             # ----------------------------------------------------------------
+                        # ----------------------------------------------------------------
+            # د. تقييم المشتقات وتصيّد التصفية (Derivatives & Squeeze Mechanics)
+            # ----------------------------------------------------------------
             deriv_raw = 50.0
             old_price_val = df["close"].iloc[-3] if len(df) > 3 else df["open"].iloc[0]
+            
+            # Fetching the upgraded Institutional Tick Data & OFI
+            tick_delta, tick_buy, tick_sell, limit_abs_signal = await get_institutional_orderflow(f"{symbol}USDT", client)
             _, futures_signal, funding_val = await get_futures_liquidity(symbol, client, price, old_price_val)
-# حساب السيولة التقريبية بالدولار لآخر 24 ساعة من الشموع (بدون API إضافي)
+            
             approx_24h_vol_usd = df["volume"].tail(24).sum() * price 
             whale_score = await detect_real_whale_trades(symbol, client, approx_24h_vol_usd)
 
+            # THE SQUEEZE ENGINE (Spot Premium > Perp Premium + High OI)
+            is_spot_premium = spot_lead_score > 3.0
+            is_perp_dumping = futures_signal == "OI_Rising" and tick_delta < 0 and funding_val < -0.0005
             
-            if futures_signal == "OI_Rising": deriv_raw += 30; tags.append("OI_Rising")
-            elif futures_signal == "Short_Covering": deriv_raw -= 30; tags.append("Short_Covering")
-            
-            if funding_val < -0.0005: 
-                deriv_raw += 20; tags.append("Short_Squeeze")
+            if limit_abs_signal == "Limit_Absorption":
+                tags.append("Limit_Absorption")
+                scores["cvd"] = min(scores["cvd"] + 30, 100) # Heavy boost for tick-level limit absorption
+                
+            if is_spot_premium and is_perp_dumping:
+                tags.append("Short_Squeeze_Imminent")
+                deriv_raw += 45.0 # Max out derivatives score
+            elif futures_signal == "OI_Rising": 
+                deriv_raw += 15.0; tags.append("OI_Rising")
+            elif futures_signal == "Short_Covering": 
+                deriv_raw -= 20.0; tags.append("Short_Covering")
                 
             if whale_score > 0:
                 deriv_raw += min((whale_score / 10.0) * 30, 30) # أقصاها 30 نقطة إضافية
             else:
                 deriv_raw *= 0.6 # ضريبة غياب سيولة الحيتان الكبيرة
-                            # (أضف هذا قبل سطر: scores["deriv"] = max(0, min(deriv_raw, 100)))            # نستخدم المتغير الذي جلبناه في بداية الدالة لتوفير استهلاك الـ API
+                
+            # تطبيق متغير القوة النسبية للسبوت على السكور النهائي
             div_score = spot_lead_score 
-            deriv_raw += (div_score * 2.5) # نضربها في 2.5 لتتناسب مع مقياس المئة نقطة
+            deriv_raw += (div_score * 2.5) 
 
             scores["deriv"] = max(0, min(deriv_raw, 100))
 
