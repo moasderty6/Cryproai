@@ -1103,36 +1103,38 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             current_low = df["low"].iloc[-1]
             candle_spread_pct = ((current_high - current_low) / current_low) * 100
             
-            # 2. حساب مؤشر LAR (مع حماية من القسمة على صفر)
-            # كلما ارتفع الرقم، كان الانضغاط والامتصاص أعنف
+            # 2. حساب مؤشر LAR (مع حماية من القسمة على صفر)            # 2. حساب مؤشر LAR (عملية رياضية سريعة جداً محلياً)
             lar_score = current_z / (candle_spread_pct + 0.001)
 
-            # 3. جلب نتيجة الفارق بين السبوت والفيوتشرز (من دالتك الموجودة مسبقاً)
-            spot_lead_score = await detect_spot_perp_divergence(symbol, client)
-
-            # 🚫 جدار الإعدام (VETO CONDITIONS):
+            # ==========================================================
+            # 🛑 المرحلة الأولى: جدار الإعدام الرياضي (Fail-Fast Veto)
+            # ==========================================================
             
             # أ. الهروب من الفومو (Late FOMO Veto):
-            # فوليوم عالي جداً (Z-Score > 2.5) وشمعة انفجرت بأكثر من 4%
             if current_z > 2.5 and candle_spread_pct > 4.0:
                 tags.append("Late_FOMO_Pump")
-                return None # السعر طار، اتركها للقطيع
-                
-            # ب. فخ التصفية (Fake Breakout / Futures Manipulation):
-            # السعر يصعد ولكن حيتان السبوت تبيع (Spot dumping, Futures pumping)
-            if spot_lead_score < -3.0:
-                tags.append("Spot_Dumping_Fakeout")
-                return None # تلاعب من صناع السوق لتصفية الشورت
-
-            # ج. فلتر العملات الميتة (Dead Asset Veto):            # ج. فلتر العملات الميتة (Dead Asset Veto):
-            if lar_score < 0.8 and current_z < 1.5:
-                print(f"🗑️ {symbol} - تم القتل المسبق (Z-Score ضعيف)") # لكي ترى أن الرادار يعمل
                 return None 
 
+            # ب. فلتر العملات الميتة (Dead Asset Veto):
+            if lar_score < 0.8 and current_z < 1.5:
+                print(f"🗑️ {symbol} - قُتلت مبكراً (انعدام الامتصاص)") 
+                return None 
 
-            # 🎯 إذا نجت العملة من هذه المجزرة، نعطيها Tag إنجليزي لتغذية الـ AI
+            # إضافة الـ Tag للعملات القوية
             if lar_score >= 2.0 and current_z > 1.5:
                 tags.append("High_Liquidity_Absorption")
+
+            # ==========================================================
+            # 🟢 المرحلة الثانية: فحص المشتقات (للعملات الناجية فقط)
+            # ==========================================================
+            # لم نصل إلى هذا السطر إلا والعملة تستحق دفع ثمن الـ API Call
+            
+            spot_lead_score = await detect_spot_perp_divergence(symbol, client)
+            
+            if spot_lead_score < -3.0:
+                tags.append("Spot_Dumping_Fakeout")
+                return None # تلاعب من صناع السوق
+
 
             # 1. مصفوفة الأوزان الديناميكية بناءً على بيئة السوق (Market Regime)
             # المجموع دائماً 1.0 (أي 100%)
@@ -1619,7 +1621,10 @@ async def ai_opportunity_radar(pool):
                         })
                 
                 # الفرز بناءً على أضيق نسبة تغير في السعر (من الأقرب للصفر) لاصطياد العملات المضغوطة
-                coins = sorted(coins, key=lambda x: abs(float(x.get("priceChangePercent", 0))))[:200]
+                                # الفرز بناءً على أعلى سيولة دولاريه (Volume) لاصطياد أهداف الحيتان الحقيقية
+                # نترك كشف الانضغاط للتحليل العميق لكي لا ننخدع بالتذبذب الوهمي (Whipsaws)
+                coins = sorted(coins, key=lambda x: float(x.get("volume", 0)), reverse=True)[:300]
+
 
                 
                 # ✅ التعديل الجديد: إرسال الطلبات بالتدريج لحماية الـ API من الحظر
