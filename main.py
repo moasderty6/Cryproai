@@ -1338,9 +1338,9 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             is_macro_downtrend = price < ema200_val
             current_regime_trend = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
 
-            required_score = 65.0 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 55.0
-            required_confluence = 2 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 1
-            # ==========================================
+                        # 🛡️ رفع معايير القبول لمستوى صناديق التحوط (لن يمر سوى 3 إلى 5 عملات يومياً كحد أقصى)
+            required_score = 85.0 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 80.0
+            required_confluence = 3 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 2
 
             # إرجاع النتيجة فقط إذا تحقق السكور + الإجماع الفني + اجتياز الفيتو
             if score >= required_score and confluence_count >= required_confluence:    
