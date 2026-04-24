@@ -220,9 +220,11 @@ async def ai_trainer_worker(pool):
     while True:
         try:
             async with pool.acquire() as conn:
-                # جلب البيانات التي تم الحكم عليها (0 فاشلة، 1 ناجحة)
+                # جلب البيانات التي تم الحكم عليها (0 فاشلة، 1 ناجحة)                # 🟢 جلب الـ 13 بُعد بالكامل ليتطابق مع نموذج XGBoost
                 records = await conn.fetch("""
-                    SELECT z_score, cvd, imbalance, adx, rsi, whale_inflow_score, label
+                    SELECT z_score, cvd, imbalance, adx, rsi, whale_inflow_score,
+                           ob_skewness, micro_volatility, cvd_divergence, funding_rate,
+                           volume_ratio, sp500_trend, sentiment_score, label
                     FROM ml_training_data 
                     WHERE label IN (0, 1)
                 """)
