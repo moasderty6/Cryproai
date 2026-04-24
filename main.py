@@ -273,8 +273,12 @@ async def get_recent_orderflow_delta(symbol, client, limit=500):
     بديل سريع وآمن للـ WebSocket: يقرأ آخر 500 صفقة تمت لتحديد الشراء/البيع العدواني
     """
     try:
+        # 🛑 حارس حماية الـ API
+        await binance_rate_limit_event.wait()
+        
         base_url = get_random_binance_base()
         res = await client.get(f"{base_url}/api/v3/trades", params={"symbol": symbol, "limit": limit})
+# ... يكمل باقي الكود كما هو ...
 
         if res.status_code == 200:
             trades = res.json()
@@ -445,6 +449,9 @@ async def get_micro_cvd_absorption(symbol, client, base_interval="1m"):
     """
     cvd_trend = 0.0 
     try:
+        # 🛑 حارس حماية الـ API
+        await binance_rate_limit_event.wait()
+        
         # إذا كان الفريم كبير (يومي/أسبوعي)، نوسع عدسة الـ CVD لتقرأ فريم 15 دقيقة
         cvd_tf = "15m" if base_interval in ["1d", "1w"] else "1m"
         limit = 200 if cvd_tf == "15m" else 120
@@ -453,6 +460,7 @@ async def get_micro_cvd_absorption(symbol, client, base_interval="1m"):
         res = await client.get(f"{base_url}/api/v3/klines", params={
             "symbol": symbol, "interval": cvd_tf, "limit": limit
         }, timeout=5.0)
+# ... يكمل باقي الكود كما هو ...
 
         
         if res.status_code == 200:
@@ -546,6 +554,9 @@ async def get_institutional_orderflow(symbol, client, minutes=15):
     start_time = end_time - (minutes * 60 * 1000)
     
     try:
+        # 🛑 حارس حماية الـ API
+        await binance_rate_limit_event.wait()
+        
         base_url = get_random_binance_base()
         res = await client.get(f"{base_url}/api/v3/aggTrades", params={
             "symbol": symbol,
@@ -553,6 +564,7 @@ async def get_institutional_orderflow(symbol, client, minutes=15):
             "endTime": end_time,
             "limit": 1000  # 👈 التعديل: إضافة اللييمت ضروري جداً لبايننس
         }, timeout=5.0)
+# ... يكمل باقي الكود كما هو ...
         
         if res.status_code == 200:
             trades = res.json()
@@ -579,10 +591,14 @@ async def detect_spot_perp_divergence(symbol: str, client: httpx.AsyncClient):
     fapi_url = f"https://fapi.binance.com/fapi/v1/klines?symbol={clean_sym}&interval=1m&limit=60"
     
     try:
+        # 🛑 حارس حماية الـ API (قبل إرسال الطلبات المزدوجة)
+        await binance_rate_limit_event.wait()
+        
         spot_res, fapi_res = await asyncio.gather(
             client.get(spot_url, timeout=5.0),
             client.get(fapi_url, timeout=5.0)
         )
+# ... يكمل باقي الكود كما هو ...
         
         if spot_res.status_code != 200 or fapi_res.status_code != 200:
             return 0.0
@@ -953,10 +969,14 @@ async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_
         oi_url = f"{fapi_base}/futures/data/openInterestHist?symbol={pair}&period=15m&limit=2"
         funding_url = f"{fapi_base}/fapi/v1/premiumIndex?symbol={pair}"
 
+        # 🛑 حارس حماية الـ API (قبل إرسال الطلبات المزدوجة)
+        await binance_rate_limit_event.wait()
+
         oi_res, fund_res = await asyncio.gather(
             client.get(oi_url, timeout=3.0),
             client.get(funding_url, timeout=3.0)
         )
+# ... يكمل باقي الكود كما هو ...
 
         if oi_res.status_code == 200 and fund_res.status_code == 200:
             oi_data = oi_res.json()
