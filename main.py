@@ -3063,8 +3063,13 @@ async def run_analysis(cb: types.CallbackQuery):
         classic_trend = "Bullish" if ema20 > ema50 else "Bearish"
         
         final_trend_dir = classic_trend
+        
+        # إجبار تحويل الفوليوم إلى أرقام لتدمير أي نصوص قادمة من الـ API
+        df["volume"] = pd.to_numeric(df["volume"], errors='coerce')
+        
         avg_vol_20 = df["volume"].tail(20).mean()
         current_vol = df["volume"].iloc[-1]
+
         
         # أ. شروط انعكاس الاتجاه من هابط إلى صاعد (اصطياد القاع الآمن)
         if classic_trend == "Bearish":
