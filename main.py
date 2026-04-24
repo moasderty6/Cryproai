@@ -1242,8 +1242,8 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 deriv_raw += min((whale_score / 10.0) * 30, 30) # أقصاها 30 نقطة إضافية
             else:
                 deriv_raw *= 0.6 # ضريبة غياب سيولة الحيتان الكبيرة
-                            # (أضف هذا قبل سطر: scores["deriv"] = max(0, min(deriv_raw, 100)))
-            div_score = await detect_spot_perp_divergence(symbol, client)
+                            # (أضف هذا قبل سطر: scores["deriv"] = max(0, min(deriv_raw, 100)))            # نستخدم المتغير الذي جلبناه في بداية الدالة لتوفير استهلاك الـ API
+            div_score = spot_lead_score 
             deriv_raw += (div_score * 2.5) # نضربها في 2.5 لتتناسب مع مقياس المئة نقطة
 
             scores["deriv"] = max(0, min(deriv_raw, 100))
@@ -1323,9 +1323,11 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             current_cvd = float(locals().get('micro_cvd_trend', 0.0)) * price
             current_imbalance = float(locals().get('depth_data', {}).get('imbalance', 0) if locals().get('depth_data') else 0.0)
             
-            # الفيتو: إذا لم يكن هناك شراء ماركت قوي (CVD) ولا طلبات معلقة (Imbalance)
-            if current_cvd <= 0 and current_imbalance <= 0.1:
+            # الفيتو: إذا لم يكن هناك شراء ماركت قوي (CVD) ولا طلبات معلقة (Imbalance)            # الفيتو: إذا لم يكن هناك شراء ماركت قوي (CVD) ولم يكن هناك ضغط طلبات من 8 منصات
+            # تم إضافة global_ob_pressure كمنقذ احتياطي في حال فشل اتصال الـ WebSocket
+            if current_cvd <= 0 and current_imbalance <= 0.1 and global_ob_pressure < 1.1:
                 return None 
+
 
             # ==========================================
             # 🛡️ استرجاع شروط القناص النهائي والمتغيرات المفقودة
