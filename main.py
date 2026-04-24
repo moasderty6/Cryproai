@@ -3058,7 +3058,7 @@ async def run_analysis(cb: types.CallbackQuery):
         if not is_dex: # 👈 حماية: لا تطلب بيانات مؤسساتية لعملات الديكس من بايننس
             try:
                 async with httpx.AsyncClient(timeout=10) as client:
-                    # 1. إجبار تحويل السعر الحالي إلى رقم عشري لتدمير أي نص قادم من الذاكرة
+                    # 1. إجبار تحويل السعر الحالي إلى رقم عشري
                     safe_price = float(price)
                     
                     # 2. إجبار السعر القديم ليكون رقماً عشرياً أيضاً
@@ -3067,30 +3067,33 @@ async def run_analysis(cb: types.CallbackQuery):
                     else:
                         safe_old_price = safe_price
 
-                cvd_task = get_micro_cvd_absorption(f"{clean_sym}USDT", client, gate_interval)
-                flow_task = get_institutional_orderflow(f"{clean_sym}USDT", client, minutes=15)
-                futures_task = get_futures_liquidity(clean_sym, client, safe_price, safe_old_price)
-                
-                # 👈 استخدام المحرك الكمي الجديد بدلاً من الدالة المحذوفة
-                depth_task = analyze_orderbook_spoofing_instant(clean_sym, client, safe_price) 
+                    # 🟢 الإصلاح الأهم: إزاحة جميع هذه الأسطر للداخل لتبقى الاتصالات حية!
+                    cvd_task = get_micro_cvd_absorption(f"{clean_sym}USDT", client, gate_interval)
+                    flow_task = get_institutional_orderflow(f"{clean_sym}USDT", client, minutes=15)
+                    futures_task = get_futures_liquidity(clean_sym, client, safe_price, safe_old_price)
+                    depth_task = analyze_orderbook_spoofing_instant(clean_sym, client, safe_price) 
 
-                # نفذهم جميعاً في نفس اللحظة (صفر تأخير إضافي)
-                (cvd_boost, cvd_sig, cvd_trend_val), (delta_usd, buy_v, sell_v, limit_abs_signal), (fut_boost, fut_sig, funding_val), depth_data = await asyncio.gather(
-                    cvd_task, flow_task, futures_task, depth_task
-                )
-                
-                # استخراج البيانات من قاموس المحرك الجديد بأمان
-                is_orderbook_hollow = depth_data.get('is_hollow', False) if isinstance(depth_data, dict) else False
-                is_spoofed = depth_data.get('is_spoofed', False) if isinstance(depth_data, dict) else False
+                    # نفذهم جميعاً في نفس اللحظة
+                    (cvd_boost, cvd_sig, cvd_trend_val), (delta_usd, buy_v, sell_v, limit_abs_signal), (fut_boost, fut_sig, funding_val), depth_data = await asyncio.gather(
+                        cvd_task, flow_task, futures_task, depth_task
+                    )
+                    
+                    # استخراج البيانات من قاموس المحرك الجديد بأمان
+                    is_orderbook_hollow = depth_data.get('is_hollow', False) if isinstance(depth_data, dict) else False
+                    is_spoofed = depth_data.get('is_spoofed', False) if isinstance(depth_data, dict) else False
 
-
+                # خارج الـ Client نقوم بالعمليات الحسابية المحلية
                 z_score, _, _ = calculate_volume_zscore(df, window=720)
+                
             except Exception as e:
                 import traceback
                 print(f"⚠️ Data Fetch Error in Manual Analysis: {e}")
-                traceback.print_exc() # هذا السطر سيكشف لنا رقم السطر الخفي الذي يسبب المشكلة إذا ظهرت
+                traceback.print_exc() 
                 cvd_sig, buy_v, sell_v, fut_sig, z_score = None, 0, 0, None, 0
                 delta_usd, funding_val = 0.0, 0.0
+                is_orderbook_hollow = False 
+                is_spoofed = False
+
 
         # 2. كشف الفخاخ وتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه بطريقة مؤسساتية (Quant Trend Unification)
         ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
