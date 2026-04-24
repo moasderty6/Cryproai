@@ -560,10 +560,10 @@ def calculate_vwap_zscore(df, window=24):
     vwap_zscore = (df['close'] - local_vwap) / (rolling_std + 1e-8) # 1e-8 لمنع القسمة على صفر
     
     return float(vwap_zscore.iloc[-1]), float(local_vwap.iloc[-1])
-async def measure_ob_hollowness(symbol: str, client: httpx.AsyncClient, current_price: float):
+async def analyze_orderbook_spoofing_instant(symbol: str, client: httpx.AsyncClient, current_price: float):
     """
-    يكتشف الجدران الوهمية (Hollow Orderbook).
-    إذا كانت السيولة في أول 1% ضخمة، لكن لا يوجد شيء يحميها حتى 5%، فهذا فخ سيولة.
+    محرك كشف التلاعب اللحظي (Instant VWAD & Skewness)
+    بديل الـ WS: يكتشف التلاعبات والهشاشة بلقطة واحدة عميقة (Latency: 0.2s)
     """
     clean_sym = symbol.replace("USDT", "") + "USDT"
     url = f"{get_random_binance_base()}/api/v3/depth?symbol={clean_sym}&limit=500"
@@ -571,35 +571,44 @@ async def measure_ob_hollowness(symbol: str, client: httpx.AsyncClient, current_
     try:
         await binance_rate_limit_event.wait()
         res = await client.get(url, timeout=3.0)
-        if res.status_code != 200: return False # في حال الفشل نمررها لتجنب تعطيل الرادار
+        if res.status_code != 200: 
+            return {"is_hollow": False, "imbalance": 0.0, "is_spoofed": False}
         
         data = res.json()
         
-        inner_bid_vol = 0.0 # حائط الصد الأول (0% إلى 1% تحت السعر)
-        outer_bid_vol = 0.0 # العمق الداعم (1% إلى 5% تحت السعر)
+        bids = np.array([[float(p), float(v)] for p, v in data.get('bids', [])])
+        asks = np.array([[float(p), float(v)] for p, v in data.get('asks', [])])
         
-        for b in data.get('bids', []):
-            p, v = float(b[0]), float(b[1])
-            drop_pct = (current_price - p) / current_price
-            
-            if drop_pct <= 0.01:
-                inner_bid_vol += (p * v)
-            elif drop_pct <= 0.05:
-                outer_bid_vol += (p * v)
-                
-        # إذا كان العمق فارغاً تماماً
-        if outer_bid_vol == 0: return True 
+        if len(bids) == 0 or len(asks) == 0:
+            return {"is_hollow": False, "imbalance": 0.0, "is_spoofed": False}
+
+        # 1. حساب السيولة المتراكمة في النطاقات الحساسة
+        bid_vol_1pct = np.sum(bids[bids[:, 0] >= current_price * 0.99][:, 1] * bids[bids[:, 0] >= current_price * 0.99][:, 0])
+        bid_vol_5pct = np.sum(bids[bids[:, 0] >= current_price * 0.95][:, 1] * bids[bids[:, 0] >= current_price * 0.95][:, 0])
         
-        # نسبة الهشاشة: إذا كان الجدار الأمامي أكبر من العمق الداعم بـ 3 أضعاف، فهو جدار وهمي (Spoof)
-        hollowness_ratio = inner_bid_vol / outer_bid_vol
+        ask_vol_1pct = np.sum(asks[asks[:, 0] <= current_price * 1.01][:, 1] * asks[asks[:, 0] <= current_price * 1.01][:, 0])
+        ask_vol_5pct = np.sum(asks[asks[:, 0] <= current_price * 1.05][:, 1] * asks[asks[:, 0] <= current_price * 1.05][:, 0])
+
+        # 2. كشف الجدران الوهمية (Hollowness)
+        # إذا كانت 60% من سيولة الشراء متمركزة في أول 1% فقط، فهذا جدار وهمي سيسحب فجأة
+        is_bid_hollow = bid_vol_1pct > (bid_vol_5pct * 0.6) and bid_vol_5pct > 0
         
-        if hollowness_ratio > 3.0:
-            return True # 🚨 تحذير: أوردر بوك هش ومفرغ من الداخل!
-            
-        return False
+        # 3. كشف التلاعب الهجومي (Spoofing)
+        # سيولة ضخمة جداً متكدسة على مسافة قريبة للضغط على السعر
+        is_ask_spoofed = ask_vol_1pct > (bid_vol_1pct * 3.0)
+        
+        # 4. الخلل الكلي (Orderflow Imbalance)
+        imbalance = (bid_vol_5pct - ask_vol_5pct) / (bid_vol_5pct + ask_vol_5pct + 1e-8)
+
+        return {
+            "is_hollow": is_bid_hollow,
+            "imbalance": round(imbalance, 2),
+            "is_spoofed": is_ask_spoofed,
+            "bid_pressure_ratio": bid_vol_1pct / (ask_vol_1pct + 1e-8)
+        }
         
     except Exception:
-        return False
+        return {"is_hollow": False, "imbalance": 0.0, "is_spoofed": False}
 
 async def get_institutional_orderflow(symbol, client, minutes=15):
     """ 
@@ -1037,30 +1046,36 @@ async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_
 
 def calculate_volume_zscore(df, window=720):
     """
-    محرك الشذوذ الإحصائي (Volume Z-Score).
-    window=720 لأننا نستخدم فريم 1h (24 ساعة * 30 يوم = 720 شمعة).
+    محرك شذوذ الفوليوم المؤسساتي (Robust Z-Score) باستخدام MAD
+    مضاد للتشوه: يتجاهل الشموع العملاقة السابقة تماماً.
     """
-    # 🛡️ إجبار تحويل عمود الفوليوم إلى أرقام لتدمير أي نصوص قد تسبب انهيار (TypeError: str and float)
     df["volume"] = pd.to_numeric(df["volume"], errors='coerce')
     
-    # حساب المتوسط المتحرك (Mean) للفوليوم لآخر 30 يوم
-    rolling_mean = df["volume"].rolling(window=window, min_periods=100).mean()
+    # 1. حساب الوسيط المتحرك (Median) بدلاً من المتوسط
+    rolling_median = df["volume"].rolling(window=window, min_periods=100).median()
     
-    # حساب الانحراف المعياري (Standard Deviation)
-    rolling_std = df["volume"].rolling(window=window, min_periods=100).std(ddof=0)
+    # 2. دالة حساب الانحراف المطلق السريعة
+    def calculate_mad(x):
+        return np.median(np.abs(x - np.median(x)))
     
-    # تطبيق معادلة Z-Score
-    df["z_score"] = (df["volume"] - rolling_mean) / rolling_std
+    # 3. تطبيق MAD على النافذة الزمنية (نستخدم raw=True لتسريع المعالجة)
+    rolling_mad = df["volume"].rolling(window=window, min_periods=100).apply(calculate_mad, raw=True)
+    
+    # 4. تطبيق معادلة Robust Z-Score مع حماية من القسمة على صفر
+    # المعامل 1.4826 لمعايرة النتيجة لتصبح مطابقة للـ Standard Deviation
+    df["z_score"] = (df["volume"] - rolling_median) / ((rolling_mad * 1.4826) + 1e-8)
     
     current_z = df["z_score"].iloc[-1]
-    last_mean = rolling_mean.iloc[-1]
-    last_std = rolling_std.iloc[-1]
+    last_median = rolling_median.iloc[-1]
+    last_mad = rolling_mad.iloc[-1]
     
     # حماية من القسمة على صفر في العملات الميتة جداً
     if pd.isna(current_z) or current_z == float('inf'):
         current_z = 0.0
 
-    return current_z, last_mean, last_std
+    # إرجاع 3 قيم تماماً كما يتوقع باقي الكود (Z-Score, Median كبديل لـ Mean, و MAD كبديل لـ Std)
+    return float(current_z), float(last_median), float(last_mad)
+
 def process_dataframe_sync(candles_data):
     """دالة خارجية لمعالجة البيانات بدون تجميد البوت"""
     df = pd.DataFrame(candles_data)
@@ -1256,32 +1271,36 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             # ----------------------------------------------------------------
             # ج. تقييم الأوردر بوك (Spoofing & Global Pressure)
             # ----------------------------------------------------------------
-            ob_raw = 50.0 # نقطة التعادل
-            
-            depth_data = await detect_flash_spoofing_ws(symbol, duration=4.0)
+                        # ----------------------------------------------------------------
+            # ج. تقييم الأوردر بوك (Spoofing & Global Pressure) - النسخة اللحظية
+            # ----------------------------------------------------------------
             global_ob_pressure = await get_aggregated_orderbook(client, symbol)
-            
-            # 👈 السطر الجديد الذي سيقوم بفحص هشاشة الأوردر بوك وتخزين النتيجة
-            is_orderbook_hollow = await measure_ob_hollowness(symbol, client, price)
-            
-            if depth_data:
-                imbalance = depth_data.get('imbalance', 0)
-                ob_raw += (imbalance * 40) # Imbalance يضيف أو يخصم بطريقة سلسة
-                
-                if depth_data['is_bid_spoof']:
-                    ob_raw *= 0.2 # تدمير السكور لخطورته
-                    tags.append("Flash_Spoofing_Manipulation")
-                elif depth_data['is_ask_spoof'] and scores["cvd"] > 50:
-                    ob_raw = min(ob_raw + 30, 100)
-                    tags.append("Whale_Spoofing_Accumulation")
-                elif imbalance > 0.3:
-                    tags.append("OB_Buy")
+            depth_data = await analyze_orderbook_spoofing_instant(symbol, client, price)
 
+            ob_raw = 50.0
+            imbalance = depth_data.get('imbalance', 0.0)
+            ob_raw += (imbalance * 40)
+
+            # فحص الهشاشة
+            is_orderbook_hollow = depth_data.get('is_hollow', False)
+            if is_orderbook_hollow:
+                ob_raw *= 0.4 
+                tags.append("Liquidity_Void_Trap")
+
+            # فحص التلاعب
+            if depth_data.get('is_spoofed', False):
+                ob_raw *= 0.2
+                tags.append("Spoofing_Distribution_Trap")
+            elif depth_data.get('bid_pressure_ratio', 0.0) > 2.0:
+                tags.append("OB_Buy")
+                ob_raw = min(ob_raw + 20, 100)
+
+            # دمج الضغط العالمي
             if global_ob_pressure > 0:
-                # ضغط الأوردر بوك العالمي يرفع السكور بنعومة
                 ob_raw += min((global_ob_pressure / 2.0) * 20, 20)
                 
             scores["ob"] = max(0, min(ob_raw, 100))
+
 
             # ----------------------------------------------------------------
             # د. تقييم المشتقات والحيتان (Derivatives & Whales)
