@@ -1124,10 +1124,11 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 tags.append("Spot_Dumping_Fakeout")
                 return None # تلاعب من صناع السوق لتصفية الشورت
 
-            # ج. فلتر العملات الميتة (Dead Asset Veto):
-            # إذا لم يكن هناك امتصاص حقيقي (LAR منخفض) والفوليوم اللحظي غير شاذ
+            # ج. فلتر العملات الميتة (Dead Asset Veto):            # ج. فلتر العملات الميتة (Dead Asset Veto):
             if lar_score < 0.8 and current_z < 1.5:
-                return None # عملة تتحرك بعشوائية مع البيتكوين
+                print(f"🗑️ {symbol} - تم القتل المسبق (Z-Score ضعيف)") # لكي ترى أن الرادار يعمل
+                return None 
+
 
             # 🎯 إذا نجت العملة من هذه المجزرة، نعطيها Tag إنجليزي لتغذية الـ AI
             if lar_score >= 2.0 and current_z > 1.5:
@@ -1339,8 +1340,8 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             current_regime_trend = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
 
                         # 🛡️ رفع معايير القبول لمستوى صناديق التحوط (لن يمر سوى 3 إلى 5 عملات يومياً كحد أقصى)
-            required_score = 85.0 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 80.0
-            required_confluence = 3 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 2
+            required_score = 75.0 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 70.0
+            required_confluence = 2 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 2
 
             # إرجاع النتيجة فقط إذا تحقق السكور + الإجماع الفني + اجتياز الفيتو
             if score >= required_score and confluence_count >= required_confluence:    
