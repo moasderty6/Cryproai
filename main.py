@@ -1094,7 +1094,45 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             # ====================================================================
             
             tags = [] # قائمة لتجميع نوع الحركات
+                        # ====================================================================
+            # 🛡️ THE RUTHLESS FILTER: Liquidity Absorption Ratio (LAR) & Spot Lead
+            # ====================================================================
             
+            # 1. حساب نسبة التذبذب للشمعة الحالية (Price Spread Percentage)
+            current_high = df["high"].iloc[-1]
+            current_low = df["low"].iloc[-1]
+            candle_spread_pct = ((current_high - current_low) / current_low) * 100
+            
+            # 2. حساب مؤشر LAR (مع حماية من القسمة على صفر)
+            # كلما ارتفع الرقم، كان الانضغاط والامتصاص أعنف
+            lar_score = current_z / (candle_spread_pct + 0.001)
+
+            # 3. جلب نتيجة الفارق بين السبوت والفيوتشرز (من دالتك الموجودة مسبقاً)
+            spot_lead_score = await detect_spot_perp_divergence(symbol, client)
+
+            # 🚫 جدار الإعدام (VETO CONDITIONS):
+            
+            # أ. الهروب من الفومو (Late FOMO Veto):
+            # فوليوم عالي جداً (Z-Score > 2.5) وشمعة انفجرت بأكثر من 4%
+            if current_z > 2.5 and candle_spread_pct > 4.0:
+                tags.append("Late_FOMO_Pump")
+                return None # السعر طار، اتركها للقطيع
+                
+            # ب. فخ التصفية (Fake Breakout / Futures Manipulation):
+            # السعر يصعد ولكن حيتان السبوت تبيع (Spot dumping, Futures pumping)
+            if spot_lead_score < -3.0:
+                tags.append("Spot_Dumping_Fakeout")
+                return None # تلاعب من صناع السوق لتصفية الشورت
+
+            # ج. فلتر العملات الميتة (Dead Asset Veto):
+            # إذا لم يكن هناك امتصاص حقيقي (LAR منخفض) والفوليوم اللحظي غير شاذ
+            if lar_score < 0.8 and current_z < 1.5:
+                return None # عملة تتحرك بعشوائية مع البيتكوين
+
+            # 🎯 إذا نجت العملة من هذه المجزرة، نعطيها Tag إنجليزي لتغذية الـ AI
+            if lar_score >= 2.0 and current_z > 1.5:
+                tags.append("High_Liquidity_Absorption")
+
             # 1. مصفوفة الأوزان الديناميكية بناءً على بيئة السوق (Market Regime)
             # المجموع دائماً 1.0 (أي 100%)
             REGIME_WEIGHTS = {
