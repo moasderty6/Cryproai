@@ -3132,10 +3132,10 @@ TP3: <code>{format_price(calc_tp3)}</code>
 Stop Loss: <code>{format_price(calc_sl)}</code>
 
 📈 <b>تحليل المؤشرات</b>
-• Liquidity: (أعد صياغة هذه الجملة باحترافية: {market_action})
-• RSI ({safe_rsi}): (اكتب سطر واحد يفسر الرقم بناءً على القواعد)
-• MACD ({macd_fmt}): (اكتب سطر واحد يفسر الزخم)
-• ADX ({adx_val:.1f}): (اكتب سطر واحد يفسر قوة الاتجاه)
+• السيولة: (أعد صياغة هذه الجملة باحترافية: {market_action})
+• مؤشر(RSI) ({safe_rsi}): (اكتب سطر واحد يفسر الرقم بناءً على القواعد)
+• مؤشر(MACD) ({macd_fmt}): (اكتب سطر واحد يفسر الزخم)
+• مؤشر(ADX) ({adx_val:.1f}): (اكتب سطر واحد يفسر قوة الاتجاه)
 """
         else:
             real_trend = "Bullish" if trend_dir == "Bullish" else "Bearish"
