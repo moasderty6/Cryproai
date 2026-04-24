@@ -550,21 +550,12 @@ async def detect_btc_relative_strength(symbol: str, client: httpx.AsyncClient):
         
     except Exception:
         return 0.0
-def calculate_vwap_zscore(df, tf_interval="1h"):
+def calculate_vwap_zscore(df, window=24):
     """
     محرك كشف الفومو (Late FOMO) باستخدام الانحراف المعياري للسعر عن VWAP
-    يتكيف مع الفريم الزمني المطلوب
+    window=24 تعني أننا نحسب الانحراف لآخر 24 ساعة (دورة يومية كاملة)
     """
-    # خريطة النوافذ الزمنية: إذا كان 1h النافذة 24، إذا 4h النافذة 6، إذا يومي النافذة 7
-    window_map = {"1h": 24, "4h": 6, "1d": 7, "1w": 4}
-    window = window_map.get(tf_interval.lower(), 24)
-    
-    # 1. حساب السعر النموذجي والـ PV
-    df['high'] = pd.to_numeric(df['high'], errors='coerce')
-    df['low'] = pd.to_numeric(df['low'], errors='coerce')
-    df['close'] = pd.to_numeric(df['close'], errors='coerce')
-    df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
-
+    # 1. حساب السعر النموذجي (Typical Price)
     typical_price = (df['high'] + df['low'] + df['close']) / 3
     pv = typical_price * df['volume']
     
@@ -577,53 +568,51 @@ def calculate_vwap_zscore(df, tf_interval="1h"):
     rolling_std = typical_price.rolling(window=window, min_periods=1).std(ddof=0)
     
     # 4. استخراج Z-Score للسعر
-    vwap_zscore = (df['close'] - local_vwap) / (rolling_std + 1e-8) 
+    # (السعر الحالي - VWAP) / الانحراف المعياري
+    vwap_zscore = (df['close'] - local_vwap) / (rolling_std + 1e-8) # 1e-8 لمنع القسمة على صفر
     
     return float(vwap_zscore.iloc[-1]), float(local_vwap.iloc[-1])
 async def measure_ob_hollowness(symbol: str, client: httpx.AsyncClient, current_price: float):
-    """ Smart Orderbook Hollowness (Checks both Bids and Asks) """
+    """
+    يكتشف الجدران الوهمية (Hollow Orderbook).
+    إذا كانت السيولة في أول 1% ضخمة، لكن لا يوجد شيء يحميها حتى 5%، فهذا فخ سيولة.
+    """
     clean_sym = symbol.replace("USDT", "") + "USDT"
     url = f"{get_random_binance_base()}/api/v3/depth?symbol={clean_sym}&limit=500"
     
     try:
         await binance_rate_limit_event.wait()
         res = await client.get(url, timeout=3.0)
-        if res.status_code != 200: return False, False
+        if res.status_code != 200: return False # في حال الفشل نمررها لتجنب تعطيل الرادار
         
         data = res.json()
         
-        inner_bid_vol, outer_bid_vol = 0.0, 0.0
-        inner_ask_vol, outer_ask_vol = 0.0, 0.0
+        inner_bid_vol = 0.0 # حائط الصد الأول (0% إلى 1% تحت السعر)
+        outer_bid_vol = 0.0 # العمق الداعم (1% إلى 5% تحت السعر)
         
-        # حساب جدران الشراء
         for b in data.get('bids', []):
             p, v = float(b[0]), float(b[1])
             drop_pct = (current_price - p) / current_price
-            if drop_pct <= 0.01: inner_bid_vol += (p * v)
-            elif drop_pct <= 0.05: outer_bid_vol += (p * v)
-                
-        # حساب جدران البيع
-        for a in data.get('asks', []):
-            p, v = float(a[0]), float(a[1])
-            rise_pct = (p - current_price) / current_price
-            if rise_pct <= 0.01: inner_ask_vol += (p * v)
-            elif rise_pct <= 0.05: outer_ask_vol += (p * v)
-
-        # إذا كان العمق فارغاً تماماً من الجهتين = سيولة ضعيفة وليست تلاعباً
-        if outer_bid_vol == 0 and outer_ask_vol == 0:
-            return False, False 
             
-        bid_hollowness = (inner_bid_vol / outer_bid_vol) if outer_bid_vol > 0 else 0
-        ask_hollowness = (inner_ask_vol / outer_ask_vol) if outer_ask_vol > 0 else 0
+            if drop_pct <= 0.01:
+                inner_bid_vol += (p * v)
+            elif drop_pct <= 0.05:
+                outer_bid_vol += (p * v)
+                
+        # إذا كان العمق فارغاً تماماً
+        if outer_bid_vol == 0: return True 
         
-        is_bid_spoof = bid_hollowness > 3.0 and ask_hollowness < 2.0
-        is_ask_spoof = ask_hollowness > 3.0 and bid_hollowness < 2.0
+        # نسبة الهشاشة: إذا كان الجدار الأمامي أكبر من العمق الداعم بـ 3 أضعاف، فهو جدار وهمي (Spoof)
+        hollowness_ratio = inner_bid_vol / outer_bid_vol
         
-        # نرجع حالة الجدران الوهمية للشراء والبيع
-        return is_bid_spoof, is_ask_spoof
+        if hollowness_ratio > 3.0:
+            return True # 🚨 تحذير: أوردر بوك هش ومفرغ من الداخل!
+            
+        return False
         
     except Exception:
-        return False, False
+        return False
+
 async def get_institutional_orderflow(symbol, client, minutes=15):
     """ يسحب الصفقات المجمعة لآخر 15 دقيقة """
     import time
@@ -1015,56 +1004,42 @@ async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_
                 futures_signal = "Short_Covering"
             
                         # ... كودك الحالي
-                        # ... كود حساب التغيرات ...
-            
-            # 🟢 ربط التمويل بالاتجاه
             if funding_rate < -0.0005: 
-                # تمويل سلبي قوي
-                if price_change_pct > 0.0: # السعر يرفض الهبوط أو يصعد
-                    score_modifier += 15.0
-                    futures_signal = "Short_Squeeze"
-                else:
-                    # تمويل سلبي والسعر ينهار (طبيعي جداً - استمرار هبوط)
-                    score_modifier -= 10.0 
-                    futures_signal = "Heavy_Shorting"
-                    
+                score_modifier += 12.0
+                if not futures_signal: futures_signal = "Short_Squeeze"
             elif funding_rate > 0.0005:
-                # تمويل إيجابي قوي (طمع)
-                if price_change_pct < 0.0:
-                    score_modifier -= 15.0
-                    futures_signal = "Long_Liquidation"
+                score_modifier -= 10.0
 
             return score_modifier, futures_signal, funding_rate # 👈 التعديل: أضفنا funding_rate للناتج
     except Exception: pass
     return 0.0, None, 0.0 # 👈 التعديل: أضفنا 0.0 للناتج في حال الخطأ
 
-def calculate_volume_zscore(df):
-    """ Log-Normal Volume Z-Score Engine """
+def calculate_volume_zscore(df, window=720):
+    """
+    محرك الشذوذ الإحصائي (Volume Z-Score).
+    window=720 لأننا نستخدم فريم 1h (24 ساعة * 30 يوم = 720 شمعة).
+    """
+    # 🛡️ إجبار تحويل عمود الفوليوم إلى أرقام لتدمير أي نصوص قد تسبب انهيار (TypeError: str and float)
     df["volume"] = pd.to_numeric(df["volume"], errors='coerce')
     
-    # 1. تحويل الفوليوم إلى توزيع لوغاريتمي لتسوية الانفجارات
-    log_vol = np.log1p(df["volume"]) 
+    # حساب المتوسط المتحرك (Mean) للفوليوم لآخر 30 يوم
+    rolling_mean = df["volume"].rolling(window=window, min_periods=100).mean()
     
-    window = max(20, int(len(df) * 0.8))
+    # حساب الانحراف المعياري (Standard Deviation)
+    rolling_std = df["volume"].rolling(window=window, min_periods=100).std(ddof=0)
     
-    # 2. حساب المتوسط والانحراف المعياري للوغاريتم
-    rolling_mean = log_vol.rolling(window=window, min_periods=window//2).mean()
-    rolling_std = log_vol.rolling(window=window, min_periods=window//2).std(ddof=0)
-    
-    # 3. حساب Z-Score بناءً على البيانات المسواة
-    df["z_score"] = (log_vol - rolling_mean) / (rolling_std + 1e-8)
+    # تطبيق معادلة Z-Score
+    df["z_score"] = (df["volume"] - rolling_mean) / rolling_std
     
     current_z = df["z_score"].iloc[-1]
+    last_mean = rolling_mean.iloc[-1]
+    last_std = rolling_std.iloc[-1]
     
+    # حماية من القسمة على صفر في العملات الميتة جداً
     if pd.isna(current_z) or current_z == float('inf'):
         current_z = 0.0
 
-    # نرجع المتوسط الحقيقي وليس اللوغاريتمي لعرضه إن لزم الأمر
-    raw_mean = df["volume"].rolling(window=window).mean().iloc[-1]
-    raw_std = df["volume"].rolling(window=window).std().iloc[-1]
-
-    return float(current_z), float(raw_mean), float(raw_std)
-
+    return current_z, last_mean, last_std
 def process_dataframe_sync(candles_data):
     """دالة خارجية لمعالجة البيانات بدون تجميد البوت"""
     df = pd.DataFrame(candles_data)
@@ -1084,7 +1059,7 @@ def process_dataframe_sync(candles_data):
     except: 
         current_adx_val = 0.0
 
-    current_z_val, vol_mean_val, vol_std_val = calculate_volume_zscore(df)
+    current_z_val, vol_mean_val, vol_std_val = calculate_volume_zscore(df, window=720)
     
     return df, last_rsi_val, current_adx_val, current_z_val, vol_mean_val, vol_std_val
 async def detect_real_whale_trades(symbol: str, client: httpx.AsyncClient, volume_24h: float):
@@ -1156,7 +1131,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             # 🛡️ THE RUTHLESS FILTER: Liquidity Absorption Ratio (LAR) & Spot Lead
             # ====================================================================
             # أضف هذا السطر أينما كنت تحسب Z-Score للفوليوم
-            current_vwap_z, current_vwap_price = calculate_vwap_zscore(df, tf_interval="1h")
+            current_vwap_z, current_vwap_price = calculate_vwap_zscore(df, window=24)
 
             # 1. حساب نسبة التذبذب للشمعة الحالية (Price Spread Percentage)
             current_high = df["high"].iloc[-1]
@@ -1398,14 +1373,10 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 
             # 2. كشف الفراغ السيولي والهشاشة (Liquidity Void)
             # 🟢 التعديل الأمني هنا لتجنب انهيار الكود مع عملات الـ DEX
-                        # 2. كشف التلاعب والجدران الوهمية (Spoofing Trap)
-            is_bid_spoof = locals().get('depth_data', {}).get('is_bid_spoof', False)
-            
-            if is_bid_spoof and current_cvd < 0:
-                tags.append("Spoofing_Trap")
-                print(f"🗑️ {symbol} - مرفوض (فيتو): حيتان تضع جدران شراء وهمية لاصطياد المتداولين!")
+            if locals().get('is_orderbook_hollow', False) and current_cvd < 0:
+                tags.append("Liquidity_Void_Trap")
+                print(f"🗑️ {symbol} - مرفوض: جدران شراء وهمية والعمق الداعم فارغ تماماً!")
                 return None 
- 
 
             # 3. فخ الجدران الوهمية (Spoofing Trap):
             if global_ob_pressure > 1.1 and current_cvd < 0:
@@ -2974,7 +2945,7 @@ async def run_analysis(cb: types.CallbackQuery):
     else:
         # بايننس تستخدم نفس مسميات الفريمات تقريباً
         gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
-        candles = await get_candles_binance(f"{clean_sym}USDT", gate_interval, limit=750)
+        candles = await get_candles_binance(f"{clean_sym}USDT", gate_interval, limit=500)
 
     # 🛑 التغيير الموضعي: جدار حماية يوقف الدالة فوراً إذا مافي شموع كافية
     if not candles or len(candles) < 3:
@@ -3000,81 +2971,77 @@ async def run_analysis(cb: types.CallbackQuery):
     for col in ["close", "high", "low", "open", "volume"]:
         df[col] = pd.to_numeric(df[col], errors='coerce')
         
-    # 👇👇 الإضافة الجديدة: حساب الـ VWAP بناءً على الفريم الزمني الذي اختاره المستخدم 👇👇
-    gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
-    current_vwap_z, current_vwap_price = calculate_vwap_zscore(df, tf_interval=gate_interval)
-    # 👆👆 ------------------------------------------------------------------------- 👆👆
+    # ... (كمل باقي الكود من هنا: سحب الفوليوم من الداتا بيز، وتعريف الـ prompt بدون ما تخليهم جوا if) ...
+
 
         # 🔥 سحب الفوليوم من قاعدة البيانات        # 🔥 سحب الفوليوم من قاعدة البيانات        # 🔥 حساب تغير الفوليوم الحقيقي مباشرة من بيانات بايننس (أدق وأسرع من CMC)        # 🔥 حساب تغير الفوليوم الحقيقي
-    db_vol_float = 0.0
-    try:
-        avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
-        avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
-        if avg_vol_20 > 0:
-            db_vol_float = ((avg_vol_5 / avg_vol_20) - 1) * 100 
-    except: pass
+        db_vol_float = 0.0
+        try:
+            avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
+            avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
+            if avg_vol_20 > 0:
+                db_vol_float = ((avg_vol_5 / avg_vol_20) - 1) * 100 
+        except: pass
 
         # 1. ⚡ جلب البيانات المؤسساتية أولاً لمعرفة النية المخفية (قبل وضع الأهداف)
                 # 1. ⚡ جلب البيانات المؤسساتية أولاً لمعرفة النية المخفية (قبل وضع الأهداف)
                 # 1. ⚡ جلب البيانات المؤسساتية (فقط لعملات المنصات المركزية CEX)
-    delta_usd, funding_val = 0.0, 0.0
-    cvd_sig, fut_sig = None, None
-    buy_v, sell_v, z_score = 0, 0, 0
+        delta_usd, funding_val = 0.0, 0.0
+        cvd_sig, fut_sig = None, None
+        buy_v, sell_v, z_score = 0, 0, 0
         
-    if not is_dex: # 👈 حماية: لا تطلب بيانات مؤسساتية لعملات الديكس من بايننس
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
+        if not is_dex: # 👈 حماية: لا تطلب بيانات مؤسساتية لعملات الديكس من بايننس
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
                     # 1. إجبار تحويل السعر الحالي إلى رقم عشري لتدمير أي نص قادم من الذاكرة
-                safe_price = float(price)
+                    safe_price = float(price)
                     
                     # 2. إجبار السعر القديم ليكون رقماً عشرياً أيضاً
-                if len(df) > 3:
-                    safe_old_price = float(df["close"].iloc[-3])
-                else:
-                    safe_old_price = safe_price
+                    if len(df) > 3:
+                        safe_old_price = float(df["close"].iloc[-3])
+                    else:
+                        safe_old_price = safe_price
 
-                cvd_task = get_micro_cvd_absorption(f"{clean_sym}USDT", client, gate_interval)
-                flow_task = get_institutional_orderflow(f"{clean_sym}USDT", client, minutes=15)
-                futures_task = get_futures_liquidity(clean_sym, client, safe_price, safe_old_price)
-                hollowness_task = measure_ob_hollowness(clean_sym, client, safe_price) # 👈 أضفنا هذا
+                    cvd_task = get_micro_cvd_absorption(f"{clean_sym}USDT", client, gate_interval)
+                    flow_task = get_institutional_orderflow(f"{clean_sym}USDT", client, minutes=15)
+                    futures_task = get_futures_liquidity(clean_sym, client, safe_price, safe_old_price)
+                    hollowness_task = measure_ob_hollowness(clean_sym, client, safe_price) # 👈 أضفنا هذا
                     
                     # نفذهم جميعاً في نفس اللحظة (صفر تأخير إضافي)
-                (cvd_boost, cvd_sig, cvd_trend_val), (delta_usd, buy_v, sell_v), (fut_boost, fut_sig, funding_val), (is_bid_spoof, is_ask_spoof) = await asyncio.gather(
-    cvd_task, flow_task, futures_task, hollowness_task
-)
+                    (cvd_boost, cvd_sig, cvd_trend_val), (delta_usd, buy_v, sell_v), (fut_boost, fut_sig, funding_val), is_orderbook_hollow = await asyncio.gather(
+                        cvd_task, flow_task, futures_task, hollowness_task
+                    )
 
-                z_score, _, _ = calculate_volume_zscore(df)
-        except Exception as e:
-            import traceback
-            print(f"⚠️ Data Fetch Error in Manual Analysis: {e}")
-            traceback.print_exc() # هذا السطر سيكشف لنا رقم السطر الخفي الذي يسبب المشكلة إذا ظهرت
-            cvd_sig, buy_v, sell_v, fut_sig, z_score = None, 0, 0, None, 0
-            delta_usd, funding_val = 0.0, 0.0
+                    z_score, _, _ = calculate_volume_zscore(df, window=720)
+            except Exception as e:
+                import traceback
+                print(f"⚠️ Data Fetch Error in Manual Analysis: {e}")
+                traceback.print_exc() # هذا السطر سيكشف لنا رقم السطر الخفي الذي يسبب المشكلة إذا ظهرت
+                cvd_sig, buy_v, sell_v, fut_sig, z_score = None, 0, 0, None, 0
+                delta_usd, funding_val = 0.0, 0.0
 
         # 2. كشف الفخاخ وتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه بطريقة مؤسساتية (Quant Trend Unification)
-                # 2. Quant Trend Unification (Macro vs Micro)
         ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
         ema50 = df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
-        ema200 = df['close'].ewm(span=200, adjust=False).mean().iloc[-1] if len(df) >= 200 else ema50
-        
-        macro_trend = "Bullish" if price > ema200 else "Bearish"
         classic_trend = "Bullish" if ema20 > ema50 else "Bearish"
         
         final_trend_dir = classic_trend
         avg_vol_20 = df["volume"].tail(20).mean()
         current_vol = df["volume"].iloc[-1]
-        vol_surge = current_vol > (avg_vol_20 * 1.5)
-
-        # شروط الانعكاس مع احترام الماكرو
+        
+        # أ. شروط انعكاس الاتجاه من هابط إلى صاعد (اصطياد القاع الآمن)
         if classic_trend == "Bearish":
-            if (cvd_sig == "Micro_Silent_Accumulation" or buy_v > sell_v * 1.5) and macro_trend == "Bullish":
-                # حيتان تشتري + السعر فوق 200 يوم = ارتداد صحي (قاع محتمل)
+            # لا نعتمد على RSI وحده! نطلب إما دخول قوي للحيتان (CVD)، أو دايفرجنس إيجابي مع فوليوم أعلى من المتوسط
+            vol_surge = current_vol > (avg_vol_20 * 1.5)
+            if (cvd_sig == "Micro_Silent_Accumulation" or buy_v > sell_v * 1.5) or (last_rsi < 35 and last_macd > 0 and vol_surge):
                 final_trend_dir = "Bullish" 
+                
+        # ب. شروط انعكاس الاتجاه من صاعد إلى هابط (الهروب من القمة المخادعة)
         elif classic_trend == "Bullish":
-            if (cvd_sig == "Hidden_Distribution" or sell_v > buy_v * 1.5) and macro_trend == "Bearish":
-                # حيتان تصرف + السعر تحت 200 يوم = قمة وهمية (Dead Cat Bounce)
-                final_trend_dir = "Bearish"
- 
+            # نطلب تصريف مخفي (CVD سلبي) أو تشبع بيعي مع فوليوم بيع عالي
+            vol_surge = current_vol > (avg_vol_20 * 1.5)
+            if (cvd_sig == "Hidden_Distribution" or sell_v > buy_v * 1.5) or (last_rsi > 75 and last_macd < 0 and vol_surge):
+                final_trend_dir = "Bearish" 
         # 3. حساب الدعم والمقاومة والأهداف بناءً على الاتجاه "المُوحّد" لمنع التضارب
                 # 3. حساب الدعم والمقاومة والأهداف في الخلفية لمنع التضارب والتعليق
         trend_dir, trend_str, market_action, adx_val, calc_sl, calc_tp1, calc_tp2, calc_tp3, calc_sup, calc_res = await asyncio.to_thread(
@@ -3165,10 +3132,10 @@ TP3: <code>{format_price(calc_tp3)}</code>
 Stop Loss: <code>{format_price(calc_sl)}</code>
 
 📈 <b>تحليل المؤشرات</b>
-• السيولة: (أعد صياغة هذه الجملة في سطر واحد باحترافية وبدون تناقضات : {market_action})
-• مؤشر(RSI) ({safe_rsi}): (اكتب سطر واحد يفسر الرقم بناءً على القواعد ولا تذكر اعلى من كذا او اقل من كذا او بين كذا وكذا ولا تعيد ذكر اسم المؤشر او قيمته)
-• مؤشر(MACD) ({macd_fmt}): (اكتب سطر واحد يفسر الزخم ولا تذكر اعلى من كذا او اقل من كذا او بين كذا وكذا ولا تعيد ذكر اسم المؤشر او قيمته)
-• مؤشر(ADX) ({adx_val:.1f}): (اكتب سطر واحد يفسر قوة الاتجاه ولا تذكر اعلى من كذا او اقل من كذا او بين كذا وكذا ولا تعيد ذكر اسم المؤشر او قيمته)
+• Liquidity: (أعد صياغة هذه الجملة باحترافية: {market_action})
+• RSI ({safe_rsi}): (اكتب سطر واحد يفسر الرقم بناءً على القواعد)
+• MACD ({macd_fmt}): (اكتب سطر واحد يفسر الزخم)
+• ADX ({adx_val:.1f}): (اكتب سطر واحد يفسر قوة الاتجاه)
 """
         else:
             real_trend = "Bullish" if trend_dir == "Bullish" else "Bearish"
@@ -3207,7 +3174,6 @@ Stop Loss: <code>{format_price(calc_sl)}</code>
 • MACD ({macd_fmt}): (One line interpreting momentum)
 • ADX ({adx_val:.1f}): (One line interpreting trend strength)
 """
-
 
 
     res = await ask_groq(prompt, lang=lang)
