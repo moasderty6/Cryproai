@@ -3158,7 +3158,15 @@ async def run_analysis(cb: types.CallbackQuery):
                 market_action_text = f"{market_action} | ضغط بيعي مستمر وجفاف في طلبات الشراء اللحظية." if lang == "ar" else f"{market_action} | Sustained selling pressure and lack of bids."
 
         # إضافة نصوص الفوليوم والفجوات (FVG) إلى النهاية
+                # إضافة نصوص الفوليوم والفجوات (FVG) إلى النهاية
         market_action_text += vol_text + fvg_text
+        
+        # 🚨 إضافة تحذيرات التلاعب والهشاشة المؤسساتية
+        if is_spoofed:
+            market_action_text += " [تحذير : تلاعب مؤسساتي]" if lang == "ar" else " [Warning : Orderbook Spoofing]"
+        elif is_orderbook_hollow:
+            market_action_text += " [تحذير : سيولة وهمية/جدار هش]" if lang == "ar" else " [Warning : Hollow Orderbook]"
+
 
         # 🟢 حالات المشتقات الاستثنائية (تطغى على ما سبق لأنها حركات تصفية عنيفة)
         if fut_sig == "Short_Squeeze":
