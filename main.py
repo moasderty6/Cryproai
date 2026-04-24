@@ -1319,12 +1319,22 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             elif "Micro_Silent_Accumulation" in tags: final_signal = "Silent Accumulation 🧲"
             elif "Smart_Accumulation" in tags: final_signal = "Smart Money Inflow 💸"
 
-            # استدعاء المتغيرات للفيتو
+            # استدعاء المتغيرات للفيتو            # استدعاء المتغيرات للفيتو
             current_cvd = float(locals().get('micro_cvd_trend', 0.0)) * price
             current_imbalance = float(locals().get('depth_data', {}).get('imbalance', 0) if locals().get('depth_data') else 0.0)
             
-            # الفيتو: إذا لم يكن هناك شراء ماركت قوي (CVD) ولا طلبات معلقة (Imbalance)            # الفيتو: إذا لم يكن هناك شراء ماركت قوي (CVD) ولم يكن هناك ضغط طلبات من 8 منصات
-            # تم إضافة global_ob_pressure كمنقذ احتياطي في حال فشل اتصال الـ WebSocket
+            # ==========================================
+            # 🛡️ الفيتو الإجباري المطور (Anti-Spoofing & Dead Market Veto)
+            # ==========================================
+            
+            # 1. فخ الجدران الوهمية (Spoofing Trap - GALA Fix): 
+            # الأوردر بوك إيجابي (حيتان تضع جدران شراء وهمية) لكن الشراء الحقيقي ماركت (CVD) سلبي = تصريف مخفي.
+            if global_ob_pressure > 1.1 and current_cvd < 0:
+                tags.append("Spoofing_Distribution_Trap")
+                return None 
+
+            # 2. انعدام الشراء الحقيقي (العملات الميتة):
+            # لا يوجد CVD، ولا يوجد Imbalance لحظي، ولا يوجد ضغط من المنصات الثمانية.
             if current_cvd <= 0 and current_imbalance <= 0.1 and global_ob_pressure < 1.1:
                 return None 
 
