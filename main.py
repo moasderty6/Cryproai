@@ -2978,49 +2978,59 @@ async def run_analysis(cb: types.CallbackQuery):
         )
 
 
-        # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة        # استخراج حالة الفوليوم والفجوة        # استخراج حالة الفوليوم والفجوة
+        # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة        # استخراج حالة الفوليوم والفجوة        # استخراج حالة الفوليوم والفجوة        # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة
         fvg_text = " [" + market_action.split("[")[1] if "[" in market_action else ""
         vol_text = " + فوليوم انفجاري" if "انفجاري" in market_action else (" + فوليوم ميت" if "ميت" in market_action else "")
 
-        # 🟢 مسميات مؤسساتية صارمة (بدون عواطف أو هبل)
-        if trend_dir == "Bullish":
-            if classic_trend == "Bearish":
-                trend_str = "انعكاس إيجابي" if lang == "ar" else "Positive Reversal"
-                market_action_text = ("امتصاص بيعي وتجميع لبداية صعود" if lang == "ar" else "Supply absorption for reversal") + vol_text + fvg_text
-            else:
-                trend_str = "مسار صاعد" if lang == "ar" else "Uptrend"
-                market_action_text = ("سيولة شرائية مستقرة تدعم السعر" if lang == "ar" else "Stable buying liquidity") + vol_text + fvg_text
-                
-        elif trend_dir == "Bearish":
-            if classic_trend == "Bullish":
-                # بدلاً من تصريف قمة، نسميها فشل ارتداد (لأن التقاطع الإيجابي فشل)
-                trend_str = "فشل ارتداد" if lang == "ar" else "Failed Bounce"
-                market_action_text = ("ضغط بيعي وفشل في الحفاظ على الزخم" if lang == "ar" else "Selling pressure, failed momentum") + vol_text + fvg_text
-            else:
-                trend_str = "مسار هابط" if lang == "ar" else "Downtrend"
-                market_action_text = ("سيطرة بيعية على تدفق الأوامر" if lang == "ar" else "Sellers controlling orderflow") + vol_text + fvg_text
+        # 🟢 هندسة مصفوفة صندوق التحوط (Trend vs Flow Matrix)
+        # نحدد نية الحيتان (Flow) أولاً بناءً على CVD والسيولة
+        vol_surge = current_vol > (avg_vol_20 * 1.5)
+        bullish_flow = (cvd_sig == "Micro_Silent_Accumulation" or buy_v > (sell_v * 1.2)) or (last_rsi < 40 and last_macd > 0 and vol_surge)
+        bearish_flow = (cvd_sig == "Hidden_Distribution" or sell_v > (buy_v * 1.2)) or (last_rsi > 70 and last_macd < 0 and vol_surge)
 
-        # 🟢 حالات المشتقات الاستثنائية (تطغى على ما سبق)
+        # دمج الرؤية الهيكلية (market_action) مع سلوك الحيتان الحالي
+        if classic_trend == "Bullish":
+            if bearish_flow:
+                # السعر صاعد، لكن الحيتان تبيع (هنا فقط نطلق عليه تصريف أو مخادع)
+                trend_str = "ضعيف (تصريف مخفي)" if lang == "ar" else "Weak (Hidden Dist.)"
+                market_action_text = f"{market_action} | سيطرة بيعية خفية تعاكس الاتجاه الصاعد." if lang == "ar" else f"{market_action} | Hidden selling countering uptrend."
+            else:
+                # السعر صاعد، والحيتان تشتري
+                trend_str = "قوي جداً" if lang == "ar" else "Very Strong"
+                market_action_text = f"{market_action} | ضخ سيولة مؤسساتي يدعم استمرار الصعود." if lang == "ar" else f"{market_action} | Institutional inflow supporting uptrend."
+                
+        else: # classic_trend == "Bearish"
+            if bullish_flow:
+                # السعر هابط، لكن الحيتان تشتري (هذا هو قاع التجميع، مستحيل أن يكتب هنا تصريف قمة)
+                trend_str = "ارتداد (تجميع قاع)" if lang == "ar" else "Bounce (Bottom Accum.)"
+                market_action_text = f"{market_action} | امتصاص لضغط البيع ومحاولة صامتة لبناء قاع." if lang == "ar" else f"{market_action} | Supply absorption, attempting to build a bottom."
+            else:
+                # السعر هابط، والحيتان تبيع بقسوة
+                trend_str = "هبوط قوي" if lang == "ar" else "Strong Downtrend"
+                market_action_text = f"{market_action} | ضغط بيعي مستمر وجفاف في طلبات الشراء اللحظية." if lang == "ar" else f"{market_action} | Sustained selling pressure and lack of bids."
+
+        # إضافة نصوص الفوليوم والفجوات (FVG) إلى النهاية
+        market_action_text += vol_text + fvg_text
+
+        # 🟢 حالات المشتقات الاستثنائية (تطغى على ما سبق لأنها حركات تصفية عنيفة)
         if fut_sig == "Short_Squeeze":
             trend_str = "انفجار شورت" if lang == "ar" else "Short Squeeze"
-            market_action_text = ("ضغط تصفية مراكز بيع يدفع السعر بقوة" if lang == "ar" else "Liquidation pressure pushing price") + vol_text + fvg_text
+            market_action_text = ("ضغط تصفية مراكز بيع يدفع السعر بقوة عكسية." if lang == "ar" else "Liquidation pressure pushing price upwards.") + vol_text + fvg_text
         elif fut_sig == "Short_Covering":
             trend_str = "إغلاق شورت" if lang == "ar" else "Short Covering"
-            market_action_text = ("ارتداد مؤقت بسبب جني أرباح البائعين" if lang == "ar" else "Temporary bounce from short taking profit") + vol_text + fvg_text
+            market_action_text = ("ارتداد مؤقت بسبب جني أرباح البائعين وليس قوة شرائية حقيقية." if lang == "ar" else "Temporary bounce from short taking profit, no real demand.") + vol_text + fvg_text
 
         # 🟢 استعادة تعريف متغيرات RSI و MACD
         macd_fmt = format_price(last_macd) if 'last_macd' in locals() and last_macd is not None else "0.0"
         safe_rsi = f"{last_rsi:.2f}" if 'last_rsi' in locals() and last_rsi is not None else "N/A"
         
-        # 🟢 تحديد الاتجاه بشكل صارم ومباشر
-        real_trend = "صاعد" if trend_dir == "Bullish" else "هابط"
-        if lang != "ar": real_trend = "Bullish" if trend_dir == "Bullish" else "Bearish"
+        # 🟢 تحديد الاتجاه بشكل صارم ومباشر لعنوان التقرير
+        real_trend = "صاعد" if final_trend_dir == "Bullish" else "هابط"
+        if lang != "ar": real_trend = "Bullish" if final_trend_dir == "Bullish" else "Bearish"
         
-        # ربط المتغير
+        # ربط المتغير وتنبيه الـ AI إذا كانت العملة لامركزية (DEX)
         trend_strength = trend_str 
-        market_action = market_action_text
-
-
+        market_action = market_action_text if not is_dex else (f"(تحليل شبكة DEX) | {market_action_text}" if lang == "ar" else f"(DEX Network) | {market_action_text}")
 
         if lang == "ar":
             prompt = f"""
