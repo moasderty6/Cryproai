@@ -3054,26 +3054,21 @@ async def run_analysis(cb: types.CallbackQuery):
                 db_vol_float = ((avg_vol_5 / avg_vol_20) - 1) * 100 
         except: pass
 
-        # 1. ⚡ جلب البيانات المؤسساتية أولاً لمعرفة النية المخفية (قبل وضع الأهداف)
-                # 1. ⚡ جلب البيانات المؤسساتية أولاً لمعرفة النية المخفية (قبل وضع الأهداف)
-                # 1. ⚡ جلب البيانات المؤسساتية (فقط لعملات المنصات المركزية CEX)
+        # 1. ⚡ جلب البيانات المؤسساتية أولاً لمعرفة النية المخفية (قبل وضع الأهداف)        # 1. ⚡ جلب البيانات المؤسساتية (فقط لعملات المنصات المركزية CEX)
         delta_usd, funding_val = 0.0, 0.0
         cvd_sig, fut_sig = None, None
         buy_v, sell_v, z_score = 0, 0, 0
         
+        # 🟢 الإصلاح الجذري: تعريف المتغيرات هنا لضمان وجودها حتى لو كانت العملة DEX
+        is_orderbook_hollow = False 
+        is_spoofed = False
+        
         if not is_dex: # 👈 حماية: لا تطلب بيانات مؤسساتية لعملات الديكس من بايننس
             try:
                 async with httpx.AsyncClient(timeout=10) as client:
-                    # 1. إجبار تحويل السعر الحالي إلى رقم عشري
                     safe_price = float(price)
-                    
-                    # 2. إجبار السعر القديم ليكون رقماً عشرياً أيضاً
-                    if len(df) > 3:
-                        safe_old_price = float(df["close"].iloc[-3])
-                    else:
-                        safe_old_price = safe_price
+                    safe_old_price = float(df["close"].iloc[-3]) if len(df) > 3 else safe_price
 
-                    # 🟢 الإصلاح الأهم: إزاحة جميع هذه الأسطر للداخل لتبقى الاتصالات حية!
                     cvd_task = get_micro_cvd_absorption(f"{clean_sym}USDT", client, gate_interval)
                     flow_task = get_institutional_orderflow(f"{clean_sym}USDT", client, minutes=15)
                     futures_task = get_futures_liquidity(clean_sym, client, safe_price, safe_old_price)
@@ -3084,11 +3079,10 @@ async def run_analysis(cb: types.CallbackQuery):
                         cvd_task, flow_task, futures_task, depth_task
                     )
                     
-                    # استخراج البيانات من قاموس المحرك الجديد بأمان
+                    # استخراج البيانات وتحديث المتغيرات
                     is_orderbook_hollow = depth_data.get('is_hollow', False) if isinstance(depth_data, dict) else False
                     is_spoofed = depth_data.get('is_spoofed', False) if isinstance(depth_data, dict) else False
 
-                # خارج الـ Client نقوم بالعمليات الحسابية المحلية
                 z_score, _, _ = calculate_volume_zscore(df, window=720)
                 
             except Exception as e:
@@ -3099,6 +3093,7 @@ async def run_analysis(cb: types.CallbackQuery):
                 delta_usd, funding_val = 0.0, 0.0
                 is_orderbook_hollow = False 
                 is_spoofed = False
+
 
 
         # 2. كشف الفخاخ وتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه بطريقة مؤسساتية (Quant Trend Unification)
