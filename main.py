@@ -550,12 +550,21 @@ async def detect_btc_relative_strength(symbol: str, client: httpx.AsyncClient):
         
     except Exception:
         return 0.0
-def calculate_vwap_zscore(df, window=24):
+def calculate_vwap_zscore(df, tf_interval="1h"):
     """
     محرك كشف الفومو (Late FOMO) باستخدام الانحراف المعياري للسعر عن VWAP
-    window=24 تعني أننا نحسب الانحراف لآخر 24 ساعة (دورة يومية كاملة)
+    يتكيف مع الفريم الزمني المطلوب
     """
-    # 1. حساب السعر النموذجي (Typical Price)
+    # خريطة النوافذ الزمنية: إذا كان 1h النافذة 24، إذا 4h النافذة 6، إذا يومي النافذة 7
+    window_map = {"1h": 24, "4h": 6, "1d": 7, "1w": 4}
+    window = window_map.get(tf_interval.lower(), 24)
+    
+    # 1. حساب السعر النموذجي والـ PV
+    df['high'] = pd.to_numeric(df['high'], errors='coerce')
+    df['low'] = pd.to_numeric(df['low'], errors='coerce')
+    df['close'] = pd.to_numeric(df['close'], errors='coerce')
+    df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
+
     typical_price = (df['high'] + df['low'] + df['close']) / 3
     pv = typical_price * df['volume']
     
@@ -568,8 +577,7 @@ def calculate_vwap_zscore(df, window=24):
     rolling_std = typical_price.rolling(window=window, min_periods=1).std(ddof=0)
     
     # 4. استخراج Z-Score للسعر
-    # (السعر الحالي - VWAP) / الانحراف المعياري
-    vwap_zscore = (df['close'] - local_vwap) / (rolling_std + 1e-8) # 1e-8 لمنع القسمة على صفر
+    vwap_zscore = (df['close'] - local_vwap) / (rolling_std + 1e-8) 
     
     return float(vwap_zscore.iloc[-1]), float(local_vwap.iloc[-1])
 async def measure_ob_hollowness(symbol: str, client: httpx.AsyncClient, current_price: float):
@@ -1014,19 +1022,20 @@ async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_
     except Exception: pass
     return 0.0, None, 0.0 # 👈 التعديل: أضفنا 0.0 للناتج في حال الخطأ
 
-def calculate_volume_zscore(df, window=720):
+def calculate_volume_zscore(df):
     """
-    محرك الشذوذ الإحصائي (Volume Z-Score).
-    window=720 لأننا نستخدم فريم 1h (24 ساعة * 30 يوم = 720 شمعة).
+    محرك الشذوذ الإحصائي (Volume Z-Score) - النسخة الديناميكية
+    تتكيف تلقائياً مع حجم البيانات والفريم الزمني (نأخذ 80% من الشموع المتاحة كمتوسط)
     """
-    # 🛡️ إجبار تحويل عمود الفوليوم إلى أرقام لتدمير أي نصوص قد تسبب انهيار (TypeError: str and float)
     df["volume"] = pd.to_numeric(df["volume"], errors='coerce')
     
-    # حساب المتوسط المتحرك (Mean) للفوليوم لآخر 30 يوم
-    rolling_mean = df["volume"].rolling(window=window, min_periods=100).mean()
+    # تحديد النافذة بناءً على عدد الشموع المتاح (لتجنب خطأ NaN في الفريمات الكبيرة)
+    window = int(len(df) * 0.8) 
+    if window < 20: window = 20 # حد أدنى للحماية
     
-    # حساب الانحراف المعياري (Standard Deviation)
-    rolling_std = df["volume"].rolling(window=window, min_periods=100).std(ddof=0)
+    # حساب المتوسط والانحراف المعياري
+    rolling_mean = df["volume"].rolling(window=window, min_periods=window//2).mean()
+    rolling_std = df["volume"].rolling(window=window, min_periods=window//2).std(ddof=0)
     
     # تطبيق معادلة Z-Score
     df["z_score"] = (df["volume"] - rolling_mean) / rolling_std
@@ -1035,11 +1044,12 @@ def calculate_volume_zscore(df, window=720):
     last_mean = rolling_mean.iloc[-1]
     last_std = rolling_std.iloc[-1]
     
-    # حماية من القسمة على صفر في العملات الميتة جداً
+    # حماية من القسمة على صفر
     if pd.isna(current_z) or current_z == float('inf'):
         current_z = 0.0
 
-    return current_z, last_mean, last_std
+    return float(current_z), float(last_mean), float(last_std)
+
 def process_dataframe_sync(candles_data):
     """دالة خارجية لمعالجة البيانات بدون تجميد البوت"""
     df = pd.DataFrame(candles_data)
@@ -1131,7 +1141,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             # 🛡️ THE RUTHLESS FILTER: Liquidity Absorption Ratio (LAR) & Spot Lead
             # ====================================================================
             # أضف هذا السطر أينما كنت تحسب Z-Score للفوليوم
-            current_vwap_z, current_vwap_price = calculate_vwap_zscore(df, window=24)
+            current_vwap_z, current_vwap_price = calculate_vwap_zscore(df, tf_interval="1h")
 
             # 1. حساب نسبة التذبذب للشمعة الحالية (Price Spread Percentage)
             current_high = df["high"].iloc[-1]
@@ -2945,7 +2955,7 @@ async def run_analysis(cb: types.CallbackQuery):
     else:
         # بايننس تستخدم نفس مسميات الفريمات تقريباً
         gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
-        candles = await get_candles_binance(f"{clean_sym}USDT", gate_interval, limit=500)
+        candles = await get_candles_binance(f"{clean_sym}USDT", gate_interval, limit=750)
 
     # 🛑 التغيير الموضعي: جدار حماية يوقف الدالة فوراً إذا مافي شموع كافية
     if not candles or len(candles) < 3:
@@ -2971,8 +2981,10 @@ async def run_analysis(cb: types.CallbackQuery):
     for col in ["close", "high", "low", "open", "volume"]:
         df[col] = pd.to_numeric(df[col], errors='coerce')
         
-    # ... (كمل باقي الكود من هنا: سحب الفوليوم من الداتا بيز، وتعريف الـ prompt بدون ما تخليهم جوا if) ...
-
+    # 👇👇 الإضافة الجديدة: حساب الـ VWAP بناءً على الفريم الزمني الذي اختاره المستخدم 👇👇
+    gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
+    current_vwap_z, current_vwap_price = calculate_vwap_zscore(df, tf_interval=gate_interval)
+    # 👆👆 ------------------------------------------------------------------------- 👆👆
 
         # 🔥 سحب الفوليوم من قاعدة البيانات        # 🔥 سحب الفوليوم من قاعدة البيانات        # 🔥 حساب تغير الفوليوم الحقيقي مباشرة من بيانات بايننس (أدق وأسرع من CMC)        # 🔥 حساب تغير الفوليوم الحقيقي
         db_vol_float = 0.0
@@ -3012,7 +3024,7 @@ async def run_analysis(cb: types.CallbackQuery):
                         cvd_task, flow_task, futures_task, hollowness_task
                     )
 
-                    z_score, _, _ = calculate_volume_zscore(df, window=720)
+                    z_score, _, _ = calculate_volume_zscore(df)
             except Exception as e:
                 import traceback
                 print(f"⚠️ Data Fetch Error in Manual Analysis: {e}")
