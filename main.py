@@ -2988,19 +2988,19 @@ async def run_analysis(cb: types.CallbackQuery):
 
         # 🔥 سحب الفوليوم من قاعدة البيانات        # 🔥 سحب الفوليوم من قاعدة البيانات        # 🔥 حساب تغير الفوليوم الحقيقي مباشرة من بيانات بايننس (أدق وأسرع من CMC)        # 🔥 حساب تغير الفوليوم الحقيقي
     db_vol_float = 0.0
-        try:
-            avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
-            avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
-            if avg_vol_20 > 0:
-                db_vol_float = ((avg_vol_5 / avg_vol_20) - 1) * 100 
-        except: pass
+    try:
+        avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
+        avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
+        if avg_vol_20 > 0:
+            db_vol_float = ((avg_vol_5 / avg_vol_20) - 1) * 100 
+    except: pass
 
         # 1. ⚡ جلب البيانات المؤسساتية أولاً لمعرفة النية المخفية (قبل وضع الأهداف)
                 # 1. ⚡ جلب البيانات المؤسساتية أولاً لمعرفة النية المخفية (قبل وضع الأهداف)
                 # 1. ⚡ جلب البيانات المؤسساتية (فقط لعملات المنصات المركزية CEX)
-        delta_usd, funding_val = 0.0, 0.0
-        cvd_sig, fut_sig = None, None
-        buy_v, sell_v, z_score = 0, 0, 0
+    delta_usd, funding_val = 0.0, 0.0
+    cvd_sig, fut_sig = None, None
+    buy_v, sell_v, z_score = 0, 0, 0
         
         if not is_dex: # 👈 حماية: لا تطلب بيانات مؤسساتية لعملات الديكس من بايننس
             try:
