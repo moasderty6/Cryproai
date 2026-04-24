@@ -1772,61 +1772,67 @@ async def ai_opportunity_radar(pool):
                     """, symbol)
 
                                 # تنسيق الأرقام لضمان عدم ظهور أرقام طويلة جداً
-                z_score_val = f"{best_meta['macd']:.2f}"
-                vol_ratio_val = f"{best_meta['vol_ratio']:.2f}"
-                ob_pressure_val = f"{best_meta.get('ob_pressure', 1.0):.2f}"
+                                # ====================================================================
+                # ⚙️ محرك التحليل الكمي المباشر (Quant Notes) - بديل الذكاء الاصطناعي
+                # ====================================================================
+                ml = best_meta.get('ml_features', {})
+                z_val = float(ml.get('z_score', best_meta.get('macd', 0.0)))
+                vol_ratio = float(ml.get('volume_ratio', best_meta.get('vol_ratio', 1.0)))
+                ob_val = float(best_meta.get('ob_pressure', 1.0))
+                cvd_val = float(ml.get('cvd_usd', 0.0))
+                funding = float(ml.get('funding_rate', 0.0))
+                
+                confluence = int(best_meta.get('confluence', 0))
+                adx = float(best_meta.get('adx', 0.0))
+                rsi = float(best_meta.get('rsi', 0.0))
 
-                prompt_ar = f"""
-أنت محلل بيانات كمية (Quant). المهمة: كتابة 4 نقاط تحليلية دقيقة ومباشرة فقط. لا تكتب أي مقدمات، أو تحيات، أو استنتاجات.
-البيانات الخام لعملة {symbol}:
-- شذوذ الفوليوم (Z-Score): {z_score_val}
-- نسبة السيولة (Current/Avg Vol): {vol_ratio_val}
-- ضغط الأوردر بوك (Bids/Asks): {ob_pressure_val}
-- الإجماع الفني: {best_meta.get('confluence', 0)}
-- الزخم: ADX: {best_meta['adx']} | RSI: {best_meta['rsi']}
+                # ==========================================
+                # 🇸🇦 بناء التحليل الكمي باللغة العربية
+                # ==========================================
+                vol_ar = f"شذوذ فوليوم مؤسساتي (Z-Score: {z_val:.2f}) مع ضخ سيولة حاد ({vol_ratio:.2f}x)." if z_val > 2 else f"انضغاط سيولة صامت (Z-Score: {z_val:.2f})."
+                
+                cvd_ar = f"امتصاص شرائي خفي (CVD: +${cvd_val:,.0f})" if cvd_val > 0 else f"ضغط بيعي وتصريف (CVD: ${cvd_val:,.0f})"
+                ob_ar = f"مع تكدس طلبات هجومي (OB: {ob_val:.2f}x)." if ob_val > 1 else f"مع سيطرة وتكدس لعروض البيع (OB: {ob_val:.2f}x)."
+                
+                if funding < -0.0005:
+                    fund_ar = "تمركز بيعي قوي مع احتمالية لتصفية البائعين (Short Squeeze)."
+                elif funding > 0.0005:
+                    fund_ar = "طمع شرائي ومعدل تمويل إيجابي ينذر بخطر تصفية المشترين (Long Squeeze)."
+                else:
+                    fund_ar = "استقرار وتوازن في معدلات تمويل عقود المشتقات."
+                
+                tech_ar = f"إجماع فني ({confluence}/6) | ADX: {adx:.1f} | RSI: {rsi:.1f}"
 
-قواعد التفسير المالي (التزم بها حرفياً):
-1. ضغط الأوردر بوك: إذا كان < 1 (سيطرة بيعية/امتصاص). إذا > 1 (طلب هجومي).
-2. نسبة السيولة: إذا كانت < 1 (جفاف سيولة/تجميع صامت مخفي). إذا > 1 (ضخ سيولة مؤسساتي نشط).
-3. مؤشر Z-Score: الأرقام السلبية تعني انضغاطاً في القاع. الأرقام الإيجابية العالية (>2) تعني انفجاراً استثنائياً في الفوليوم.
-4. الإجماع الفني: هو عدد صحيح من (1 إلى 6). وجود رقم (1 أو أعلى) يعني إجماعاً قوياً جداً وتأكيداً مؤكداً للفرصة.
+                insight_ar = (
+                    f"• <b>السيولة:</b> {vol_ar}\n"
+                    f"• <b>التدفق (Flow):</b> {cvd_ar} {ob_ar}\n"
+                    f"• <b>المشتقات:</b> {fund_ar}\n"
+                    f"• <b>الهيكلة:</b> {tech_ar}"
+                )
 
-شروط المخرجات (OUTPUT RULES):
-- إياك أن تكتب عبارات مثل: "بناءً على البيانات"، "نلاحظ"، "مما يشير إلى". ادخل في التحليل فوراً.
-- المخرج يجب أن يكون 3 نقاط فقط تبدأ برمز (•).
-- اربط الأرقام بالواقع (مثال: "جفاف في السيولة مع نسبة فوليوم {vol_ratio_val} يعكس تجميعاً صامتاً من الحيتان").
-- لغة جافة، خالية من العواطف والمبالغات.
-- أسلوب الكتابة: اكتب بطريقة (Flash Notes). لا تشرح كل رقم في سطر منفصل، بل ادمجها بذكاء. مثال بدلاً من سرد الأرقام قل: (تكدس قوي في طلبات الشراء بضعف 1.84x يتزامن مع امتصاص صامت للسيولة 0.93x في قاع منضغط).
-"""
+                # ==========================================
+                # 🇺🇸 بناء التحليل الكمي باللغة الإنجليزية
+                # ==========================================
+                vol_en = f"Institutional volume anomaly (Z-Score: {z_val:.2f}) with aggressive inflow ({vol_ratio:.2f}x)." if z_val > 2 else f"Silent liquidity compression (Z-Score: {z_val:.2f})."
+                
+                cvd_en = f"Hidden buy absorption (CVD: +${cvd_val:,.0f})" if cvd_val > 0 else f"Selling pressure & distribution (CVD: ${cvd_val:,.0f})"
+                ob_en = f"with aggressive bid stacking (OB: {ob_val:.2f}x)." if ob_val > 1 else f"with heavy ask supply dominance (OB: {ob_val:.2f}x)."
+                
+                if funding < -0.0005:
+                    fund_en = "Heavy short positioning with high (Short Squeeze) probability."
+                elif funding > 0.0005:
+                    fund_en = "Overleveraged longs with high (Long Squeeze/Correction) risk."
+                else:
+                    fund_en = "Stable futures open interest and neutral funding rates."
+                
+                tech_en = f"Technical confluence ({confluence}/6) | ADX: {adx:.1f} | RSI: {rsi:.1f}"
 
-                prompt_en = f"""
-Act as a strict Quant Analyst. Task: Write EXACTLY 4 analytical bullet points. NO intro, NO outro, NO fluff.
-Raw Data for {symbol}:
-- Volume Anomaly (Z-Score): {z_score_val}
-- Volume Ratio (Current/Avg): {vol_ratio_val}
-- Orderbook Ratio (Bids/Asks): {ob_pressure_val}
-- Confluence: {best_meta.get('confluence', 0)}
-- Momentum: ADX: {best_meta['adx']} | RSI: {best_meta['rsi']}
-
-Financial Interpretation Rules (Follow strictly):
-1. Orderbook Ratio: If < 1 (Supply control/absorption). If > 1 (Aggressive demand).
-2. Volume Ratio: If < 1 (Liquidity dry-up/silent hidden accumulation). If > 1 (Active institutional inflow).
-3. Z-Score: Negative numbers mean bottom compression. High positive numbers (>2) mean exceptional volume explosion.
-4. Confluence: It is an integer from (1 to 6). A number of (1 or higher) means very strong consensus and a confirmed setup.
-
-Strict Output Format:
-- NEVER use phrases like "Based on the data", "We can see", or "This indicates". Start the bullet points immediately.
-- Output EXACTLY 3 points starting with (•).
-- Weave numbers naturally (e.g., "Orderbook shows supply absorption with a ratio of {ob_pressure_val}").
-- Keep the tone cold, dry, and institutional. Zero hype.
-- Writing Style: Use 'Flash Notes' format. Do not explain metrics in isolation; fuse them into a cohesive narrative (e.g., 'Aggressive bid stacking at {ob_pressure_val}x aligns with silent liquidity absorption {vol_ratio_val}x at compressed lows').
-"""
-
-
-
-
-                insight_ar = await ask_groq(prompt_ar, lang="ar")
-                insight_en = await ask_groq(prompt_en, lang="en")
+                insight_en = (
+                    f"• <b>Liquidity:</b> {vol_en}\n"
+                    f"• <b>Orderflow:</b> {cvd_en} {ob_en}\n"
+                    f"• <b>Derivatives:</b> {fund_en}\n"
+                    f"• <b>Structure:</b> {tech_en}"
+                )
 
                 signal_id = str(uuid.uuid4())[:8] 
                 radar_pending_approvals[signal_id] = {
