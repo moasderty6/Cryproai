@@ -349,12 +349,16 @@ async def smart_radar_watchdog(pool):
                                 traded_usd_in_minute = current_vol - old_vol 
                                 price_change = (current_price - old_price) / old_price
                                 
-                                # 🟢 السطرين اللي انحذفوا بالغلط رجعناهم هنا:
-                                MAX_PRICE_SPIKE = 0.005 # السعر ثابت (أقل من 0.5% حركة)
-                                MIN_MINUTE_VOLUME = 100_000 # حوت ضخ 200 ألف دولار على الأقل في دقيقة
-                                
-                                if traded_usd_in_minute >= MIN_MINUTE_VOLUME and abs(price_change) <= MAX_PRICE_SPIKE:
+                                MAX_PRICE_SPIKE = 0.005 
+
+                                # 🧠 الشذوذ اللحظي الديناميكي (Dynamic Minute Spike)
+                                # ضخ 0.15% من سيولة اليوم الكاملة خلال دقيقة واحدة يعتبر تجميعاً مرعباً
+                                # الحد الأدنى 25 ألف دولار لتجاهل روبوتات التداول العشوائية في العملات الميتة
+                                DYNAMIC_MINUTE_VOLUME = max(25_000.0, old_vol * 0.0015) 
+
+                                if traded_usd_in_minute >= DYNAMIC_MINUTE_VOLUME and abs(price_change) <= MAX_PRICE_SPIKE:
                                     print(f"👀 Silent Accumulation Alert {symbol} | Injected: ${traded_usd_in_minute:,.0f} in {time_diff:.0f}s") 
+                                    
                                     coin_mock_data = {
                                         "symbol": symbol.replace("USDT", ""),
                                         "quote": {"USD": {"price": current_price}}
@@ -1061,7 +1065,7 @@ def process_dataframe_sync(candles_data):
     current_z_val, vol_mean_val, vol_std_val = calculate_volume_zscore(df, window=720)
     
     return df, last_rsi_val, current_adx_val, current_z_val, vol_mean_val, vol_std_val
-async def detect_real_whale_trades(symbol: str, client: httpx.AsyncClient):
+async def detect_real_whale_trades(symbol: str, client: httpx.AsyncClient, volume_24h: float):
     clean_sym = symbol.replace("USDT", "") + "USDT"
     trades_url = f"{get_random_binance_base()}/api/v3/trades?symbol={clean_sym}&limit=1000"
     
@@ -1073,11 +1077,18 @@ async def detect_real_whale_trades(symbol: str, client: httpx.AsyncClient):
         trades = res.json()
         whale_buy_vol = 0.0
         whale_sell_vol = 0.0
-        WHALE_THRESHOLD = 50_000 # صفقات الماركت التي تتجاوز 50 ألف دولار
+        
+        # 🧠 محرك الحدود المرنة (Dynamic Quant Bounds)
+        # 0.2% من السيولة اليومية تعتبر صفقة حوت، بحد أدنى 15 ألف وحد أقصى 500 ألف
+        MIN_BLOCK = 15_000.0   
+        MAX_BLOCK = 500_000.0  
+        WHALE_FACTOR = 0.002   
+        
+        DYNAMIC_WHALE_THRESHOLD = max(MIN_BLOCK, min(volume_24h * WHALE_FACTOR, MAX_BLOCK))
         
         for t in trades:
             trade_value_usd = float(t['qty']) * float(t['price'])
-            if trade_value_usd >= WHALE_THRESHOLD:
+            if trade_value_usd >= DYNAMIC_WHALE_THRESHOLD:
                 if not t['isBuyerMaker']: 
                     whale_buy_vol += trade_value_usd 
                 else: 
@@ -1088,15 +1099,20 @@ async def detect_real_whale_trades(symbol: str, client: httpx.AsyncClient):
 
         whale_delta = whale_buy_vol - whale_sell_vol
         
-        if whale_delta > 500_000: return 9.5
-        elif whale_delta > 200_000: return 5.5
-        elif whale_delta < -500_000: return -10.5
-        elif whale_delta < -200_000: return -6.5
+        # 🧠 نظام النقاط النسبي (Relative Scoring)
+        # تقييم قوة الحيتان بناءً على تأثيرهم كنسبة من حجم التداول الكلي وليس كرقم ثابت
+        delta_pct = whale_delta / (volume_24h + 1) # +1 لتجنب القسمة على صفر
+        
+        if delta_pct > 0.03: return 9.5     # حيتان تسيطر بأكثر من 3% من سيولة اليوم
+        elif delta_pct > 0.01: return 5.5   # سيطرة معتدلة 1%
+        elif delta_pct < -0.03: return -10.5 # تصريف عنيف
+        elif delta_pct < -0.01: return -6.5
             
         return 0.0
         
     except Exception:
         return 0.0
+
 
 async def analyze_radar_coin(c, client, market_regime, sem):
     async with sem:  
@@ -1250,7 +1266,10 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             deriv_raw = 50.0
             old_price_val = df["close"].iloc[-3] if len(df) > 3 else df["open"].iloc[0]
             _, futures_signal, funding_val = await get_futures_liquidity(symbol, client, price, old_price_val)
-            whale_score = await detect_real_whale_trades(symbol, client)
+# حساب السيولة التقريبية بالدولار لآخر 24 ساعة من الشموع (بدون API إضافي)
+            approx_24h_vol_usd = df["volume"].tail(24).sum() * price 
+            whale_score = await detect_real_whale_trades(symbol, client, approx_24h_vol_usd)
+
             
             if futures_signal == "OI_Rising": deriv_raw += 30; tags.append("OI_Rising")
             elif futures_signal == "Short_Covering": deriv_raw -= 30; tags.append("Short_Covering")
