@@ -392,34 +392,38 @@ async def radar_worker_process(pool):
     
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
-            # اسحب عملة من الطابور
-            coin_mock_data = await radar_processing_queue.get()
-            symbol = f"{coin_mock_data['symbol']}USDT"
-            
-            async with pool.acquire() as conn:
-                # فحص هل أرسلنا العملة في آخر 12 ساعة؟
-                is_signaled = await conn.fetchval("""
-                    SELECT 1 FROM radar_history 
-                     WHERE symbol = $1 AND last_signaled > CURRENT_TIMESTAMP - INTERVAL '7 days'
-                """, symbol)
-
-                if not is_signaled:
-                    print(f"🚨 [تحليل عميق] جاري تشريح {symbol}...")
-                    
-                    await conn.execute("""
-                        INSERT INTO radar_history (symbol, last_signaled)
-                        VALUES ($1, CURRENT_TIMESTAMP)
-                        ON CONFLICT (symbol) DO UPDATE SET last_signaled = CURRENT_TIMESTAMP
+            try: # 🟢 إضافة حاجز الحماية لمنع انهيار الحلقة وإغلاق الـ Client
+                # اسحب عملة من الطابور
+                coin_mock_data = await radar_processing_queue.get()
+                symbol = f"{coin_mock_data['symbol']}USDT"
+                
+                async with pool.acquire() as conn:
+                    # فحص هل أرسلنا العملة في آخر 7 أيام؟
+                    is_signaled = await conn.fetchval("""
+                        SELECT 1 FROM radar_history 
+                        WHERE symbol = $1 AND last_signaled > CURRENT_TIMESTAMP - INTERVAL '7 days'
                     """, symbol)
 
-                    # جلب الماكرو اللحظي
-                    market_regime = await detect_market_regime(client)
-                    # إرسالها للتحليل
-                    asyncio.create_task(analyze_radar_coin(coin_mock_data, client, market_regime, sem))
-            
-            # إخبار الطابور أن المهمة انتهت
-            radar_processing_queue.task_done()
-            await asyncio.sleep(1) # استراحة ثانية بين كل تحليل لحماية الـ API
+                    if not is_signaled:
+                        print(f"🚨 [تحليل عميق] جاري تشريح {symbol}...")
+                        
+                        await conn.execute("""
+                            INSERT INTO radar_history (symbol, last_signaled)
+                            VALUES ($1, CURRENT_TIMESTAMP)
+                            ON CONFLICT (symbol) DO UPDATE SET last_signaled = CURRENT_TIMESTAMP
+                        """, symbol)
+
+                        # جلب الماكرو وإرسالها للتحليل
+                        market_regime = await detect_market_regime(client)
+                        asyncio.create_task(analyze_radar_coin(coin_mock_data, client, market_regime, sem))
+                
+                # إخبار الطابور أن المهمة انتهت
+                radar_processing_queue.task_done()
+                await asyncio.sleep(1) # استراحة ثانية بين كل تحليل لحماية الـ API
+                
+            except Exception as e:
+                print(f"⚠️ خطأ عابر في Worker الرادار، الاتصال مستمر: {e}")
+                await asyncio.sleep(2)
 
 # دالة وسيطة لتجهيز البيانات قبل التحليل العميق
 async def trigger_deep_analysis(coin_mock_data, sem, pool):
