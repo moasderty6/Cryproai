@@ -1069,7 +1069,7 @@ def process_dataframe_sync(candles_data):
     except: 
         current_adx_val = 0.0
 
-    current_z_val, vol_mean_val, vol_std_val = calculate_volume_zscore(df, window=720)
+    current_z_val, vol_mean_val, vol_std_val = calculate_volume_zscore(df)
     
     return df, last_rsi_val, current_adx_val, current_z_val, vol_mean_val, vol_std_val
 async def detect_real_whale_trades(symbol: str, client: httpx.AsyncClient, volume_24h: float):
