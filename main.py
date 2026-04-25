@@ -2923,13 +2923,34 @@ import numpy as np
 
 def calculate_vpvr_levels(df, current_price, trend_direction, num_bins=50):
     try:
-        min_price = df['low'].min()
-        max_price = df['high'].max()
+        # ==========================================
+        # 🛡️ التعديل المؤسساتي: عزل دورة السوق الحقيقية (Market Cycle Slicing)
+        # ==========================================
+        recent_df = df.tail(300).reset_index(drop=True) # نأخذ آخر 300 شمعة كحد أقصى للبحث
+        
+        # تحديد موقع القمة والقاع الرئيسي في هذه الفترة
+        max_idx = recent_df['high'].idxmax()
+        min_idx = recent_df['low'].idxmin()
+
+        # دورة السوق الحالية تبدأ من أحدث نقطة تطرف (أيهما أقرب للوقت الحالي)
+        cycle_start_idx = max(max_idx, min_idx)
+        
+        # قص البيانات لأخذ الشموع من نقطة التطرف وحتى اللحظة الحالية فقط
+        cycle_df = recent_df.iloc[cycle_start_idx:].copy()
+
+        # حماية رياضية: إذا كانت نقطة التطرف قريبة جداً (حدثت في آخر 20 شمعة)،
+        # فهذا يعني أن الدورة لم تتشكل بعد، فنأخذ الـ 100 شمعة الأخيرة كبديل آمن.
+        if len(cycle_df) < 20:
+            cycle_df = recent_df.tail(100).copy()
+
+        # الآن نستخدم الدورة المعزولة (cycle_df) لحساب مناطق الارتداد الحقيقية
+        min_price = cycle_df['low'].min()
+        max_price = cycle_df['high'].max()
         price_bins = np.linspace(min_price, max_price, num_bins)
         
-        df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
-        df['bin_index'] = np.digitize(df['typical_price'], price_bins) - 1
-        vol_profile = df.groupby('bin_index')['volume'].sum()
+        cycle_df['typical_price'] = (cycle_df['high'] + cycle_df['low'] + cycle_df['close']) / 3
+        cycle_df['bin_index'] = np.digitize(cycle_df['typical_price'], price_bins) - 1
+        vol_profile = cycle_df.groupby('bin_index')['volume'].sum()
 
         profile = []
         for idx, vol in vol_profile.items():
@@ -2942,6 +2963,8 @@ def calculate_vpvr_levels(df, current_price, trend_direction, num_bins=50):
 
         above_price = profile_df[profile_df['price'] > current_price]
         below_price = profile_df[profile_df['price'] < current_price]
+        # ... (باقي الكود أسفل هذا السطر يبقى كما هو تماماً) ...
+
 
         # 🛡️ إعدادات الحماية وإدارة المخاطر الجديدة
                 # 🛡️ إعدادات الحماية وإدارة المخاطر الجديدة
@@ -3250,36 +3273,40 @@ async def run_analysis(cb: types.CallbackQuery):
             cvd_sig, buy_v, sell_v, fut_sig, z_score = None, 0, 0, None, 0
             delta_usd, funding_val = 0.0, 0.0
 
-
-
-
-    # 2. كشف الفخاخ وتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه بطريقة مؤسساتية (Quant Trend Unification)
+    # 2. كشف الفخاخ وتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه بطريقة مؤسساتية (Quant Trend Unification)    # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه بطريقة مؤسساتية (Quant Trend Unification)
     ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
     ema50 = df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
     classic_trend = "Bullish" if ema20 > ema50 else "Bearish"
     
     final_trend_dir = classic_trend
-    
-    # إجبار تحويل الفوليوم إلى أرقام لتدمير أي نصوص قادمة من الـ API
     df["volume"] = pd.to_numeric(df["volume"], errors='coerce')
-    
     avg_vol_20 = df["volume"].tail(20).mean()
     current_vol = df["volume"].iloc[-1]
 
-    
     # أ. شروط انعكاس الاتجاه من هابط إلى صاعد (اصطياد القاع الآمن)
     if classic_trend == "Bearish":
-        # لا نعتمد على RSI وحده! نطلب إما دخول قوي للحيتان (CVD)، أو دايفرجنس إيجابي مع فوليوم أعلى من المتوسط
         vol_surge = current_vol > (avg_vol_20 * 1.5)
-        if (cvd_sig == "Micro_Silent_Accumulation" or buy_v > sell_v * 1.5) or (last_rsi < 35 and last_macd > 0 and vol_surge):
-            final_trend_dir = "Bullish" 
-            
+        
+        # 🛡️ الفلتر المؤسساتي القاتل: هل السيولة حقيقية أم مجرد إغلاق شورت؟
+        # fut_sig يأتي من تحليل العقود الآجلة ويخبرنا بانخفاض الـ Open Interest 
+        is_short_covering = (fut_sig == "Short_Covering")
+
+        # نسمح بانعكاس الاتجاه فقط إذا لم يكن الهبوط مجرد سكاكين ساقطة يتم تغطيتها
+        if not is_short_covering:
+            if (cvd_sig == "Micro_Silent_Accumulation" or buy_v > (sell_v * 1.5)) or (last_rsi < 35 and last_macd > 0 and vol_surge):
+                final_trend_dir = "Bullish"
+
     # ب. شروط انعكاس الاتجاه من صاعد إلى هابط (الهروب من القمة المخادعة)
     elif classic_trend == "Bullish":
-        # نطلب تصريف مخفي (CVD سلبي) أو تشبع بيعي مع فوليوم بيع عالي
         vol_surge = current_vol > (avg_vol_20 * 1.5)
-        if (cvd_sig == "Hidden_Distribution" or sell_v > buy_v * 1.5) or (last_rsi > 75 and last_macd < 0 and vol_surge):
-            final_trend_dir = "Bearish" 
+        
+        # 🛡️ حماية عكسية: هل هو تصريف أم تصفية مراكز شراء مفرطة الرافعة (Long Squeeze)؟
+        is_long_squeeze = (fut_sig == "OI_Rising" and delta_usd < 0 and funding_val > 0.001)
+
+        if not is_long_squeeze:
+            if (cvd_sig == "Hidden_Distribution" or sell_v > (buy_v * 1.5)) or (last_rsi > 75 and last_macd < 0 and vol_surge):
+                final_trend_dir = "Bearish"
+ 
     # 3. حساب الدعم والمقاومة والأهداف بناءً على الاتجاه "المُوحّد" لمنع التضارب
             # 3. حساب الدعم والمقاومة والأهداف في الخلفية لمنع التضارب والتعليق
     trend_dir, trend_str, market_action, adx_val, calc_sl, calc_tp1, calc_tp2, calc_tp3, calc_sup, calc_res = await asyncio.to_thread(
