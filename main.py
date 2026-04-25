@@ -3163,7 +3163,9 @@ async def run_analysis(cb: types.CallbackQuery):
                 # إرجاع القيم لدقتها الأصلية لحماية العملات ذات الكسور العميقة
         safe_rsi = float(last_rsi) if not pd.isna(last_rsi) else 50.0
         safe_macd = float(last_macd) if not pd.isna(last_macd) else 0.0
-        vol_state = f"(Z-Score: {z_score:.1f})"
+                # 💡 التعديل: إخفاء Z-Score تماماً لعملات الـ DEX
+        vol_state = "" if is_dex else f"(Z-Score: {z_score:.1f})"
+
         
         # نظام النقاط (Scoring System) لتقييم التناقضات
         quant_score = 0.0
@@ -3198,7 +3200,7 @@ async def run_analysis(cb: types.CallbackQuery):
                     trend_strength = "مخادع (تصريف)"
                 else:
                     # التحقق من وجود سيولة حقيقية (Z-Score أكبر من 0.5 كحد أدنى للنشاط)
-                    if z_score > 0.5:
+                    if z_score > 0.5 or is_dex:
                         market_action = f"ضخ سيولة مؤسساتي وامتصاص قوي يعزز مسار الصعود {vol_state}."
                         trend_strength = "قوي (تجميع مؤسساتي)"
                     else:
@@ -3212,7 +3214,8 @@ async def run_analysis(cb: types.CallbackQuery):
                     trend_strength = "ارتداد (بناء قاع)"
                 else: 
                     # التحقق من وجود سيولة بيعية حقيقية
-                    if z_score > 0.5:
+                    if z_score > 0.5 or is_dex:
+
                         market_action = f"هيمنة بيعية وتفريغ مؤسساتي مستمر للسيولة اللحظية {vol_state}."
                         trend_strength = "نزيف سيولة"
                     else:
@@ -3239,7 +3242,7 @@ async def run_analysis(cb: types.CallbackQuery):
                     market_action = f"Uptrend active, but Quant Score is negative! Hidden distribution {vol_state} threatening the move."
                     trend_strength = "Fake (Distribution)"
                 else:
-                    if z_score > 0.5:
+                    if z_score > 0.5 or is_dex:
                         market_action = f"Institutional inflow & strong absorption validating the current uptrend {vol_state}."
                         trend_strength = "Strong (Institutional Accumulation)"
                     else:
@@ -3252,7 +3255,7 @@ async def run_analysis(cb: types.CallbackQuery):
                     market_action = f"Downtrend active, but detecting silent accumulation & bottom building {vol_state}."
                     trend_strength = "Bounce (Bottoming)"
                 else:
-                    if z_score > 0.5:
+                    if z_score > 0.5 or is_dex:
                         market_action = f"Heavy selling dominance & continuous institutional liquidity drain {vol_state}."
                         trend_strength = "Liquidity Drain"
                     else:
