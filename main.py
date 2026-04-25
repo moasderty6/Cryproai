@@ -3155,25 +3155,30 @@ async def run_analysis(cb: types.CallbackQuery):
         # 🤖 المولد النصي الكمي المؤسساتي (Quant Text Generator)
         # ==========================================
         
-        safe_rsi = float(last_rsi) if not pd.isna(last_rsi) else 50.0
-        safe_macd = float(last_macd) if not pd.isna(last_macd) else 0.0
+                # ==========================================
+        # 🤖 المولد النصي الكمي المؤسساتي (Quant Text Generator)
+        # ==========================================
+        
+        # 💡 التعديل الأول: تقريب الـ MACD والـ RSI لمرتبتين عشريتين من الجذور (Formatting Fix)
+        safe_rsi = round(float(last_rsi), 2) if not pd.isna(last_rsi) else 50.0
+        safe_macd = round(float(last_macd), 2) if not pd.isna(last_macd) else 0.0
         vol_state = f"(Z-Score: {z_score:.1f})"
         
-        # 💡 3. المؤسساتي: نظام النقاط (Scoring System) لتقييم التناقضات
+        # نظام النقاط (Scoring System) لتقييم التناقضات
         quant_score = 0.0
         if bullish_flow: quant_score += 2.0
         if bearish_flow: quant_score -= 2.0
-        if safe_rsi < rsi_lower: quant_score += 1.0  # تقييم الشراء من القاع
-        if safe_rsi > rsi_upper: quant_score -= 1.0  # تقييم خطر القمة
+        if safe_rsi < rsi_lower: quant_score += 1.0  
+        if safe_rsi > rsi_upper: quant_score -= 1.0  
         if safe_macd > 0: quant_score += 1.0
         else: quant_score -= 1.0
         
-        # إذا كان الترند قوياً (ADX > 25)، نعطي وزن أعلى للنقاط
         if adx_val >= 25: 
             quant_score *= 1.5 
 
+        # 💡 التعديل الثاني: ربط المنطق السعري بحجم الفوليوم (Z-Score Logic)
         if lang == "ar":
-            # تحديث نصوص المخرجات بناءً على النطاقات الديناميكية
+            # نصوص المؤشرات
             if safe_rsi >= rsi_upper: rsi_txt = "تشبع شرائي ديناميكي (Overbought)، خطر التصريف المؤسساتي مرتفع."
             elif safe_rsi <= rsi_lower: rsi_txt = "استنزاف بيعي أسفل المتوسطات (Oversold)، فرصة ارتداد وبناء قاع."
             else: rsi_txt = "زخم متوازن، يتداول السعر حول القيمة العادلة (Fair Value)."
@@ -3184,33 +3189,41 @@ async def run_analysis(cb: types.CallbackQuery):
             if safe_macd > 0: macd_txt = "الزخم قصير الأجل إيجابي (تقاطع شرائي مهيمن)."
             else: macd_txt = "الزخم قصير الأجل سلبي (ضغوط بيعية مكثفة)."
             
-            # دمج الرؤية: استخدام الـ Quant Score لكسر الانحياز التأكيدي
+            # معالجة الترند مع الـ Z-Score
             if final_trend_dir == "Bullish":
                 real_trend = "صاعد"
                 if quant_score <= -1.0: 
-                    # تناقض: السعر صاعد لكن المؤشرات والسيولة تسربت وتصرف
                     market_action = f"السعر صاعد، لكن التقييم الكمي سلبي! رصدنا تصريفاً مخفياً {vol_state} يهدد الترند."
                     trend_strength = "مخادع (تصريف)"
                 else:
-                    market_action = f"ضخ سيولة مؤسساتي وامتصاص قوي يعزز مسار الصعود {vol_state}."
-                    trend_strength = "قوي (تجميع)"
+                    # التحقق من وجود سيولة حقيقية (Z-Score أكبر من 0.5 كحد أدنى للنشاط)
+                    if z_score > 0.5:
+                        market_action = f"ضخ سيولة مؤسساتي وامتصاص قوي يعزز مسار الصعود {vol_state}."
+                        trend_strength = "قوي (تجميع مؤسساتي)"
+                    else:
+                        market_action = f"صعود باهت بسيولة ضعيفة (Low Volume Markup) وغياب للمؤسسات {vol_state}."
+                        trend_strength = "ضعيف (سيولة هشة)"
             
             else: # Bearish
                 real_trend = "هابط"
                 if quant_score >= 1.0: 
-                    # تناقض: السعر هابط لكن الحيتان والتقييم الكمي يشتري بصمت
                     market_action = f"السعر هابط، لكننا نرصد تجميعاً صامتاً يحاول بناء قاع محلي {vol_state}."
                     trend_strength = "ارتداد (بناء قاع)"
                 else: 
-                    market_action = f"هيمنة بيعية وتفريغ مستمر للسيولة اللحظية {vol_state}."
-                    trend_strength = "نزيف سيولة"
+                    # التحقق من وجود سيولة بيعية حقيقية
+                    if z_score > 0.5:
+                        market_action = f"هيمنة بيعية وتفريغ مؤسساتي مستمر للسيولة اللحظية {vol_state}."
+                        trend_strength = "نزيف سيولة"
+                    else:
+                        market_action = f"هبوط باهت بسيولة ضعيفة (Low Volume Markdown) وغياب للزخم {vol_state}."
+                        trend_strength = "ضعيف (هبوط صامت)"
             
             if is_spoofed: market_action += " [تنبيه: تلاعب وجدران وهمية في الأوردر بوك]"
             if is_orderbook_hollow: market_action += " [تنبيه: عمق سيولة هش قابل للكسر]"
 
         else: # English Version (Institutional Grade)
             if safe_rsi >= rsi_upper: rsi_txt = "Dynamic Overbought: High risk of institutional distribution."
-            elif safe_rsi <= rsi_lower: rsi_txt = "Deep Oversold (Below moving average): High bounce probability."
+            elif safe_rsi <= rsi_lower: rsi_txt = "Deep Oversold (Below MA): High bounce probability."
             else: rsi_txt = "Neutral Momentum: Trading within Fair Value."
             
             if adx_val >= 25: adx_txt = "Strong Trend: High directional conviction."
@@ -3225,8 +3238,12 @@ async def run_analysis(cb: types.CallbackQuery):
                     market_action = f"Uptrend active, but Quant Score is negative! Hidden distribution {vol_state} threatening the move."
                     trend_strength = "Fake (Distribution)"
                 else:
-                    market_action = f"Institutional inflow & strong absorption validating the current uptrend {vol_state}."
-                    trend_strength = "Strong (Accumulation)"
+                    if z_score > 0.5:
+                        market_action = f"Institutional inflow & strong absorption validating the current uptrend {vol_state}."
+                        trend_strength = "Strong (Institutional Accumulation)"
+                    else:
+                        market_action = f"Low Volume Markup: Weak liquidity & absence of institutional inflow {vol_state}."
+                        trend_strength = "Weak (Low Liquidity)"
             
             else: # Bearish
                 real_trend = "Bearish"
@@ -3234,8 +3251,12 @@ async def run_analysis(cb: types.CallbackQuery):
                     market_action = f"Downtrend active, but detecting silent accumulation & bottom building {vol_state}."
                     trend_strength = "Bounce (Bottoming)"
                 else:
-                    market_action = f"Heavy selling dominance & continuous liquidity drain {vol_state}."
-                    trend_strength = "Liquidity Drain"
+                    if z_score > 0.5:
+                        market_action = f"Heavy selling dominance & continuous institutional liquidity drain {vol_state}."
+                        trend_strength = "Liquidity Drain"
+                    else:
+                        market_action = f"Low Volume Markdown: Weak selling pressure & lack of momentum {vol_state}."
+                        trend_strength = "Weak (Silent Drop)"
 
             if is_spoofed: market_action += " [Alert: Orderbook Spoofing Detected]"
             if is_orderbook_hollow: market_action += " [Alert: Hollow Orderbook / Low Depth]"
@@ -3244,6 +3265,7 @@ async def run_analysis(cb: types.CallbackQuery):
         macd_fmt = format_price(safe_macd)
         if is_dex:
             market_action = f"(تحليل شبكة DEX) | {market_action}" if lang == "ar" else f"(DEX Network) | {market_action}"
+
 
 
         if lang == "ar":
