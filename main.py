@@ -2965,8 +2965,6 @@ def calculate_vpvr_levels(df, current_price, trend_direction, num_bins=50):
         return current_price*0.95, current_price*1.02, current_price*1.04, current_price*1.06
 
 # --- دالة التحليل المعدلة ---
-# --- دالة التحليل المعدلة ---
-@dp.callback_query(F.data.startswith("tf_"))
 async def analyze_orderbook_advanced_manual(symbol: str, client: httpx.AsyncClient, current_price: float):
     """
     محرك كشف الخداع المتقدم للتحليل اليدوي (Multi-Frame TWOB)
@@ -2994,7 +2992,8 @@ async def analyze_orderbook_advanced_manual(symbol: str, client: httpx.AsyncClie
         "is_spoofed": spoof_count > 0 and spoof_count < 3, 
         "bid_pressure_ratio": frames[-1].get('bid_pressure_ratio', 1.0)
     }
-
+# --- دالة التحليل المعدلة ---
+@dp.callback_query(F.data.startswith("tf_"))
 async def run_analysis(cb: types.CallbackQuery):
     uid, pool = cb.from_user.id, dp['db_pool']
     data = user_session_data.get(uid)
