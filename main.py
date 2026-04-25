@@ -188,86 +188,95 @@ MIN_TRAINING_SAMPLES = 100 # أقل عدد صفقات مطلوب لتدريب ا
 
 def train_xgboost_sync(records):
     """
-    الدالة الثقيلة لتدريب النموذج (تعمل في مسار منفصل لكي لا تجمد التيليجرام).
+    [Institutional Level] تدريب النموذج على التنبؤ بـ (Trade Quality Score)
+    بدلاً من مجرد 0 أو 1، ليعرف البوت "مدى جودة" الإشارة.
     """
     global AI_QUANT_MODEL
     df = pd.DataFrame(records)
     
-    # تحديد المدخلات (Features) والمخرجات (Labels)
-        # تحديد المدخلات (11 بُعد مالي بدلاً من 6)
-    X = df[['z_score', 'cvd', 'imbalance', 'adx', 'rsi', 'whale_inflow_score', 
-            'ob_skewness', 'micro_volatility', 'cvd_divergence', 'funding_rate', 
-            'volume_ratio', 'sp500_trend', 'sentiment_score']]
-
-    y = df['label']
+    # 1. تنظيف البيانات من القيم المفقودة
+    df = df.dropna(subset=['trade_quality_score'])
     
-    # إعدادات متقدمة للبيانات المالية المليئة بالضوضاء
-    model = xgb.XGBClassifier(
-        n_estimators=100, max_depth=4, learning_rate=0.05, 
-        subsample=0.8, colsample_bytree=0.8, eval_metric='logloss'
+    # 2. تحديد المدخلات المؤسساتية (15 بُعداً)
+    X = df[['market_regime', 'sp500_trend_pct', 'sentiment_score', 
+            'vol_z_score', 'cvd_to_vol_ratio', 'imbalance_ratio', 
+            'ob_skewness', 'whale_dominance_pct', 'adx', 'rsi', 
+            'micro_volatility_pct', 'cvd_divergence', 'funding_rate']]
+
+    # 3. الهدف هو التنبؤ بجودة الصفقة (Regression)
+    y = df['trade_quality_score']
+    
+    import xgboost as xgb
+    # إعدادات متقدمة جداً لمنع الـ Overfitting (حفظ البيانات بدلاً من فهمها)
+    model = xgb.XGBRegressor(
+        n_estimators=200,
+        max_depth=5,
+        learning_rate=0.03,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        objective='reg:squarederror' # التنبؤ برقم مستمر من -1 إلى 1
     )
+    
     model.fit(X, y)
     AI_QUANT_MODEL = model
     return True
 
 async def ai_trainer_worker(pool):
-    """
-    عامل خلفي يستيقظ كل 12 ساعة لتدريب الذكاء الاصطناعي وتحديث ذكائه
-    بناءً على أحدث الصفقات التي تمت معالجتها.
-    """
-    await asyncio.sleep(60) # انتظر دقيقة عند تشغيل البوت
-    
+    """عامل التدريب: يستيقظ كل 12 ساعة لتطوير عقل البوت"""
+    await asyncio.sleep(60) 
     while True:
         try:
             async with pool.acquire() as conn:
-                # جلب البيانات التي تم الحكم عليها (0 فاشلة، 1 ناجحة)                # 🟢 جلب الـ 13 بُعد بالكامل ليتطابق مع نموذج XGBoost
+                # جلب البيانات المؤسساتية بالكامل
                 records = await conn.fetch("""
-                    SELECT z_score, cvd, imbalance, adx, rsi, whale_inflow_score,
-                           ob_skewness, micro_volatility, cvd_divergence, funding_rate,
-                           volume_ratio, sp500_trend, sentiment_score, label
+                    SELECT market_regime, sp500_trend_pct, sentiment_score, 
+                           vol_z_score, cvd_to_vol_ratio, imbalance_ratio, 
+                           ob_skewness, whale_dominance_pct, adx, rsi, 
+                           micro_volatility_pct, cvd_divergence, funding_rate,
+                           trade_quality_score
                     FROM ml_training_data 
-                    WHERE label IN (0, 1)
+                    WHERE is_processed = 1
                 """)
                 
-                if len(records) >= MIN_TRAINING_SAMPLES:
-                    print(f"🧠 [AI Trainer] Training model on {len(records)} historical signals...")
-                    # تشغيل التدريب في مسار خلفي
+                if len(records) >= 100: # 🎯 عتبة الانطلاق (Critical Mass)
+                    print(f"🧠 [AI Trainer] Mass training on {len(records)} samples...")
                     records_dict = [dict(r) for r in records]
                     await asyncio.to_thread(train_xgboost_sync, records_dict)
-                    print("✅ [AI Trainer] Model updated successfully! AI is getting smarter.")
+                    print("✅ [AI Trainer] Engine Optimized to Hedge Fund Level.")
                 else:
-                    print(f"⏳ [AI Trainer] Not enough data yet ({len(records)}/{MIN_TRAINING_SAMPLES}). Collecting...")
+                    print(f"⏳ [AI Trainer] Collecting data... ({len(records)}/100)")
                     
         except Exception as e:
             print(f"⚠️ AI Trainer Error: {e}")
-            
-        await asyncio.sleep(43200) # ينام 12 ساعة
+        await asyncio.sleep(43200) # 12 ساعة
 
 def predict_signal_sync(features: dict) -> float:
-    """ يتوقع احتمالية النجاح من 0% إلى 100% """
+    """يتوقع جودة الصفقة بناءً على النموذج المدرب"""
     if AI_QUANT_MODEL is None:
-        return -1.0 # -1 تعني أن الذكاء الاصطناعي لم يتدرب بعد
+        return -1.0 
         
-    # 🛠️ تم إرجاع المتغير للخلف ليكون خارج شرط الـ if
     input_data = pd.DataFrame([{
-        'z_score': features.get('z_score', 0),
-        'cvd': features.get('cvd_usd', 0),
-        'imbalance': features.get('ofi_imbalance', 0),
-        'adx': features.get('adx', 0),
-        'rsi': features.get('rsi', 0),
-        'whale_inflow_score': features.get('whale_inflow', 0),
-        'ob_skewness': features.get('ob_skewness', 1.0),
-        'micro_volatility': features.get('micro_volatility', 0.0),
-        'cvd_divergence': features.get('cvd_divergence', 0.0),
-        'funding_rate': features.get('funding_rate', 0.0),
-        'volume_ratio': features.get('volume_ratio', 1.0),
-        'sp500_trend': features.get('sp500_trend', 0.0),
-        'sentiment_score': features.get('sentiment_score', 50.0)
+        'market_regime': int(features.get('market_regime', 0)),
+        'sp500_trend_pct': float(features.get('sp500_trend', 0.0)),
+        'sentiment_score': float(features.get('sentiment_score', 50.0)),
+        'vol_z_score': float(features.get('z_score', 0.0)),
+        'cvd_to_vol_ratio': float(features.get('cvd_to_vol_ratio', 0.0)),
+        'imbalance_ratio': float(features.get('ofi_imbalance', 0.0)),
+        'ob_skewness': float(features.get('ob_skewness', 1.0)),
+        'whale_dominance_pct': float(features.get('whale_inflow', 0.0)),
+        'adx': float(features.get('adx', 0.0)),
+        'rsi': float(features.get('rsi', 50.0)),
+        'micro_volatility_pct': float(features.get('micro_volatility', 0.0)),
+        'cvd_divergence': float(features.get('cvd_divergence', 0.0)),
+        'funding_rate': float(features.get('funding_rate', 0.0))
     }])
 
-    # استخراج احتمالية الفئة 1 (نجاح)
-    prob = AI_QUANT_MODEL.predict_proba(input_data)[0][1]
-    return float(prob) * 100 # إرجاع النسبة المئوية
+    # التنبؤ بسكور الجودة المتوقع
+    predicted_quality = AI_QUANT_MODEL.predict(input_data)[0]
+    
+    # تحويل السكور (من -1 إلى 1) إلى نسبة مئوية (0% إلى 100%) لسهولة القراءة
+    confidence_pct = ((predicted_quality + 1) / 2) * 100
+    return float(confidence_pct)
 
 # --- دوال الرادار المساعدة (ضعها فوق دالة الرادار) ---
 async def get_recent_orderflow_delta(symbol, client, limit=500):
@@ -1501,40 +1510,44 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 # جلب معدل التمويل الحالي (Funding Rate) من مصفوفة الـ Futures التي حسبناها مسبقاً
                 # إذا كان التمويل سالباً بقوة، الحيتان تضغط السعر صعوداً لتصفية البائعين
 
+                                # --- تحويل البيانات المطلقة إلى نسب مئوية لتناسب الـ AI ---
+                avg_vol_usd = avg_vol_20 * price if avg_vol_20 > 0 else 1.0
+                cvd_ratio_pct = (current_cvd / avg_vol_usd) * 100 if avg_vol_usd > 0 else 0.0
+                
+                # ترميز حالة السوق للـ AI (0: مجهول، 1: صاعد، 2: هابط، 3: عرضي)
+                regime_map = {"Trending_Bull": 1, "Trending_Bear": 2, "Ranging": 3}
+                regime_code = regime_map.get(current_regime_trend, 0)
+
                 ml_features = {
+                    'market_regime': regime_code,
+                    'sp500_trend': float(MACRO_CACHE.get("sp500_trend", 0.0)),
+                    'sentiment_score': float(MACRO_CACHE.get("sentiment_score", 50.0)),
                     'z_score': float(current_z),
-                    'cvd_usd': current_cvd, # 👈 سحبنا المتغير الجاهز والمصحح
+                    'cvd_to_vol_ratio': float(cvd_ratio_pct), # 👈 الأهم: نسبة السيولة لحجم التداول بدلاً من دولار مطلق
                     'ofi_imbalance': float(current_imbalance),
                     'ob_skewness': float(locals().get('depth_data', {}).get('skewness', 1.0) if locals().get('depth_data') else 1.0),
+                    'whale_inflow': float(whale_inflow),
                     'adx': float(current_adx),
                     'rsi': float(last_rsi),
-                    'whale_inflow': float(whale_inflow),
                     'micro_volatility': float(micro_volatility) if not pd.isna(micro_volatility) else 0.0,
-                    'cvd_divergence': float(cvd_divergence), # 👈 تم الإصلاح
-                    'funding_rate': float(funding_val),
-                    'volume_ratio': float(current_vol_ratio),
-                    'sp500_trend': float(MACRO_CACHE.get("sp500_trend", 0.0)),     # 🌍 حماية من أخطاء الذاكرة
-                    'sentiment_score': float(MACRO_CACHE.get("sentiment_score", 50.0)) # 🧠 حماية من أخطاء الذاكرة
+                    'cvd_divergence': float(cvd_divergence), 
+                    'funding_rate': float(funding_val)
                 }
-
+                # 3. استشارة الذكاء الاصطناعي (Quant AI Consultation)
+                ai_confidence = await asyncio.to_thread(predict_signal_sync, ml_features) 
                 
-                # 3. سؤال الذكاء الاصطناعي عن رأيه (في مسار خلفي)
-                                # 3. سؤال الذكاء الاصطناعي (وضع التعليق والتعلم الصامت)
-                # ai_probability = await asyncio.to_thread(predict_signal_sync, ml_features) 
-                
-                # إجبار البوت على تجاهل الـ AI حالياً والاعتماد على السكور الكلاسيكي المطور
-                ai_probability = -1.0 
-                
-                # 4. قرار الفلترة (سيعتمد دائماً على السكور الكلاسيكي لأن ai_probability = -1)
-                if ai_probability != -1.0:
-                    if ai_probability < 75.0: return None
-                    final_score = ai_probability
-                    ai_status = "Active 🧠"
+                if ai_confidence != -1.0:
+                    # 🛡️ الفلتر المؤسساتي: إذا كان الذكاء الاصطناعي يتوقع جودة أقل من 70%، نرفض الإشارة
+                    if ai_confidence < 70.0: 
+                        print(f"🗑️ {symbol} - Rejected by AI (Confidence: {ai_confidence:.1f}%)")
+                        return None
+                    
+                    final_score = (score * 0.4) + (ai_confidence * 0.6) # دمج الخبرة البرمجية مع ذكاء الآلة
+                    ai_status = f"Active 🧠 (Conf: {ai_confidence:.1f}%)"
                 else:
-                    final_score = score # الاعتماد الكلي على معادلاتك الكمية الاحترافية
+                    final_score = score 
                     ai_status = "Training & Learning ⏳"
 
-                
                 return {
                     "symbol": symbol, "price": price, "score": final_score,
                     "rsi": round(last_rsi, 2), "adx": round(current_adx, 2),
@@ -1572,87 +1585,159 @@ async def handle_binance_rate_limit(retry_after: int = 60):
         binance_rate_limit_event.set() 
 async def log_signal_for_ml(pool, symbol: str, price: float, features: dict):
     async with pool.acquire() as conn:
+        # منع تكرار الإشارة لنفس العملة خلال 24 ساعة لتجنب تضخم البيانات (Overfitting)
         exists = await conn.fetchval("""
             SELECT 1 FROM ml_training_data 
             WHERE symbol = $1 AND signal_time > CURRENT_TIMESTAMP - INTERVAL '24 hours'
         """, symbol)
         if exists: return 
 
-        # إدخال البيانات الممتدة
         await conn.execute("""
             INSERT INTO ml_training_data 
-            (symbol, entry_price, z_score, cvd, imbalance, adx, rsi, whale_inflow_score,
-             ob_skewness, micro_volatility, cvd_divergence, funding_rate, volume_ratio,
-             sp500_trend, sentiment_score)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            (symbol, entry_price, market_regime, sp500_trend_pct, sentiment_score, 
+             vol_z_score, cvd_to_vol_ratio, imbalance_ratio, ob_skewness, whale_dominance_pct,
+             adx, rsi, micro_volatility_pct, cvd_divergence, funding_rate)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         """, 
-        symbol, price, 
-        features.get('z_score', 0.0), features.get('cvd_usd', 0.0), 
-        features.get('ofi_imbalance', 0.0), features.get('adx', 0.0), 
-        features.get('rsi', 0.0), features.get('whale_inflow', 0.0),
-        features.get('ob_skewness', 1.0), features.get('micro_volatility', 0.0),
-        features.get('cvd_divergence', 0.0), features.get('funding_rate', 0.0),
-        features.get('volume_ratio', 1.0),
-        features.get('sp500_trend', 0.0), features.get('sentiment_score', 50.0))
-
+        symbol, 
+        price, 
+        int(features.get('market_regime', 0)),
+        float(features.get('sp500_trend', 0.0)), 
+        float(features.get('sentiment_score', 50.0)),
+        float(features.get('z_score', 0.0)), 
+        float(features.get('cvd_to_vol_ratio', 0.0)), # 👈 القيمة النسبية الأهم
+        float(features.get('ofi_imbalance', 0.0)), 
+        float(features.get('ob_skewness', 1.0)), 
+        float(features.get('whale_inflow', 0.0)),
+        float(features.get('adx', 0.0)), 
+        float(features.get('rsi', 50.0)), 
+        float(features.get('micro_volatility', 0.0)),
+        float(features.get('cvd_divergence', 0.0)), 
+        float(features.get('funding_rate', 0.0)))
         
-        print(f"🧠 [ML Logger] Data captured for {symbol} at ${price}")
+        print(f"🧠 [ML Logger] Institutional Data captured for {symbol} at ${price}")
+import numpy as np
 
 async def ml_inspector_worker(pool):
+    """
+    [Institutional Grade] Walk-Forward Evaluation Engine.
+    يستيقظ لتقييم الصفقات المعلقة عبر قياس MFE/MAE والـ Alpha مقارنة بالبيتكوين.
+    """
     await asyncio.sleep(120)
-    print("🕵️‍♂️ ML Inspector is running in the background...")
+    print("🕵️‍♂️ [Quant Inspector] Institutional Labeling Engine is online...")
     
     while True:
         try:
-            # 1. افتح الاتصال لجلب البيانات فقط ثم اغلقه فوراً
             async with pool.acquire() as conn:
+                # جلب الإشارات التي مر عليها 24 ساعة ولم يتم معالجتها
                 pending = await conn.fetch("""
                     SELECT id, symbol, entry_price, EXTRACT(EPOCH FROM signal_time) as sig_ts
                     FROM ml_training_data 
-                    WHERE label = -1 AND signal_time <= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+                    WHERE is_processed = 0 AND signal_time <= CURRENT_TIMESTAMP - INTERVAL '24 hours'
                 """)
                 
             if not pending:
                 await asyncio.sleep(600)
                 continue
                 
-            # 2. قم بالعمليات البطيئة (HTTP) خارج نطاق الاتصال بقاعدة البيانات
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=15) as client:
                 for row in pending:
                     sym = f"{row['symbol']}USDT"
-                    entry = row['entry_price']
+                    entry = float(row['entry_price'])
                     start_time_ms = int(row['sig_ts'] * 1000)
                     
                     base_url = get_random_binance_base()
-                    res = await client.get(
+                    
+                    # 1. جلب شموع العملة (15 دقيقة) لـ 24 ساعة (96 شمعة)
+                    res_asset = await client.get(
                         f"{base_url}/api/v3/klines",
                         params={"symbol": sym, "interval": "15m", "startTime": start_time_ms, "limit": 96}
                     )
                     
-                    if res.status_code == 200:
-                        klines = res.json()
-                        if not klines: continue
+                    # 2. جلب شموع البيتكوين لنفس الفترة لحساب الـ Alpha
+                    res_btc = await client.get(
+                        f"{base_url}/api/v3/klines",
+                        params={"symbol": "BTCUSDT", "interval": "15m", "startTime": start_time_ms, "limit": 96}
+                    )
+                    
+                    if res_asset.status_code == 200 and res_btc.status_code == 200:
+                        klines = res_asset.json()
+                        btc_klines = res_btc.json()
                         
-                        highest_high = max([float(k[2]) for k in klines])
-                        max_profit_pct = ((highest_high - entry) / entry) * 100
-                        label = 1 if max_profit_pct >= 5.0 else 0
+                        if not klines or len(klines) < 96 or not btc_klines:
+                            continue
+                            
+                        # --- حساب الأهداف الزمنية (Multi-Horizon Returns) ---
+                        # الشمعة 4 = بعد ساعة، الشمعة 16 = بعد 4 ساعات، الشمعة 95 = بعد 24 ساعة
+                        ret_1h = ((float(klines[3][4]) - entry) / entry) * 100 if len(klines) >= 4 else 0.0
+                        ret_4h = ((float(klines[15][4]) - entry) / entry) * 100 if len(klines) >= 16 else 0.0
+                        ret_24h = ((float(klines[-1][4]) - entry) / entry) * 100
                         
-                        # 3. افتح اتصالاً سريعاً جداً لتحديث السطر الواحد واغلقه
+                        # --- حساب الـ Alpha مقارنة بالبيتكوين ---
+                        btc_entry = float(btc_klines[0][1])
+                        btc_exit = float(btc_klines[-1][4])
+                        btc_return_24h = ((btc_exit - btc_entry) / btc_entry) * 100
+                        alpha_24h = ret_24h - btc_return_24h
+                        
+                        # --- التقييم الزمني لمسار السعر (MFE & MAE) ---
+                        mfe = 0.0
+                        mae = 0.0
+                        is_stopped_out = False
+                        
+                        # نعتبر أن هناك وقف خسارة وهمي عند -5% لتصحيح التقييم (Risk Penalty)
+                        HARD_STOP_LOSS = 5.0 
+                        
+                        for k in klines:
+                            high = float(k[2])
+                            low = float(k[3])
+                            
+                            profit_pct = ((high - entry) / entry) * 100
+                            drawdown_pct = ((entry - low) / entry) * 100
+                            
+                            if profit_pct > mfe: mfe = profit_pct
+                            if drawdown_pct > mae: mae = drawdown_pct
+                            
+                            # إذا ضربت العملة الانعكاس قبل تحقيق ربح جيد، نوقف تحديث الـ MFE
+                            if mae >= HARD_STOP_LOSS:
+                                is_stopped_out = True
+                                break 
+                                
+                        # --- The Hedge Fund Score (Trade Quality) ---
+                        # معادلة تقييم تدمج بين الربح، الخسارة المحتملة، وسرعة الحركة
+                        # تتراوح النتيجة بين -1.0 (تدمير للمحفظة) إلى +1.0 (صفقة قناص مثالية)
+                        
+                        if is_stopped_out and mfe < 3.0:
+                            trade_quality = -1.0 # ضربت الوقف فوراً
+                        else:
+                            # Quality = (MFE - MAE) / (MFE + MAE + 0.1)
+                            # الإضافة 0.1 لمنع القسمة على صفر
+                            raw_quality = (mfe - mae) / (mfe + mae + 0.1)
+                            
+                            # نعزز التقييم إذا كانت الألفا إيجابية (العملة أقوى من البيتكوين)
+                            alpha_bonus = min(0.2, max(-0.2, alpha_24h / 50.0))
+                            trade_quality = max(-1.0, min(1.0, raw_quality + alpha_bonus))
+
+                        # --- حفظ النتائج في قاعدة البيانات ---
                         async with pool.acquire() as conn:
                             await conn.execute("""
                                 UPDATE ml_training_data 
-                                SET max_profit_pct = $1, label = $2 
-                                WHERE id = $3
-                            """, max_profit_pct, label, row['id'])
+                                SET ret_1h = $1, ret_4h = $2, ret_24h = $3,
+                                    max_favorable_excursion = $4, max_adverse_excursion = $5,
+                                    btc_return_24h = $6, alpha_24h = $7,
+                                    trade_quality_score = $8, is_processed = 1
+                                WHERE id = $9
+                            """, ret_1h, ret_4h, ret_24h, mfe, mae, btc_return_24h, alpha_24h, float(trade_quality), row['id'])
                         
-                        print(f"📊 [ML Labeling] {sym} evaluated. Max Profit: {max_profit_pct:.2f}%. Label: {label}")
+                        print(f"📊 [Quant Labeling] {sym} | MFE: +{mfe:.1f}% | MAE: -{mae:.1f}% | Quality Score: {trade_quality:.2f}")
                         
-                    await asyncio.sleep(0.5) # حماية الـ API
+                    [span_4](start_span)[span_5](start_span)await asyncio.sleep(0.5) # الامتثال لقيود بايننس[span_4](end_span)[span_5](end_span)
                     
         except Exception as e:
-            print(f"⚠️ ML Inspector Error: {e}")
+            print(f"⚠️ Quant Inspector Error: {e}")
             
-        await asyncio.sleep(600)
+        [span_6](start_span)await asyncio.sleep(600) # فحص كل 10 دقائق[span_6](end_span)
+
+
 # --- ذاكرة الماكرو والمشاعر اللحظية ---
 MACRO_CACHE = {
     "sp500_trend": 0.0,      # نسبة تغير السوق الأمريكي اليوم
@@ -3744,39 +3829,59 @@ async def on_startup(app):
                 last_signaled TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-                # 🧠 الجديد: إنشاء جدول تدريب الذكاء الاصطناعي المؤسساتي (ML Data)
+                # 🧠 الجديد: إنشاء جدول تدريب الذكاء الاصطناعي المؤسساتي (ML Data)        # 🧠 إنشاء جدول تدريب الذكاء الاصطناعي المؤسساتي (Hedge Fund Schema)
+                # 🧠 The Ultimate Hedge Fund Data Schema
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS ml_training_data (
                 id SERIAL PRIMARY KEY,
                 symbol TEXT,
                 signal_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 entry_price DOUBLE PRECISION,
-                z_score DOUBLE PRECISION,
-                cvd DOUBLE PRECISION,
-                imbalance DOUBLE PRECISION,
+                
+                -- Features (المدخلات - مقيسة كنسب مئوية)
+                market_regime INTEGER,          
+                sp500_trend_pct DOUBLE PRECISION, 
+                sentiment_score DOUBLE PRECISION,
+                vol_z_score DOUBLE PRECISION,   
+                cvd_to_vol_ratio DOUBLE PRECISION, 
+                imbalance_ratio DOUBLE PRECISION,  
+                ob_skewness DOUBLE PRECISION,
+                whale_dominance_pct DOUBLE PRECISION, 
                 adx DOUBLE PRECISION,
                 rsi DOUBLE PRECISION,
-                max_profit_pct DOUBLE PRECISION DEFAULT 0.0,
-                label INTEGER DEFAULT -1
+                micro_volatility_pct DOUBLE PRECISION, 
+                cvd_divergence DOUBLE PRECISION,
+                funding_rate DOUBLE PRECISION,
+                
+                -- Multi-Horizon Targets (النتائج عبر آفاق زمنية مختلفة)
+                ret_1h DOUBLE PRECISION DEFAULT NULL, -- العائد بعد ساعة
+                ret_4h DOUBLE PRECISION DEFAULT NULL, -- العائد بعد 4 ساعات
+                ret_24h DOUBLE PRECISION DEFAULT NULL, -- العائد بعد 24 ساعة
+                
+                -- Path Metrics (جودة مسار السعر)
+                max_favorable_excursion DOUBLE PRECISION DEFAULT NULL, -- MFE
+                max_adverse_excursion DOUBLE PRECISION DEFAULT NULL,   -- MAE
+                
+                -- Alpha Metric (العائد مقارنة بالبيتكوين)
+                btc_return_24h DOUBLE PRECISION DEFAULT NULL,
+                alpha_24h DOUBLE PRECISION DEFAULT NULL,
+                
+                -- The Ultimate Label (تقييم الجودة من -1.0 إلى 1.0)
+                trade_quality_score DOUBLE PRECISION DEFAULT NULL,
+                
+                -- Processing Status (0: قيد الانتظار, 1: تم التقييم)
+                is_processed INTEGER DEFAULT 0                              
             )
         """)
-        # فهرس لتسريع بحث العامل الخلفي (Performance Optimization)
-        await conn.execute("CREATE INDEX IF NOT EXISTS idx_ml_pending ON ml_training_data(label, signal_time)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_ml_pending ON ml_training_data(is_processed, signal_time)")
+
         # 2. إجبار تحديث الجداول القديمة (للمشتركين الحاليين)
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS last_active DATE")
         await conn.execute("ALTER TABLE paid_users ADD COLUMN IF NOT EXISTS expiry_date TIMESTAMP")
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS invited_by BIGINT")
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS ref_count INTEGER DEFAULT 0")
                 # 🧠 ترقية جدول الذكاء الاصطناعي (إضافة كل الأعمدة المؤسساتية الجديدة إن لم تكن موجودة)
-        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS whale_inflow_score DOUBLE PRECISION DEFAULT 0.0")
-        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS ob_skewness DOUBLE PRECISION DEFAULT 1.0")
-        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS micro_volatility DOUBLE PRECISION DEFAULT 0.0")
-        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS cvd_divergence DOUBLE PRECISION DEFAULT 0.0")
-        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS funding_rate DOUBLE PRECISION DEFAULT 0.0")
-        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS volume_ratio DOUBLE PRECISION DEFAULT 1.0")
-        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS sp500_trend DOUBLE PRECISION DEFAULT 0.0")
-        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS sentiment_score DOUBLE PRECISION DEFAULT 50.0")
-
+        
         # 3. تفعيل حسابات الأدمن بشكل دائم
         initial_paid_users = {1317225334, 5527572646}
         for uid in initial_paid_users:
