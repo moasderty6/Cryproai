@@ -635,64 +635,119 @@ async def analyze_orderbook_spoofing_instant(symbol: str, client: httpx.AsyncCli
 
 async def get_institutional_orderflow(symbol, client, minutes=15):
     """ 
-    [UPGRADED] Tick-Level Footprint & Limit Absorption Detection 
+    [ULTRA UPGRADED] Global Tick-Level Footprint Engine 🌍
+    يجلب الصفقات اللحظية الحقيقية (AggTrades / Recent Trades) 
+    من (Binance + Bybit + OKX) في نفس اللحظة للحصول على Delta عالمية دقيقة.
     """
     import time
     end_time = int(time.time() * 1000)
     start_time = end_time - (minutes * 60 * 1000)
     
+    clean_sym = symbol.replace("USDT", "")
+    sym_binance = f"{clean_sym}USDT"
+    sym_bybit = f"{clean_sym}USDT"
+    sym_okx = f"{clean_sym}-USDT"
+    
+    # --- دالة فرعية 1: بايننس ---
+    async def fetch_binance():
+        try:
+            base_url = get_random_binance_base()
+            res = await client.get(f"{base_url}/api/v3/aggTrades", params={
+                "symbol": sym_binance, "startTime": start_time, "endTime": end_time, "limit": 1000 
+            }, timeout=4.0)
+            
+            if res.status_code == 200:
+                trades = res.json()
+                b_vol, s_vol = 0.0, 0.0
+                prices = []
+                for t in trades:
+                    price = float(t['p'])
+                    amount = float(t['q']) * price
+                    prices.append(price)
+                    if t['m']: s_vol += amount  # Maker is seller -> Aggressive Buy
+                    else: b_vol += amount       # Maker is buyer -> Aggressive Sell
+                return b_vol, s_vol, prices
+        except: pass
+        return 0.0, 0.0, []
+
+    # --- دالة فرعية 2: Bybit ---
+    async def fetch_bybit():
+        try:
+            res = await client.get("https://api.bybit.com/v5/market/recent-trade", params={
+                "category": "spot", "symbol": sym_bybit, "limit": 1000
+            }, timeout=4.0)
+            
+            if res.status_code == 200:
+                trades = res.json().get('result', {}).get('list', [])
+                b_vol, s_vol = 0.0, 0.0
+                for t in trades:
+                    amount = float(t['v']) * float(t['p'])
+                    if t['S'] == 'Buy': b_vol += amount
+                    else: s_vol += amount
+                return b_vol, s_vol
+        except: pass
+        return 0.0, 0.0
+
+    # --- دالة فرعية 3: OKX ---
+    async def fetch_okx():
+        try:
+            res = await client.get("https://www.okx.com/api/v5/market/trades", params={
+                "instId": sym_okx, "limit": 500 # أقصى حد مسموح به في OKX
+            }, timeout=4.0)
+            
+            if res.status_code == 200:
+                trades = res.json().get('data', [])
+                b_vol, s_vol = 0.0, 0.0
+                for t in trades:
+                    amount = float(t['sz']) * float(t['px'])
+                    if t['side'] == 'buy': b_vol += amount
+                    else: s_vol += amount
+                return b_vol, s_vol
+        except: pass
+        return 0.0, 0.0
+
+    # ==========================================
+    # 🚀 الإطلاق المتزامن (Scatter-Gather)
+    # ==========================================
     try:
-        await binance_rate_limit_event.wait()
-        base_url = get_random_binance_base()
-        res = await client.get(f"{base_url}/api/v3/aggTrades", params={
-            "symbol": symbol,
-            "startTime": start_time,
-            "endTime": end_time,
-            "limit": 1000 
-        }, timeout=5.0)
+        await binance_rate_limit_event.wait() # حماية بايننس
         
-        if res.status_code == 200:
-            trades = res.json()
-            if not trades: return 0.0, 0.0, 0.0, None
+        # نرسل الـ 3 طلبات في نفس اللحظة
+        binance_res, bybit_res, okx_res = await asyncio.gather(
+            fetch_binance(), fetch_bybit(), fetch_okx()
+        )
+        
+        # استخراج البيانات
+        bin_buy, bin_sell, bin_prices = binance_res
+        byb_buy, byb_sell = bybit_res
+        okx_buy, okx_sell = okx_res
+        
+        # حساب السيولة العالمية (Global Flow)
+        global_buy_vol = bin_buy + byb_buy + okx_buy
+        global_sell_vol = bin_sell + byb_sell + okx_sell
+        
+        global_delta = global_buy_vol - global_sell_vol
+        total_global_vol = global_buy_vol + global_sell_vol
+        signal = None
+        
+        # --- محرك اكتشاف الامتصاص (Limit Absorption) ---
+        # نعتمد على حركة أسعار بايننس كمؤشر قياسي لحركة السوق اللحظية
+        if bin_prices and total_global_vol > 0:
+            price_series = pd.Series(bin_prices)
+            price_range_pct = (price_series.max() - price_series.min()) / (price_series.min() + 1e-8)
             
-            buy_vol = 0.0
-            sell_vol = 0.0
-            cvd_array = []
-            prices = []
-            current_cvd = 0.0
-
-            for t in trades:
-                price = float(t['p'])
-                amount = float(t['q']) * price
-                prices.append(price)
-
-                if t['m']: # Seller is maker (Aggressive Sell)
-                    sell_vol += amount
-                    current_cvd -= amount
-                else:      # Buyer is maker (Aggressive Buy)
-                    buy_vol += amount
-                    current_cvd += amount
-                
-                cvd_array.append(current_cvd)
-                    
-            delta = buy_vol - sell_vol
-            
-            # --- Limit Absorption Engine ---
-            price_series = pd.Series(prices)
-            price_range_pct = (price_series.max() - price_series.min()) / price_series.min()
-            
-            signal = None
-            total_vol = buy_vol + sell_vol
-            
-            # If price is ranging (< 0.5% movement) but CVD is exploding upwards
-            if price_range_pct <= 0.005 and delta > (total_vol * 0.25):
+            # إذا كان السعر شبه ثابت (نطاق ضيق جداً < 0.5%) 
+            # والدلتا الشرائية العالمية ضخمة جداً (تشكل أكثر من 25% من السيولة)
+            if price_range_pct <= 0.005 and global_delta > (total_global_vol * 0.25):
                 signal = "Limit_Absorption"
-            
-            return delta, buy_vol, sell_vol, signal
-            
+                
+        return global_delta, global_buy_vol, global_sell_vol, signal
+
     except Exception as e:
-        print(f"⚠️ Flow Error: {e}")
+        print(f"⚠️ Global Flow Error: {e}")
+        
     return 0.0, 0.0, 0.0, None
+
 
 
 async def detect_spot_perp_divergence(symbol: str, client: httpx.AsyncClient):
