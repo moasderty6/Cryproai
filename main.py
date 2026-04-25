@@ -1240,7 +1240,7 @@ async def silent_data_harvester_worker(pool):
                             'z_score': float(current_z),
                             'cvd_to_vol_ratio': float(cvd_ratio_pct),
                             'ofi_imbalance': float(depth_data.get('imbalance', 0.0)),
-                            'ob_skewness': float(depth_data.get('skewness', 1.0)),
+                            'ob_skewness': float(depth_data.get('bid_pressure_ratio', 1.0)),
                             'whale_inflow': await get_whale_inflow_score(),
                             'adx': float(current_adx),
                             'rsi': float(last_rsi),
@@ -1688,7 +1688,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     'z_score': float(current_z),
                     'cvd_to_vol_ratio': float(cvd_ratio_pct), # 👈 الأهم: نسبة السيولة لحجم التداول بدلاً من دولار مطلق
                     'ofi_imbalance': float(current_imbalance),
-                    'ob_skewness': float(locals().get('depth_data', {}).get('skewness', 1.0) if locals().get('depth_data') else 1.0),
+                    'ob_skewness': float(locals().get('depth_data', {}).get('bid_pressure_ratio', 1.0) if locals().get('depth_data') else 1.0),
                     'whale_inflow': float(whale_inflow),
                     'adx': float(current_adx),
                     'rsi': float(last_rsi),
