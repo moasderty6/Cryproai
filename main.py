@@ -2265,6 +2265,7 @@ async def approve_radar_signal(cb: types.CallbackQuery):
                     f"📌 Bot Results: @N_Results"
                 )
         # ---------- FREE ----------
+        # ---------- FREE ----------
         else:
             if lang == "ar":
                 text = (
@@ -2273,9 +2274,8 @@ async def approve_radar_signal(cb: types.CallbackQuery):
                     f"💎 العملة: •••• 🔒\n"
                     f"⚡ الإشارة: {data['signal']}\n"
                     f"📊 السكور: {data['score']}/100\n\n"
-                    f"🔥 تم رصد تجميع قوي + فوليوم غير طبيعي\n"
-                    f"🚀 احتمال انفجار سعري قريب\n\n"
-                    f"اشترك VIP لكشف اسم العملة والأهداف\n"
+                    f"📈 <b>التحليل:</b>\n{data['insight_ar']}\n\n"
+                    f"🔒 اشترك VIP لكشف اسم العملة والأهداف\n"
                     f"━━━━━━━━━━━━━━\n"
                     f"📌 نتائج تحليلات البوت: @N_Results"
                 )
@@ -2286,9 +2286,8 @@ async def approve_radar_signal(cb: types.CallbackQuery):
                     f"💎 Coin: •••• 🔒\n"
                     f"⚡ Signal: {data['signal']}\n"
                     f"📊 Score: {data['score']}/100\n\n"
-                    f"🔥 Strong accumulation + abnormal volume\n"
-                    f"🚀 Possible breakout soon\n\n"
-                    f"Subscribe VIP to unlock the coin and exact targets.\n"
+                    f"📈 <b>Insight:</b>\n{data['insight_en']}\n\n"
+                    f"🔒 Subscribe VIP to unlock the coin and exact targets.\n"
                     f"━━━━━━━━━━━━━━\n"
                     f"📌 Bot Results: @N_Results"
                 )
