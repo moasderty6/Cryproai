@@ -2301,37 +2301,33 @@ async def set_lang(cb: types.CallbackQuery):
 # --- التعامل مع الرموز ---
 
 async def search_dex_coin(symbol: str, retries: int = 3):
-    """تبحث عن العملة في DexScreener مع نظام حماية من الحظر اللحظي"""
+    """تبحث عن العملة وتجلب السيولة وعنوان العقد الحقيقي لفحص الأمان"""
     url = f"https://api.dexscreener.com/latest/dex/search?q={symbol}"
     
     async with httpx.AsyncClient(timeout=10) as client:
         for attempt in range(retries):
             try:
                 res = await client.get(url)
-                
                 if res.status_code == 200:
                     data = res.json()
                     if data.get("pairs") and len(data["pairs"]) > 0:
-                        best_pair = data["pairs"][0]
+                        # فلترة لجلب أفضل مجمع سيولة
+                        pairs = sorted(data["pairs"], key=lambda x: float(x.get("liquidity", {}).get("usd", 0)), reverse=True)
+                        best_pair = pairs[0]
                         return {
                             "network": best_pair["chainId"],
                             "pool_address": best_pair["pairAddress"],
+                            "token_address": best_pair.get("baseToken", {}).get("address", ""), # 👈 مهم جداً
                             "price": float(best_pair.get("priceUsd", 0)),
                             "volume_24h": float(best_pair.get("volume", {}).get("h24", 0)),
+                            "liquidity_usd": float(best_pair.get("liquidity", {}).get("usd", 0)), # 👈 حجم السيولة
                             "base_symbol": best_pair.get("baseToken", {}).get("symbol", symbol)
                         }
-                    return None # العملة غير موجودة فعلاً
-                    
-                elif res.status_code == 429: # حظر مؤقت من DexScreener
-                    await asyncio.sleep(2)
-                    continue
-                    
-            except Exception as e:
-                if attempt == retries - 1:
-                    print(f"DexScreener Error after 3 attempts: {e}")
-                await asyncio.sleep(1)
-                
+                    return None 
+            except Exception: pass
+            await asyncio.sleep(1)
     return None
+
 
 # === كود جديد: ضعه فوق دوال التحليل ===
 async def get_dex_klines(client: httpx.AsyncClient, chain_id: str, pair_address: str, tf: str):
@@ -2546,10 +2542,12 @@ async def handle_symbol(m: types.Message):
             sym = dex_data["base_symbol"]
             price = dex_data["price"]
             user_session_data[uid] = {
-                "sym": sym, "price": price, "volume_24h": dex_data["volume_24h"], 
+                "sym": sym, "price": price, "volume_24h": dex_data["volume_24h"],
+                "liquidity_usd": dex_data.get("liquidity_usd", 0.0), # 👈 هذا هو السطر المضاف
                 "lang": lang, "is_dex": True, 
                 "network": dex_data["network"], "pool_address": dex_data["pool_address"]
             }
+
         else:
             error_text = (
                 f"❌ الرمز `{sym}` غير صحيح أو غير متوفر في المنصات المركزية واللامركزية." if lang=="ar" 
@@ -3037,6 +3035,31 @@ async def analyze_orderbook_advanced_manual(symbol: str, client: httpx.AsyncClie
         "bid_pressure_ratio": frames[-1].get('bid_pressure_ratio', 1.0)
     }
 # --- دالة التحليل المعدلة ---
+async def evaluate_dex_risk(liquidity_usd: float, vol_24h: float):
+    """محرك تقييم مخاطر السيولة في الـ DEX"""
+    risk_warnings_ar = []
+    risk_warnings_en = []
+    risk_score = 0
+    
+    # 1. فحص فقر السيولة (Liquidity Void)
+    if liquidity_usd < 50000:
+        risk_warnings_ar.append("🚨 خطر عالي: سيولة المجمع (LP) أقل من 50 ألف دولار! (سهلة التلاعب/السحب).")
+        risk_warnings_en.append("🚨 HIGH RISK: Liquidity Pool < $50k! (Rug-pull/Manipulation risk).")
+        risk_score -= 5
+    elif liquidity_usd < 200000:
+        risk_warnings_ar.append("⚠️ تنبيه: سيولة المجمع ضعيفة، توقع انزلاق سعري (Slippage) عالي.")
+        risk_warnings_en.append("⚠️ WARNING: Low Liquidity, expect high slippage.")
+        risk_score -= 2
+        
+    # 2. فحص نسبة الفوليوم للسيولة (Volume/Liquidity Ratio)
+    # إذا كان الفوليوم اليومي أعلى من السيولة بـ 10 أضعاف، هذا تدوير وهمي (Wash Trading)
+    if liquidity_usd > 0 and (vol_24h / liquidity_usd) > 10:
+         risk_warnings_ar.append("🤖 تحذير: الفوليوم أعلى من السيولة بشكل غير منطقي (احتمال Wash Trading).")
+         risk_warnings_en.append("🤖 WARNING: Abnormal Vol/Liq ratio (Possible Wash Trading).")
+         risk_score -= 3
+
+    return risk_warnings_ar, risk_warnings_en, risk_score
+
 @dp.callback_query(F.data.startswith("tf_"))
 async def run_analysis(cb: types.CallbackQuery):
     uid, pool = cb.from_user.id, dp['db_pool']
@@ -3066,14 +3089,24 @@ async def run_analysis(cb: types.CallbackQuery):
             print(f"Edit msg error in analysis: {e}")
 
     clean_sym = sym.replace("USDT", "").strip().upper()
+    
+    # --- التعديل الجديد: جلب السيولة وفحص الأمان للـ DEX ---
     is_dex = data.get('is_dex', False)
+    dex_liquidity = data.get('liquidity_usd', 0.0) 
+    dex_vol = data.get('volume_24h', 0.0)
+    
+    dex_warnings_ar, dex_warnings_en = [], []
     
     if is_dex:
+        # تقييم المخاطر أولاً
+        dex_warnings_ar, dex_warnings_en, dex_risk = await evaluate_dex_risk(dex_liquidity, dex_vol)
+        
         network = data.get('network')
         pool_address = data.get('pool_address')
         gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
         candles = await get_candles_dex(network, pool_address, gate_interval, limit=500)
     else:
+
         # بايننس تستخدم نفس مسميات الفريمات تقريباً
         gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
         candles = await get_candles_binance(f"{clean_sym}USDT", gate_interval, limit=500)
@@ -3121,11 +3154,11 @@ async def run_analysis(cb: types.CallbackQuery):
             db_vol_float = ((avg_vol_5 / avg_vol_20) - 1) * 100 
     except: pass
 
-    # 🌟 خريطة التوافق الزمني المؤسساتية (Timeframe Alignment Map)
+    # 🌟 خريطة التوافق الزمني المؤسساتية (Timeframe Alignment Map)    # 1. تحديث خريطة التوافق الزمني لإضافة مفتاح (use_ob)
     tf_settings = {
-        "4h": {"cvd_tf": "15m", "oi_period": "4h", "macro_flow": False},
-        "daily": {"cvd_tf": "1h", "oi_period": "1d", "macro_flow": True},
-        "weekly": {"cvd_tf": "4h", "oi_period": "1d", "macro_flow": True}
+        "4h": {"cvd_tf": "15m", "oi_period": "4h", "macro_flow": False, "use_ob": True},
+        "daily": {"cvd_tf": "1h", "oi_period": "1d", "macro_flow": True, "use_ob": False}, # 👈 تعطيل الأوردر بوك
+        "weekly": {"cvd_tf": "4h", "oi_period": "1d", "macro_flow": True, "use_ob": False}  # 👈 تعطيل الأوردر بوك
     }
     current_tf = tf_settings.get(tf, tf_settings["4h"])
 
@@ -3137,16 +3170,23 @@ async def run_analysis(cb: types.CallbackQuery):
     
     # 🟢 الحل: نقل حساب Z-Score هنا ليعمل على CEX و DEX معاً (الفوليوم هو سلاحك الوحيد في الديكس)
     z_score, _, _ = calculate_volume_zscore(df, window=720)
+    # 2. انزل للأسفل عند قسم (تنفيذ المهام المتزامنة tasks_to_run) وقم بتعديل استدعاء depth_task
     if not is_dex:
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 safe_price = float(price)
-                # ... (باقي كود استخراج CVD و Futures يبقى كما هو داخل هذا البلوك)
-
                 safe_old_price = float(df["close"].iloc[-3]) if len(df) > 3 else safe_price
 
-                # 1. استخدام دالة كشف التلاعب المتقدمة للتحليل اليدوي
-                depth_task = analyze_orderbook_advanced_manual(clean_sym, client, safe_price)
+                # 🟢 التعديل الجذري: لا تطلب الأوردر بوك إذا كان الفريم كبير!
+                if current_tf["use_ob"]:
+                    depth_task = analyze_orderbook_advanced_manual(clean_sym, client, safe_price)
+                else:
+                    # إرجاع بيانات محايدة للفريمات الكبيرة لمنع تلوث التحليل
+                    async def mock_depth():
+                        return {"is_hollow": False, "imbalance": 0.0, "is_spoofed": False, "bid_pressure_ratio": 1.0}
+                    depth_task = mock_depth()
+                
+                # ... (باقي الكود cvd_task و flow_task و futures_task يبقى كما هو) ...
                 # 2. توافق فريم السيولة الصامتة
                 cvd_task = get_micro_cvd_absorption(f"{clean_sym}USDT", client, current_tf["cvd_tf"])
                 
@@ -3394,12 +3434,19 @@ async def run_analysis(cb: types.CallbackQuery):
         if is_spoofed: market_action += " [Alert: Orderbook Spoofing Detected]"
         if is_orderbook_hollow: market_action += " [Alert: Hollow Orderbook / Low Depth]"
 
-    # بناء التقرير النهائي 
+    # بناء التقرير النهائي    # بناء التقرير النهائي 
     macd_fmt = format_price(safe_macd)
     if is_dex:
         market_action = f"(تحليل شبكة DEX) | {market_action}" if lang == "ar" else f"(DEX Network) | {market_action}"
 
-
+    # 👇👇 السطور الجديدة التي ستضيفها هنا 👇👇
+    dex_alert_str = ""
+    if is_dex and dex_warnings_ar:
+        if lang == "ar":
+            dex_alert_str = "\n🛡️ <b>تدقيق أمان اللامركزية (DEX Audit):</b>\n" + "\n".join(dex_warnings_ar) + "\n"
+        else:
+            dex_alert_str = "\n🛡️ <b>DEX Security Audit:</b>\n" + "\n".join(dex_warnings_en) + "\n"
+    # 👆👆 نهاية السطور الجديدة 👆👆
 
     if lang == "ar":
         final_report = f"""
@@ -3423,6 +3470,7 @@ Stop Loss: <code>{format_price(calc_sl)}</code>
 • <b>مؤشر (RSI) ({safe_rsi:.1f}):</b> {rsi_txt}
 • <b>مؤشر (MACD) ({macd_fmt}):</b> {macd_txt}
 • <b>مؤشر (ADX) ({adx_val:.1f}):</b> {adx_txt}
+{dex_alert_str}
 """
     else:
         final_report = f"""
@@ -3446,8 +3494,8 @@ Stop Loss: <code>{format_price(calc_sl)}</code>
 • <b>RSI ({safe_rsi:.1f}):</b> {rsi_txt}
 • <b>MACD ({macd_fmt}):</b> {macd_txt}
 • <b>ADX ({adx_val:.1f}):</b> {adx_txt}
+{dex_alert_str}
 """
-
     # 3. إرسال النتيجة فوراً للمستخدم (بدون انتظار أي سيرفر خارجي)
     try:
         await cb.message.edit_text(final_report, parse_mode=ParseMode.HTML)
