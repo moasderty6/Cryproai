@@ -3160,8 +3160,9 @@ async def run_analysis(cb: types.CallbackQuery):
         # ==========================================
         
         # 💡 التعديل الأول: تقريب الـ MACD والـ RSI لمرتبتين عشريتين من الجذور (Formatting Fix)
-        safe_rsi = round(float(last_rsi), 2) if not pd.isna(last_rsi) else 50.0
-        safe_macd = round(float(last_macd), 2) if not pd.isna(last_macd) else 0.0
+                # إرجاع القيم لدقتها الأصلية لحماية العملات ذات الكسور العميقة
+        safe_rsi = float(last_rsi) if not pd.isna(last_rsi) else 50.0
+        safe_macd = float(last_macd) if not pd.isna(last_macd) else 0.0
         vol_state = f"(Z-Score: {z_score:.1f})"
         
         # نظام النقاط (Scoring System) لتقييم التناقضات
