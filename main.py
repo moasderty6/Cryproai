@@ -3161,7 +3161,7 @@ async def run_analysis(cb: types.CallbackQuery):
                 market_action = f"ضخ سيولة مؤسساتي وامتصاص قوي يعزز الصعود {vol_state}."
                 real_trend = "صاعد"
                 trend_strength = "مخادع (تصريف)" if bearish_flow else "قوي (تجميع)"
-            else: # Bearish
+        else: # Bearish
                 if bullish_flow: market_action = f"تجميع صامت وامتصاص للبيع في محاولة لبناء قاع {vol_state}."
                 else: market_action = f"هيمنة بيعية وتفريغ مستمر للسيولة اللحظية {vol_state}."
                 real_trend = "هابط"
