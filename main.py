@@ -1730,12 +1730,12 @@ async def ml_inspector_worker(pool):
                         
                         print(f"📊 [Quant Labeling] {sym} | MFE: +{mfe:.1f}% | MAE: -{mae:.1f}% | Quality Score: {trade_quality:.2f}")
                         
-                    [span_4](start_span)[span_5](start_span)await asyncio.sleep(0.5) # الامتثال لقيود بايننس[span_4](end_span)[span_5](end_span)
+                    await asyncio.sleep(0.5) # الامتثال لقيود بايننس
                     
         except Exception as e:
             print(f"⚠️ Quant Inspector Error: {e}")
             
-        [span_6](start_span)await asyncio.sleep(600) # فحص كل 10 دقائق[span_6](end_span)
+        await asyncio.sleep(600) # فحص كل 10 دقائق
 
 
 # --- ذاكرة الماكرو والمشاعر اللحظية ---
