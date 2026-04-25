@@ -1548,6 +1548,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     final_score = score 
                     ai_status = "Training & Learning ⏳"
 
+                                # (في نهاية دالة analyze_radar_coin)
                 return {
                     "symbol": symbol, "price": price, "score": final_score,
                     "rsi": round(last_rsi, 2), "adx": round(current_adx, 2),
@@ -1556,8 +1557,9 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     "ob_pressure": round(locals().get('global_ob_pressure', 1.0), 2),
                     "signal_type": final_signal,
                     "confluence": confluence_count,
-                    "ml_features": ml_features, # تمريرها لكي يتم تسجيلها لاحقاً
-                    "ai_status": ai_status
+                    "ml_features": ml_features, 
+                    "ai_status": ai_status,
+                    "cvd_usd": float(current_cvd) # 👈 أضفنا هذا السطر هنا لتمرير القيمة الدولارية للرسالة
                 }
             return None  
         except Exception as e:
@@ -1889,16 +1891,19 @@ async def ai_opportunity_radar(pool):
                         SET last_signaled = CURRENT_TIMESTAMP
                     """, symbol)
 
-                                # تنسيق الأرقام لضمان عدم ظهور أرقام طويلة جداً
-                                # ====================================================================
-                # ⚙️ محرك التحليل الكمي المباشر (Quant Notes) - بديل الذكاء الاصطناعي
+                                # تنسيق الأرقام لضمان عدم ظهور أرقام طويلة جداً                # ====================================================================
+                # ⚙️ محرك التحليل الكمي المباشر (Quant Notes)
                 # ====================================================================
                 ml = best_meta.get('ml_features', {})
                 z_val = float(ml.get('z_score', best_meta.get('macd', 0.0)))
-                vol_ratio = float(ml.get('volume_ratio', best_meta.get('vol_ratio', 1.0)))
+                
+                # 👇 عدل السطرين التاليين 👇
+                vol_ratio = float(best_meta.get('vol_ratio', 1.0)) 
+                cvd_val = float(best_meta.get('cvd_usd', 0.0)) # 👈 التعديل هنا: يقرأ من best_meta وليس من ml
+                
                 ob_val = float(best_meta.get('ob_pressure', 1.0))
-                cvd_val = float(ml.get('cvd_usd', 0.0))
                 funding = float(ml.get('funding_rate', 0.0))
+
                 
                 confluence = int(best_meta.get('confluence', 0))
                 adx = float(best_meta.get('adx', 0.0))
