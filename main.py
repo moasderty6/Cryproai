@@ -3129,13 +3129,16 @@ async def run_analysis(cb: types.CallbackQuery):
             bullish_flow = False
             bearish_flow = False
 
-        # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة        # استخراج حالة الفوليوم والفجوة        # استخراج حالة الفوليوم والفجوة        # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة        # ==========================================
+        # ==========================================
         # 🤖 إغتيال الـ AI: المولد النصي الكمي (Quant Text Generator)
         # ==========================================
         
         # 1. إعداد نصوص المؤشرات الفنية بصرامة (RSI, ADX, MACD)
         safe_rsi = float(last_rsi) if not pd.isna(last_rsi) else 50.0
         safe_macd = float(last_macd) if not pd.isna(last_macd) else 0.0
+        
+        # توحيد استخراج حالة الفوليوم لاستخدامها في كلا اللغتين
+        vol_state = f"(Z-Score: {z_score:.1f})"
         
         if lang == "ar":
             # RSI Logic
@@ -3152,21 +3155,24 @@ async def run_analysis(cb: types.CallbackQuery):
             else: macd_txt = "تقاطع سلبي، ضغط بيعي مهيمن وتناقص في الزخم."
             
             # Volume & Liquidity Flow Logic (Z-Score & CVD)
-            vol_state = f"(Z-Score: {z_score:.1f})"
-                    # مثال للتأكد من الربط داخل القالب:
-        if final_trend_dir == "Bullish":
-            if bearish_flow: # هنا لن يعطي خطأ الآن لأننا عرفناه فوق
-                market_action = f"السعر صاعد، لكننا نرصد تصريفاً مخفياً {vol_state}."
-            else:
-                market_action = f"ضخ سيولة مؤسساتي وامتصاص قوي يعزز الصعود {vol_state}."
+            if final_trend_dir == "Bullish":
                 real_trend = "صاعد"
-                trend_strength = "مخادع (تصريف)" if bearish_flow else "قوي (تجميع)"
-        else: # Bearish
-                if bullish_flow: market_action = f"تجميع صامت وامتصاص للبيع في محاولة لبناء قاع {vol_state}."
-                else: market_action = f"هيمنة بيعية وتفريغ مستمر للسيولة اللحظية {vol_state}."
+                if bearish_flow: 
+                    market_action = f"السعر صاعد، لكننا نرصد تصريفاً مخفياً {vol_state}."
+                    trend_strength = "مخادع (تصريف)"
+                else:
+                    market_action = f"ضخ سيولة مؤسساتي وامتصاص قوي يعزز الصعود {vol_state}."
+                    trend_strength = "قوي (تجميع)"
+            else: # Bearish
                 real_trend = "هابط"
-                trend_strength = "ارتداد (بناء قاع)" if bullish_flow else "نزيف سيولة"
-                
+                if bullish_flow: 
+                    market_action = f"تجميع صامت وامتصاص للبيع في محاولة لبناء قاع {vol_state}."
+                    trend_strength = "ارتداد (بناء قاع)"
+                else: 
+                    market_action = f"هيمنة بيعية وتفريغ مستمر للسيولة اللحظية {vol_state}."
+                    trend_strength = "نزيف سيولة"
+            
+            # تنبيهات الأوردر بوك (يجب أن تكون على مستوى الترند الرئيسي داخل لغة عربية)
             if is_spoofed: market_action += " [تنبيه: تلاعب وجدران وهمية في الأوردر بوك]"
             if is_orderbook_hollow: market_action += " [تنبيه: عمق سيولة هش قابل للكسر]"
 
@@ -3192,8 +3198,6 @@ async def run_analysis(cb: types.CallbackQuery):
                 macd_txt = "Negative Bias: Heavy selling pressure and bearish momentum."
             
             # 4. Liquidity & Order Flow Unification (CVD + Z-Score)
-            vol_state = f"(Z-Score: {z_score:.1f})"
-            
             if final_trend_dir == "Bullish":
                 real_trend = "Bullish"
                 if bearish_flow:
@@ -3216,7 +3220,7 @@ async def run_analysis(cb: types.CallbackQuery):
                     market_action = f"Heavy selling dominance & continuous liquidity drain observed in order flow {vol_state}."
                     trend_strength = "Liquidity Drain"
 
-                
+            # تنبيهات الأوردر بوك للإنجليزي    
             if is_spoofed: market_action += " [Alert: Orderbook Spoofing Detected]"
             if is_orderbook_hollow: market_action += " [Alert: Hollow Orderbook / Low Depth]"
 
