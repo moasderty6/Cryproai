@@ -1757,7 +1757,7 @@ async def ai_opportunity_radar(pool):
                     price_change = float(t["priceChangePercent"])
                     
                     # 🟢 الفلترة السحرية: 
-                    if vol_usd >= 1_000_000 and -10.0 <= price_change <= 5.0:
+                    if vol_usd >= 400_000 and -10.0 <= price_change <= 5.0:
                         coins.append({
                             "symbol": clean_sym,
                             "quote": {"USD": {"price": float(t["lastPrice"])}},
@@ -1768,7 +1768,7 @@ async def ai_opportunity_radar(pool):
                 # الفرز بناءً على أضيق نسبة تغير في السعر (من الأقرب للصفر) لاصطياد العملات المضغوطة
                                 # الفرز بناءً على أعلى سيولة دولاريه (Volume) لاصطياد أهداف الحيتان الحقيقية
                 # نترك كشف الانضغاط للتحليل العميق لكي لا ننخدع بالتذبذب الوهمي (Whipsaws)
-                coins = sorted(coins, key=lambda x: float(x.get("volume", 0)), reverse=True)[:300]
+                coins = sorted(coins, key=lambda x: float(x.get("volume", 0)), reverse=True)[:350]
 
 
                 
