@@ -2967,6 +2967,34 @@ def calculate_vpvr_levels(df, current_price, trend_direction, num_bins=50):
 # --- دالة التحليل المعدلة ---
 # --- دالة التحليل المعدلة ---
 @dp.callback_query(F.data.startswith("tf_"))
+async def analyze_orderbook_advanced_manual(symbol: str, client: httpx.AsyncClient, current_price: float):
+    """
+    محرك كشف الخداع المتقدم للتحليل اليدوي (Multi-Frame TWOB)
+    يأخذ 3 لقطات متتالية لتأكيد الجدران الحقيقية وتجاهل الـ Flash Spoofing.
+    لا يتدخل في عمل الرادار السريع.
+    """
+    frames = []
+    for _ in range(3):
+        await binance_rate_limit_event.wait() # حارس حماية الـ API الإجباري
+        # نستدعي الدالة اللحظية الأصلية للحصول على اللقطة
+        data = await analyze_orderbook_spoofing_instant(symbol, client, current_price)
+        frames.append(data)
+        await asyncio.sleep(0.4) # تأخير بسيط لالتقاط تلاعب الخوارزميات
+
+    # تحليل استقرار الجدران الوهمية
+    spoof_count = sum(1 for f in frames if f.get('is_spoofed', False))
+    hollow_count = sum(1 for f in frames if f.get('is_hollow', False))
+    avg_imbalance = sum(f.get('imbalance', 0.0) for f in frames) / 3
+
+    return {
+        # الجدار يكون هشاً فقط إذا استمر الفراغ لأكثر من لقطة
+        "is_hollow": hollow_count >= 2, 
+        "imbalance": round(avg_imbalance, 2),
+        # التلاعب الصريح: الجدار ظهر واختفى فجأة (Spoofing_Distribution_Trap)
+        "is_spoofed": spoof_count > 0 and spoof_count < 3, 
+        "bid_pressure_ratio": frames[-1].get('bid_pressure_ratio', 1.0)
+    }
+
 async def run_analysis(cb: types.CallbackQuery):
     uid, pool = cb.from_user.id, dp['db_pool']
     data = user_session_data.get(uid)
@@ -3025,63 +3053,106 @@ async def run_analysis(cb: types.CallbackQuery):
         
     import pandas as pd 
     df = pd.DataFrame(candles)
-    df = df.iloc[:, :6]
-    df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+    # 🟢 إصلاح جذري: جلب 7 أعمدة بدلاً من 6 لالتقاط taker_buy_vol
+    df = df.iloc[:, :7]
+    df.columns = ["timestamp", "volume", "close", "high", "low", "open", "taker_buy_vol"]
 
-    for col in ["close", "high", "low", "open", "volume"]:
+    for col in ["close", "high", "low", "open", "volume", "taker_buy_vol"]:
         df[col] = pd.to_numeric(df[col], errors='coerce')
         
-    # ... (كمل باقي الكود من هنا: سحب الفوليوم من الداتا بيز، وتعريف الـ prompt بدون ما تخليهم جوا if) ...
+    db_vol_float = 0.0
+    try:
+        avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
+        avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
+        if avg_vol_20 > 0:
+            db_vol_float = ((avg_vol_5 / avg_vol_20) - 1) * 100 
+    except: pass
 
+    # 🌟 خريطة التوافق الزمني المؤسساتية (Timeframe Alignment Map)
+    tf_settings = {
+        "4h": {"cvd_tf": "15m", "oi_period": "4h", "macro_flow": False},
+        "daily": {"cvd_tf": "1h", "oi_period": "1d", "macro_flow": True},
+        "weekly": {"cvd_tf": "4h", "oi_period": "1d", "macro_flow": True}
+    }
+    current_tf = tf_settings.get(tf, tf_settings["4h"])
 
-        # 🔥 سحب الفوليوم من قاعدة البيانات        # 🔥 سحب الفوليوم من قاعدة البيانات        # 🔥 حساب تغير الفوليوم الحقيقي مباشرة من بيانات بايننس (أدق وأسرع من CMC)        # 🔥 حساب تغير الفوليوم الحقيقي
-        db_vol_float = 0.0
+    delta_usd, funding_val = 0.0, 0.0
+    cvd_sig, fut_sig = None, None
+    buy_v, sell_v, z_score = 0, 0, 0
+    is_orderbook_hollow = False 
+    is_spoofed = False
+    
+    if not is_dex:
         try:
-            avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
-            avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
-            if avg_vol_20 > 0:
-                db_vol_float = ((avg_vol_5 / avg_vol_20) - 1) * 100 
-        except: pass
+            async with httpx.AsyncClient(timeout=10) as client:
+                safe_price = float(price)
+                safe_old_price = float(df["close"].iloc[-3]) if len(df) > 3 else safe_price
 
-        # 1. ⚡ جلب البيانات المؤسساتية أولاً لمعرفة النية المخفية (قبل وضع الأهداف)        # 1. ⚡ جلب البيانات المؤسساتية (فقط لعملات المنصات المركزية CEX)
-        delta_usd, funding_val = 0.0, 0.0
-        cvd_sig, fut_sig = None, None
-        buy_v, sell_v, z_score = 0, 0, 0
-        
-        # 🟢 الإصلاح الجذري: تعريف المتغيرات هنا لضمان وجودها حتى لو كانت العملة DEX
-        is_orderbook_hollow = False 
-        is_spoofed = False
-        
-        if not is_dex: # 👈 حماية: لا تطلب بيانات مؤسساتية لعملات الديكس من بايننس
-            try:
-                async with httpx.AsyncClient(timeout=10) as client:
-                    safe_price = float(price)
-                    safe_old_price = float(df["close"].iloc[-3]) if len(df) > 3 else safe_price
-
-                    cvd_task = get_micro_cvd_absorption(f"{clean_sym}USDT", client, gate_interval)
-                    flow_task = get_institutional_orderflow(f"{clean_sym}USDT", client, minutes=15)
-                    futures_task = get_futures_liquidity(clean_sym, client, safe_price, safe_old_price)
-                    depth_task = analyze_orderbook_spoofing_instant(clean_sym, client, safe_price) 
-
-                    # نفذهم جميعاً في نفس اللحظة
-                    (cvd_boost, cvd_sig, cvd_trend_val), (delta_usd, buy_v, sell_v, limit_abs_signal), (fut_boost, fut_sig, funding_val), depth_data = await asyncio.gather(
-                        cvd_task, flow_task, futures_task, depth_task
-                    )
-                    
-                    # استخراج البيانات وتحديث المتغيرات
-                    is_orderbook_hollow = depth_data.get('is_hollow', False) if isinstance(depth_data, dict) else False
-                    is_spoofed = depth_data.get('is_spoofed', False) if isinstance(depth_data, dict) else False
-
-                z_score, _, _ = calculate_volume_zscore(df, window=720)
+                # 1. استخدام دالة كشف التلاعب المتقدمة للتحليل اليدوي
+                depth_task = analyze_orderbook_advanced_manual(clean_sym, client, safe_price)
+                # 2. توافق فريم السيولة الصامتة
+                cvd_task = get_micro_cvd_absorption(f"{clean_sym}USDT", client, current_tf["cvd_tf"])
                 
-            except Exception as e:
-                import traceback
-                print(f"⚠️ Data Fetch Error in Manual Analysis: {e}")
-                traceback.print_exc() 
-                cvd_sig, buy_v, sell_v, fut_sig, z_score = None, 0, 0, None, 0
-                delta_usd, funding_val = 0.0, 0.0
-                is_orderbook_hollow = False 
-                is_spoofed = False
+                # 3. توجيه ذكي لتدفق الأوامر (Macro vs Micro)
+                if current_tf["macro_flow"]:
+                    flow_task = None # يتم حسابه محلياً من بيانات الشموع الطويلة
+                else:
+                    # التدفق اللحظي للفريمات الصغيرة (Limit_Absorption)
+                    flow_task = get_institutional_orderflow(f"{clean_sym}USDT", client, minutes=240)
+                    
+                # 4. توافق الفريم لعقود المشتقات
+                # دالة get_futures_liquidity الحالية تقبل period=15m ثابتة، سنرسل الطلب يدوياً هنا للسرعة
+                await binance_rate_limit_event.wait()
+                futures_task = client.get(
+                    f"https://fapi.binance.com/futures/data/openInterestHist?symbol={clean_sym}USDT&period={current_tf['oi_period']}&limit=2", 
+                    timeout=3.0
+                )
+
+                # تنفيذ المهام المتزامنة
+                tasks_to_run = [cvd_task, depth_task, futures_task]
+                if flow_task: tasks_to_run.append(flow_task)
+                
+                results = await asyncio.gather(*tasks_to_run, return_exceptions=True)
+                
+                # استخراج CVD و Depth
+                cvd_data = results[0] if not isinstance(results[0], Exception) else (0.0, None, 0.0)
+                cvd_boost, cvd_sig, cvd_trend_val = cvd_data
+                
+                depth_data = results[1] if not isinstance(results[1], Exception) else {}
+                is_orderbook_hollow = depth_data.get('is_hollow', False)
+                is_spoofed = depth_data.get('is_spoofed', False)
+
+                # استخراج Futures
+                oi_res = results[2]
+                if not isinstance(oi_res, Exception) and oi_res.status_code == 200:
+                    oi_data = oi_res.json()
+                    if len(oi_data) >= 2:
+                        old_oi = float(oi_data[0]["sumOpenInterest"])
+                        current_oi = float(oi_data[-1]["sumOpenInterest"])
+                        oi_change = (current_oi - old_oi) / old_oi
+                        price_change = (safe_price - safe_old_price) / safe_old_price
+                        if price_change > 0.01 and oi_change > 0.02: fut_sig = "OI_Rising"
+                        elif price_change > 0.01 and oi_change < -0.02: fut_sig = "Short_Covering"
+
+                # استخراج Flow
+                if current_tf["macro_flow"]:
+                    # الحساب الهندسي الدقيق للترندات الكبيرة دون تجاوز حدود الـ API
+                    buy_v = df['taker_buy_vol'].tail(30).sum() if tf == "daily" else df['taker_buy_vol'].sum()
+                    sell_v = (df['volume'].tail(30).sum() - buy_v) if tf == "daily" else (df['volume'].sum() - buy_v)
+                    delta_usd = buy_v - sell_v
+                    limit_abs_signal = None
+                else:
+                    flow_data = results[3] if not isinstance(results[3], Exception) else (0.0, 0.0, 0.0, None)
+                    delta_usd, buy_v, sell_v, limit_abs_signal = flow_data
+
+            z_score, _, _ = calculate_volume_zscore(df, window=720)
+            
+        except Exception as e:
+            import traceback
+            print(f"⚠️ Data Fetch Error in Manual Analysis: {e}")
+            cvd_sig, buy_v, sell_v, fut_sig, z_score = None, 0, 0, None, 0
+            delta_usd, funding_val = 0.0, 0.0
+
 
 
 
