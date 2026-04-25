@@ -1696,10 +1696,12 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     'cvd_divergence': float(cvd_divergence), 
                     'funding_rate': float(funding_val)
                 }
-                # 3. استشارة الذكاء الاصطناعي (Quant AI Consultation)
-                #ai_confidence = await asyncio.to_thread(predict_signal_sync, ml_features) 
-                
-                if ai_confidence != -1.0:
+                # 3. استشارة الذكاء الاصطناعي (Quant AI Consultation)# 3. استشارة الذكاء الاصطناعي (Quant AI Consultation)
+                    ai_confidence = -1.0 # await asyncio.to_thread(predict_signal_sync, ml_features) 
+                    
+                    if ai_confidence != -1.0:
+    # 🛡️ الفلتر المؤسساتي: إذا كان الذكاء الاصطناعي يتوقع جودة أقل من 70%، نرفض الإشارة
+
                     # 🛡️ الفلتر المؤسساتي: إذا كان الذكاء الاصطناعي يتوقع جودة أقل من 70%، نرفض الإشارة
                     if ai_confidence < 70.0: 
                         print(f"🗑️ {symbol} - Rejected by AI (Confidence: {ai_confidence:.1f}%)")
