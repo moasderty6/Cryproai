@@ -3118,6 +3118,16 @@ async def run_analysis(cb: types.CallbackQuery):
             calculate_smart_trend_and_targets, df, price, db_vol_float, lang, final_trend_dir
         )
 
+        # --- تعريف متغيرات التدفق (Fixing NameError) ---
+        try:
+            # نحسب الفرق بين آخر شمعتين في الـ CVD لمعرفة نية الحيتان
+            cvd_diff = df['cvd'].diff().iloc[-1] if 'cvd' in df.columns else 0
+            bullish_flow = cvd_diff > 0  # سيولة شرائية
+            bearish_flow = cvd_diff < 0  # سيولة بيعية
+        except:
+            # إذا فشل الحساب، نجعلها False لتجنب توقف البوت
+            bullish_flow = False
+            bearish_flow = False
 
         # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة        # استخراج حالة الفوليوم والفجوة        # استخراج حالة الفوليوم والفجوة        # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة        # ==========================================
         # 🤖 إغتيال الـ AI: المولد النصي الكمي (Quant Text Generator)
@@ -3143,9 +3153,12 @@ async def run_analysis(cb: types.CallbackQuery):
             
             # Volume & Liquidity Flow Logic (Z-Score & CVD)
             vol_state = f"(Z-Score: {z_score:.1f})"
-            if final_trend_dir == "Bullish":
-                if bearish_flow: market_action = f"السعر صاعد، لكننا نرصد تصريفاً مخفياً {vol_state} يهدد الاتجاه."
-                else: market_action = f"ضخ سيولة مؤسساتي وامتصاص قوي يعزز مسار الصعود {vol_state}."
+                    # مثال للتأكد من الربط داخل القالب:
+        if final_trend_dir == "Bullish":
+            if bearish_flow: # هنا لن يعطي خطأ الآن لأننا عرفناه فوق
+                market_action = f"السعر صاعد، لكننا نرصد تصريفاً مخفياً {vol_state}."
+            else:
+                market_action = f"ضخ سيولة مؤسساتي وامتصاص قوي يعزز الصعود {vol_state}."
                 real_trend = "صاعد"
                 trend_strength = "مخادع (تصريف)" if bearish_flow else "قوي (تجميع)"
             else: # Bearish
@@ -3157,32 +3170,52 @@ async def run_analysis(cb: types.CallbackQuery):
             if is_spoofed: market_action += " [تنبيه: تلاعب وجدران وهمية في الأوردر بوك]"
             if is_orderbook_hollow: market_action += " [تنبيه: عمق سيولة هش قابل للكسر]"
 
-        else: # English
-            # RSI Logic
-            if safe_rsi >= 70: rsi_txt = "Overbought zone, high risk of correction/reversal."
-            elif safe_rsi <= 30: rsi_txt = "Oversold territory, seller exhaustion & bounce potential."
-            else: rsi_txt = "Neutral momentum, price trading in equilibrium."
+        else: # English Version (Institutional Grade)
+            # 1. RSI Logic
+            if safe_rsi >= 70: 
+                rsi_txt = "Extreme Overbought: Significant reversal risk detected."
+            elif safe_rsi <= 30: 
+                rsi_txt = "Deep Oversold: Seller exhaustion, potential bounce zone."
+            else: 
+                rsi_txt = "Neutral Momentum: Price is trading within equilibrium levels."
             
-            # ADX Logic
-            if adx_val >= 25: adx_txt = "Strong directional momentum, current trend is supported."
-            else: adx_txt = "Weak momentum, choppy and ranging conditions."
+            # 2. ADX Logic
+            if adx_val >= 25: 
+                adx_txt = "Strong Trend: High directional conviction in current move."
+            else: 
+                adx_txt = "Low Volatility: Choppy/Range-bound market conditions."
             
-            # MACD Logic
-            if safe_macd > 0: macd_txt = "Positive crossover, buyer dominance and bullish momentum."
-            else: macd_txt = "Negative crossover, selling pressure and bearish momentum."
+            # 3. MACD Logic
+            if safe_macd > 0: 
+                macd_txt = "Positive Bias: Buyer dominance with increasing momentum."
+            else: 
+                macd_txt = "Negative Bias: Heavy selling pressure and bearish momentum."
             
-            # Volume & Liquidity Flow Logic (Z-Score & CVD)
+            # 4. Liquidity & Order Flow Unification (CVD + Z-Score)
             vol_state = f"(Z-Score: {z_score:.1f})"
+            
             if final_trend_dir == "Bullish":
-                if bearish_flow: market_action = f"Uptrend active, but detecting hidden distribution {vol_state}."
-                else: market_action = f"Institutional inflow & absorption validating the uptrend {vol_state}."
                 real_trend = "Bullish"
-                trend_strength = "Fake (Distribution)" if bearish_flow else "Strong (Accumulation)"
+                if bearish_flow:
+                    # صعود سعري مع تصريف حيتان
+                    market_action = f"Uptrend active, but detecting hidden distribution {vol_state} threatening the move."
+                    trend_strength = "Fake (Distribution)"
+                else:
+                    # صعود سعري مع دعم مؤسساتي
+                    market_action = f"Institutional inflow & strong absorption validating the current uptrend {vol_state}."
+                    trend_strength = "Strong (Accumulation)"
+            
             else: # Bearish
-                if bullish_flow: market_action = f"Silent accumulation & supply absorption building a bottom {vol_state}."
-                else: market_action = f"Heavy selling dominance and continuous liquidity drain {vol_state}."
                 real_trend = "Bearish"
-                trend_strength = "Bounce (Bottoming)" if bullish_flow else "Liquidity Drain"
+                if bullish_flow:
+                    # هبوط سعري مع تجميع صامت (بناء قاع)
+                    market_action = f"Silent accumulation & supply absorption detected, attempting to build a local bottom {vol_state}."
+                    trend_strength = "Bounce (Bottoming)"
+                else:
+                    # هبوط سعري مع نزيف سيولة
+                    market_action = f"Heavy selling dominance & continuous liquidity drain observed in order flow {vol_state}."
+                    trend_strength = "Liquidity Drain"
+
                 
             if is_spoofed: market_action += " [Alert: Orderbook Spoofing Detected]"
             if is_orderbook_hollow: market_action += " [Alert: Hollow Orderbook / Low Depth]"
