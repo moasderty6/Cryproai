@@ -453,13 +453,15 @@ async def get_btc_trend(client):
         pass
     return True # افتراضي في حال فشل الـ API
  # افتراضي في حال فشل الـ API
-async def get_micro_cvd_absorption(symbol, client, base_interval="1m"):
+async def get_micro_cvd_absorption(symbol, client, base_interval="1m", is_dex: bool = False):
     """
     يكتشف التجميع الصامت، يتأقلم مع الفريم الزمني المطلوب.
     """
+    if is_dex:
+        return 0.0, None, 0.0 # قيم صفرية آمنة لعملات الـ DEX
+
     cvd_trend = 0.0 
     try:
-        # 🛑 حارس حماية الـ API
         await binance_rate_limit_event.wait()
         
         # إذا كان الفريم كبير (يومي/أسبوعي)، نوسع عدسة الـ CVD لتقرأ فريم 15 دقيقة
@@ -502,11 +504,15 @@ async def get_micro_cvd_absorption(symbol, client, base_interval="1m"):
         pass
     
     return 0.0, None, cvd_trend # 👈 إرجاع القيمة بدلاً من الأصفار المطلقة
-async def detect_btc_relative_strength(symbol: str, client: httpx.AsyncClient):
+async def detect_btc_relative_strength(symbol: str, client: httpx.AsyncClient, is_dex: bool = False):
     """
     [UPGRADED] Statistical Beta Decoupling Engine
     """
+    if is_dex:
+        return 0.0 # إرجاع حيادي للديكس
+        
     clean_sym = symbol.replace("USDT", "") + "USDT"
+
     
     alt_url = f"{get_random_binance_base()}/api/v3/klines?symbol={clean_sym}&interval=1m&limit=60"
     btc_url = f"{get_random_binance_base()}/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=60"
@@ -566,11 +572,13 @@ def calculate_vwap_zscore(df, window=24):
     vwap_zscore = (df['close'] - local_vwap) / (rolling_std + 1e-8) # 1e-8 لمنع القسمة على صفر
     
     return float(vwap_zscore.iloc[-1]), float(local_vwap.iloc[-1])
-async def analyze_orderbook_spoofing_instant(symbol: str, client: httpx.AsyncClient, current_price: float):
+async def analyze_orderbook_spoofing_instant(symbol: str, client: httpx.AsyncClient, current_price: float, is_dex: bool = False):
     """
     محرك كشف التلاعب اللحظي (Instant VWAD & Skewness)
-    بديل الـ WS: يكتشف التلاعبات والهشاشة بلقطة واحدة عميقة (Latency: 0.2s)
     """
+    if is_dex: # تخطي آمن لعملات الديكس
+        return {"is_hollow": False, "imbalance": 0.0, "is_spoofed": False, "bid_pressure_ratio": 1.0}
+
     clean_sym = symbol.replace("USDT", "") + "USDT"
     url = f"{get_random_binance_base()}/api/v3/depth?symbol={clean_sym}&limit=500"
     
@@ -2325,6 +2333,42 @@ async def search_dex_coin(symbol: str, retries: int = 3):
                 
     return None
 
+# === كود جديد: ضعه فوق دوال التحليل ===
+async def get_dex_klines(client: httpx.AsyncClient, chain_id: str, pair_address: str, tf: str):
+    """
+    جلب شموع عملات DEX اللامركزية من GeckoTerminal كبديل لشموع بايننس
+    """
+    try:
+        # تحويل الإطار الزمني لمعيار GeckoTerminal
+        resolution = "hour"
+        aggregate = 1
+        if tf in ["1m", "5m", "15m"]:
+            resolution = "minute"
+            aggregate = int(tf.replace("m", ""))
+        elif tf == "1h":
+            resolution = "hour"
+            aggregate = 1
+        elif tf == "4h":
+            resolution = "hour"
+            aggregate = 4
+        elif tf in ["1d", "daily"]:
+            resolution = "day"
+            aggregate = 1
+            
+        url = f"https://api.geckoterminal.com/api/v2/networks/{chain_id}/pools/{pair_address}/ohlcv/{resolution}?aggregate={aggregate}&limit=100"
+        
+        res = await client.get(url, timeout=10.0)
+        if res.status_code == 200:
+            data = res.json()
+            ohlcv_list = data['data']['attributes']['ohlcv_list']
+            # GeckoTerminal يُرجع البيانات: [timestamp, open, high, low, close, volume]
+            ohlcv_list.reverse() # ترتيب من الأقدم للأحدث ليطابق بايننس
+            df = pd.DataFrame(ohlcv_list, columns=["t", "open", "high", "low", "close", "volume"])
+            df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].apply(pd.to_numeric)
+            return df
+    except Exception as e:
+        print(f"⚠️ خطأ في جلب شموع DEX: {e}")
+    return None
 
 import pandas as pd
 
@@ -3052,12 +3096,22 @@ async def run_analysis(cb: types.CallbackQuery):
         
     import pandas as pd 
     df = pd.DataFrame(candles)
-    # 🟢 إصلاح جذري: جلب 7 أعمدة بدلاً من 6 لالتقاط taker_buy_vol
-    df = df.iloc[:, :7]
-    df.columns = ["timestamp", "volume", "close", "high", "low", "open", "taker_buy_vol"]
+    
+    # 🟢 الحل الجذري لمنع التعليق: التمييز بين شكل شموع بايننس وشموع الـ DEX
+    if len(df.columns) >= 7:
+        # مسار بايننس (يوجد 7 أعمدة فأكثر)
+        df = df.iloc[:, :7]
+        df.columns = ["timestamp", "volume", "close", "high", "low", "open", "taker_buy_vol"]
+    else:
+        # مسار الـ DEX (الشموع تأتي بـ 6 أعمدة فقط)
+        df = df.iloc[:, :6]
+        df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+        # إضافة عمود وهمي بأصفار للـ DEX حتى لا تنهار الحسابات السفلية التي تطلبه
+        df["taker_buy_vol"] = 0.0
 
     for col in ["close", "high", "low", "open", "volume", "taker_buy_vol"]:
         df[col] = pd.to_numeric(df[col], errors='coerce')
+
         
     db_vol_float = 0.0
     try:
