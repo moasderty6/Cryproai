@@ -1153,6 +1153,114 @@ def calculate_volume_zscore(df, window=720):
 
     # إرجاع 3 قيم تماماً كما يتوقع باقي الكود (Z-Score, Median كبديل لـ Mean, و MAD كبديل لـ Std)
     return float(current_z), float(last_median), float(last_mad)
+async def silent_data_harvester_worker(pool):
+    """
+    عامل الحصاد الصامت: يعمل في الخلفية بهدوء، يحلل عملة واحدة كل دقيقة 
+    لجمع البيانات اللحظية (بما فيها الأوردر بوك والتدفق) دون التأثير على البوت.
+    """
+    await asyncio.sleep(120) # ننتظر دقيقتين بعد تشغيل البوت ليستقر
+    print("🌾 [Data Harvester] Engine is Online. Collecting ML Data silently...")
+
+    while True:
+        try:
+            async with pool.acquire() as conn:
+                records = await conn.fetch("SELECT symbol FROM radar_history")
+                ignored_symbols = {r['symbol'] for r in records}
+
+            async with httpx.AsyncClient(timeout=30) as client:
+                await binance_rate_limit_event.wait()
+                
+                # جلب حالة الماكرو
+                market_regime = await detect_market_regime(client)
+                
+                # جلب قائمة العملات (التيثر فقط)
+                base_url = get_random_binance_base()
+                res = await client.get(f"{base_url}/api/v3/ticker/24hr", timeout=10)
+                
+                if res.status_code != 200:
+                    await asyncio.sleep(60)
+                    continue
+                
+                all_tickers = res.json()
+                coins = []
+                
+                for t in all_tickers:
+                    symbol = t["symbol"]
+                    if not symbol.endswith("USDT"): continue
+                    clean_sym = symbol.replace("USDT", "")
+                    if clean_sym in BLACKLISTED_COINS: continue
+                    
+                    vol_usd = float(t["quoteVolume"])
+                    if vol_usd >= 400_000: # الفلتر المبدئي للسيولة
+                        coins.append({"symbol": clean_sym, "price": float(t["lastPrice"]), "volume": vol_usd})
+                
+                # ترتيب العملات حسب السيولة وأخذ أعلى 350
+                coins = sorted(coins, key=lambda x: x["volume"], reverse=True)[:350]
+                
+                print(f"🔄 [Harvester] Starting new cycle for {len(coins)} coins...")
+
+                # ⏳ التقطير الصامت: معالجة عملة واحدة فقط كل 50 ثانية
+                for c in coins:
+                    await binance_rate_limit_event.wait()
+                    sym = c["symbol"]
+                    price = c["price"]
+                    pair = f"{sym}USDT"
+                    
+                    try:
+                        # 1. جلب الشموع (15 دقيقة للتدريب السريع والدقيق)
+                        candles = await get_candles_binance(pair, "15m", limit=750)
+                        if not candles: continue
+                        
+                        df, last_rsi, current_adx, current_z, vol_mean, vol_std = await asyncio.to_thread(process_dataframe_sync, candles)
+                        
+                        # 2. جلب البيانات اللحظية (التي لا تحفظها بايننس تاريخياً)
+                        cvd_boost, cvd_sig, cvd_trend = await get_micro_cvd_absorption(pair, client, "15m")
+                        global_ob_pressure = await get_aggregated_orderbook(client, sym)
+                        depth_data = await analyze_orderbook_spoofing_instant(sym, client, price)
+                        tick_delta, tick_buy, tick_sell, limit_abs = await get_institutional_orderflow(pair, client)
+                        _, fut_sig, funding_val = await get_futures_liquidity(sym, client, price, float(df["close"].iloc[-3]))
+                        
+                        avg_vol_20 = df["volume"].tail(20).mean()
+                        avg_vol_usd = avg_vol_20 * price if avg_vol_20 > 0 else 1.0
+                        cvd_ratio_pct = (cvd_trend * price / avg_vol_usd) * 100 if avg_vol_usd > 0 else 0.0
+                        
+                        # حساب القوة النسبية للماكرو والتذبذب
+                        ema200_val = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else df["close"].ewm(span=50).mean().iloc[-1]
+                        cvd_divergence = 1.0 if (price > ema200_val and cvd_trend < 0) else -1.0 if (price < ema200_val and cvd_trend > 0) else 0.0
+                        micro_volatility = df['close'].tail(20).pct_change().std() * 100
+                        
+                        current_regime_trend = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
+                        regime_map = {"Trending_Bull": 1, "Trending_Bear": 2, "Ranging": 3}
+                        
+                        # تجهيز الميزات (Features) وتسجيلها بصمت
+                        ml_features = {
+                            'market_regime': regime_map.get(current_regime_trend, 0),
+                            'sp500_trend': float(MACRO_CACHE.get("sp500_trend", 0.0)),
+                            'sentiment_score': float(MACRO_CACHE.get("sentiment_score", 50.0)),
+                            'z_score': float(current_z),
+                            'cvd_to_vol_ratio': float(cvd_ratio_pct),
+                            'ofi_imbalance': float(depth_data.get('imbalance', 0.0)),
+                            'ob_skewness': float(depth_data.get('skewness', 1.0)),
+                            'whale_inflow': await get_whale_inflow_score(),
+                            'adx': float(current_adx),
+                            'rsi': float(last_rsi),
+                            'micro_volatility': float(micro_volatility) if not pd.isna(micro_volatility) else 0.0,
+                            'cvd_divergence': float(cvd_divergence),
+                            'funding_rate': float(funding_val)
+                        }
+                        
+                        # تسجيل البيانات (بدون فلتر، نريد الجيد والسيء)
+                        await log_signal_for_ml(pool, sym, price, ml_features)
+
+                    except Exception as e:
+                        pass # صمت تام عند الأخطاء لتستمر الحلقة
+                    
+                    # 🛡️ الجدار السري لحماية السيرفر: استراحة 50 ثانية بين كل عملة وعملة
+                    await asyncio.sleep(50) 
+                    
+        except Exception as e:
+            print(f"⚠️ Harvester Error: {e}")
+            await asyncio.sleep(300)
 
 def process_dataframe_sync(candles_data):
     """دالة خارجية لمعالجة البيانات بدون تجميد البوت"""
@@ -1589,7 +1697,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     'funding_rate': float(funding_val)
                 }
                 # 3. استشارة الذكاء الاصطناعي (Quant AI Consultation)
-                ai_confidence = await asyncio.to_thread(predict_signal_sync, ml_features) 
+                #ai_confidence = await asyncio.to_thread(predict_signal_sync, ml_features) 
                 
                 if ai_confidence != -1.0:
                     # 🛡️ الفلتر المؤسساتي: إذا كان الذكاء الاصطناعي يتوقع جودة أقل من 70%، نرفض الإشارة
@@ -1645,7 +1753,7 @@ async def log_signal_for_ml(pool, symbol: str, price: float, features: dict):
         # منع تكرار الإشارة لنفس العملة خلال 24 ساعة لتجنب تضخم البيانات (Overfitting)
         exists = await conn.fetchval("""
             SELECT 1 FROM ml_training_data 
-            WHERE symbol = $1 AND signal_time > CURRENT_TIMESTAMP - INTERVAL '24 hours'
+            WHERE symbol = $1 AND signal_time > CURRENT_TIMESTAMP - INTERVAL '5 hours'
         """, symbol)
         if exists: return 
 
@@ -3948,6 +4056,7 @@ async def on_startup(app):
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
 
     #asyncio.create_task(smart_radar_watchdog(pool))
+    asyncio.create_task(silent_data_harvester_worker(pool))
     asyncio.create_task(macro_data_worker()) # 🌍 تشغيل عامل الماكرو
     #asyncio.create_task(radar_worker_process(pool))
     asyncio.create_task(ai_trainer_worker(pool)) # 🧠 تشغيل مدرب الذكاء الاصطناعي
