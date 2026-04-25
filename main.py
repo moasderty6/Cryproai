@@ -2730,11 +2730,8 @@ def detect_nearest_fvg(df, current_price, trend_direction):
 
     return best_fvg_target
 
-def calculate_smart_trend_and_targets(df, current_price, db_vol_change, lang="ar", override_trend=None):
-    
-    # 🟢 الحل الجذري: إجبار تحويل الأعمدة إلى أرقام (Floats) قبل أي عملية حسابية
-    # هنا بيبدأ كودك القديم طبيعي جداً
-        # 🟢 الحل الجذري: إجبار تحويل الأعمدة إلى أرقام (Floats) قبل أي عملية حسابية
+def calculate_smart_trend_and_targets(df, current_price, current_z, lang="ar", override_trend=None):
+    # --- [بداية الدالة كما هي لتجهيز البيانات و ATR] ---
     for col in ['high', 'low', 'close', 'open', 'volume']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -2780,76 +2777,68 @@ def calculate_smart_trend_and_targets(df, current_price, db_vol_change, lang="ar
         real_adx_value = 0.0
 
         # التحكم في الاتجاه بناءً على أمر الرادار (إن وُجد) لمنع التضارب
+    # 🌟 1. توحيد الاتجاه الصارم (Strict Trend Unification)
     if override_trend:
         trend_direction = override_trend
-        micro_bull = (trend_direction == "Bullish")
     else:
-        micro_bull = ema20 > ema50
-        trend_direction = "Bullish" if micro_bull else "Bearish"
+        ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
+        ema50 = df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
+        trend_direction = "Bullish" if ema20 > ema50 else "Bearish"
 
-
-    if real_adx_value < 20:
-        trend_strength = "ضعيف" if lang == "ar" else "Weak"
-        market_action = "تذبذب عرضي، سيولة ضعيفة حول الـ VWAP" if lang == "ar" else "Choppy ranging around VWAP"
-    else: 
-        if micro_bull:
-            if macro_bull and vwap_bull:
-                trend_strength = "قوي" if lang == "ar" else "Strong"
-                market_action = "سيولة شرائية صحية تدعم الاتجاه" if lang == "ar" else "Healthy buying liquidity"
-            elif not macro_bull and vwap_bull:
-                trend_strength = "متوسط (ارتداد)" if lang == "ar" else "Moderate (Bounce)"
-                market_action = "ضغط شرائي قصير الأمد يعاكس الترند الهابط" if lang == "ar" else "Short-term buying pressure countering downtrend"
-            else:
-                trend_strength = "مخادع" if lang == "ar" else "Fake"
-                market_action = "صعود غير مدعوم بالسيولة (خطر الانعكاس)" if lang == "ar" else "Unconfirmed pump lacking liquidity (Reversal risk)"
-        else: # Bearish
-            if not macro_bull and not vwap_bull:
-                trend_strength = "قوي" if lang == "ar" else "Strong"
-                market_action = "سيطرة بيعية صريحة وتصريف للسيولة" if lang == "ar" else "Clear selling control and distribution"
-            elif macro_bull and not vwap_bull:
-                trend_strength = "متوسط (تصحيح)" if lang == "ar" else "Moderate (Correction)"
-                market_action = "جني أرباح وتصحيح ضمن ترند صاعد" if lang == "ar" else "Profit-taking within a macro uptrend"
-            else:
-                trend_strength = "مخادع" if lang == "ar" else "Fake"
-                market_action = "هبوط ضعيف السيولة (فخ بيعي محتمل)" if lang == "ar" else "Low-liquidity drop (Potential bear trap)"
-
-    if db_vol_change > 80:
-        market_action += " + فوليوم انفجاري" if lang == "ar" else " + Explosive Volume"
-    elif db_vol_change < 15:
-        market_action += " + فوليوم ميت" if lang == "ar" else " + Dead Volume"
-
-    # ==========================================
-    # 🎯 التعديل الجذري: حساب الأهداف بالـ VPVR
-    # ==========================================
+    # 🌟 2. حساب الأهداف الأساسية بالـ VPVR
     sl, tp1, tp2, tp3 = calculate_vpvr_levels(df, current_price, trend_direction)
 
-    # 🧲 تشغيل صائد فجوات السيولة (FVG)
+    # 🧲 3. دمج فجوات السيولة (FVG) كأهداف حتمية ووقف خسارة ذكي
     fvg_target = detect_nearest_fvg(df, current_price, trend_direction)
     
     if fvg_target:
-        # تنسيق السعر لتجنب الأرقام الطويلة
-        fvg_display = f"{fvg_target:,.4f}" if fvg_target > 1 else f"{fvg_target:.8f}"
-        market_action += f" [هدف مغناطيسي عند: {fvg_display}]" if lang == "ar" else f" [Magnetic FVG Target at: {fvg_display}$]"
+        if trend_direction == "Bullish":
+            if fvg_target < current_price:
+                # الفجوة بالأسفل: قد ينزل السعر لملئها، لذا نضع الوقف تحتها بأمان
+                sl = min(sl, fvg_target * 0.985) 
+            else:
+                # الفجوة بالأعلى: تصبح هي الهدف الأول المغناطيسي
+                tp1 = fvg_target 
+        else: # Bearish
+            if fvg_target > current_price:
+                # الفجوة بالأعلى في ترند هابط: نضع الوقف فوقها
+                sl = max(sl, fvg_target * 1.015) 
+            else:
+                # الفجوة بالأسفل: تصبح هدفاً أول للبيع
+                tp1 = fvg_target
 
+    # ترتيب الأهداف منطقياً بعد تعديل الـ FVG لضمان التسلسل الصحيح
+    if trend_direction == "Bullish":
+        tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
+    else:
+        tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
 
+    # 🌟 4. هندسة السيولة بناءً على Z-Score
+    try:
+        real_adx_value = float(ta.trend.ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14, fillna=True).adx().iloc[-1])
+    except:
+        real_adx_value = 0.0
+
+    trend_strength = "غير محدد"
+    market_action = ""
+
+    # لا نحتاج لتعقيد النصوص هنا، لأننا سنبنيها باحترافية في دالة `run_analysis`
+    
+    # 🌟 5. حساب الدعم والمقاومة الكلاسيكي (كما هو في كودك)
     try:
         support = df['low'].rolling(window=50, min_periods=1).min().iloc[-1]
-        # إذا كان الدعم هو السعر الحالي بالضبط أو أعلى منه، نضع دعماً رياضياً تحته بـ 5%
         if pd.isna(support) or support >= current_price * 0.99:
             support = current_price * 0.95 
-    except:
-        support = current_price * 0.95
+    except: support = current_price * 0.95
 
     try:
         resistance = df['high'].rolling(window=50, min_periods=1).max().iloc[-1]
-        # إذا كانت المقاومة هي السعر الحالي أو أقل منه، نضع مقاومة رياضية فوقه بـ 5%
         if pd.isna(resistance) or resistance <= current_price * 1.01:
             resistance = current_price * 1.05 
-    except:
-        resistance = current_price * 1.05
-
+    except: resistance = current_price * 1.05
 
     return trend_direction, trend_strength, market_action, real_adx_value, sl, tp1, tp2, tp3, support, resistance
+
 
 def compute_indicators(candles):
     df = pd.DataFrame(candles)
@@ -3130,81 +3119,83 @@ async def run_analysis(cb: types.CallbackQuery):
         )
 
 
-        # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة        # استخراج حالة الفوليوم والفجوة        # استخراج حالة الفوليوم والفجوة        # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة
-        fvg_text = " [" + market_action.split("[")[1] if "[" in market_action else ""
-        vol_text = " + فوليوم انفجاري" if "انفجاري" in market_action else (" + فوليوم ميت" if "ميت" in market_action else "")
-
-        # 🟢 هندسة مصفوفة صندوق التحوط (Trend vs Flow Matrix)
-        # نحدد نية الحيتان (Flow) أولاً بناءً على CVD والسيولة
-        vol_surge = current_vol > (avg_vol_20 * 1.5)
-        bullish_flow = (cvd_sig == "Micro_Silent_Accumulation" or buy_v > (sell_v * 1.2)) or (last_rsi < 40 and last_macd > 0 and vol_surge)
-        bearish_flow = (cvd_sig == "Hidden_Distribution" or sell_v > (buy_v * 1.2)) or (last_rsi > 70 and last_macd < 0 and vol_surge)
-
-        # دمج الرؤية الهيكلية (market_action) مع سلوك الحيتان الحالي
-        if classic_trend == "Bullish":
-            if bearish_flow:
-                # السعر صاعد، لكن الحيتان تبيع (هنا فقط نطلق عليه تصريف أو مخادع)
-                trend_str = "ضعيف (تصريف مخفي)" if lang == "ar" else "Weak (Hidden Dist.)"
-                market_action_text = f"{market_action} | سيطرة بيعية خفية تعاكس الاتجاه الصاعد." if lang == "ar" else f"{market_action} | Hidden selling countering uptrend."
-            else:
-                # السعر صاعد، والحيتان تشتري
-                trend_str = "قوي" if lang == "ar" else "Strong"
-                market_action_text = f"{market_action} | ضخ سيولة مؤسساتي يدعم استمرار الصعود." if lang == "ar" else f"{market_action} | Institutional inflow supporting uptrend."
+        # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة        # استخراج حالة الفوليوم والفجوة        # استخراج حالة الفوليوم والفجوة        # 4. تكييف النص ليطابق الاكتشاف المؤسساتي بدقة        # ==========================================
+        # 🤖 إغتيال الـ AI: المولد النصي الكمي (Quant Text Generator)
+        # ==========================================
+        
+        # 1. إعداد نصوص المؤشرات الفنية بصرامة (RSI, ADX, MACD)
+        safe_rsi = float(last_rsi) if not pd.isna(last_rsi) else 50.0
+        safe_macd = float(last_macd) if not pd.isna(last_macd) else 0.0
+        
+        if lang == "ar":
+            # RSI Logic
+            if safe_rsi >= 70: rsi_txt = "تشبع شرائي عميق (Overbought)، خطر الانعكاس/التصحيح مرتفع."
+            elif safe_rsi <= 30: rsi_txt = "تشبع بيعي (Oversold)، استنزاف للبائعين وفرصة ارتداد."
+            else: rsi_txt = "زخم محايد، السعر يتداول ضمن مناطق التوازن."
+            
+            # ADX Logic
+            if adx_val >= 25: adx_txt = "زخم اتجاهي قوي، استمرار المسار الحالي مرجح."
+            else: adx_txt = "ضعف في الزخم، تذبذب عرضي وانعدام الاتجاه الواضح."
+            
+            # MACD Logic
+            if safe_macd > 0: macd_txt = "تقاطع إيجابي، هيمنة المشترين وتزايد الزخم الصاعد."
+            else: macd_txt = "تقاطع سلبي، ضغط بيعي مهيمن وتناقص في الزخم."
+            
+            # Volume & Liquidity Flow Logic (Z-Score & CVD)
+            vol_state = f"(Z-Score: {z_score:.1f})"
+            if final_trend_dir == "Bullish":
+                if bearish_flow: market_action = f"السعر صاعد، لكننا نرصد تصريفاً مخفياً {vol_state} يهدد الاتجاه."
+                else: market_action = f"ضخ سيولة مؤسساتي وامتصاص قوي يعزز مسار الصعود {vol_state}."
+                real_trend = "صاعد"
+                trend_strength = "مخادع (تصريف)" if bearish_flow else "قوي (تجميع)"
+            else: # Bearish
+                if bullish_flow: market_action = f"تجميع صامت وامتصاص للبيع في محاولة لبناء قاع {vol_state}."
+                else: market_action = f"هيمنة بيعية وتفريغ مستمر للسيولة اللحظية {vol_state}."
+                real_trend = "هابط"
+                trend_strength = "ارتداد (بناء قاع)" if bullish_flow else "نزيف سيولة"
                 
-        else: # classic_trend == "Bearish"
-            if bullish_flow:
-                # السعر هابط، لكن الحيتان تشتري (هذا هو قاع التجميع، مستحيل أن يكتب هنا تصريف قمة)
-                trend_str = "ارتداد (تجميع قاع)" if lang == "ar" else "Bounce (Bottom Accum.)"
-                market_action_text = f"{market_action} | امتصاص لضغط البيع ومحاولة صامتة لبناء قاع." if lang == "ar" else f"{market_action} | Supply absorption, attempting to build a bottom."
-            else:
-                # السعر هابط، والحيتان تبيع بقسوة
-                trend_str = "هبوط قوي" if lang == "ar" else "Strong Downtrend"
-                market_action_text = f"{market_action} | ضغط بيعي مستمر وجفاف في طلبات الشراء اللحظية." if lang == "ar" else f"{market_action} | Sustained selling pressure and lack of bids."
+            if is_spoofed: market_action += " [تنبيه: تلاعب وجدران وهمية في الأوردر بوك]"
+            if is_orderbook_hollow: market_action += " [تنبيه: عمق سيولة هش قابل للكسر]"
 
-        # إضافة نصوص الفوليوم والفجوات (FVG) إلى النهاية
-                # إضافة نصوص الفوليوم والفجوات (FVG) إلى النهاية
-        market_action_text += vol_text + fvg_text
+        else: # English
+            # RSI Logic
+            if safe_rsi >= 70: rsi_txt = "Overbought zone, high risk of correction/reversal."
+            elif safe_rsi <= 30: rsi_txt = "Oversold territory, seller exhaustion & bounce potential."
+            else: rsi_txt = "Neutral momentum, price trading in equilibrium."
+            
+            # ADX Logic
+            if adx_val >= 25: adx_txt = "Strong directional momentum, current trend is supported."
+            else: adx_txt = "Weak momentum, choppy and ranging conditions."
+            
+            # MACD Logic
+            if safe_macd > 0: macd_txt = "Positive crossover, buyer dominance and bullish momentum."
+            else: macd_txt = "Negative crossover, selling pressure and bearish momentum."
+            
+            # Volume & Liquidity Flow Logic (Z-Score & CVD)
+            vol_state = f"(Z-Score: {z_score:.1f})"
+            if final_trend_dir == "Bullish":
+                if bearish_flow: market_action = f"Uptrend active, but detecting hidden distribution {vol_state}."
+                else: market_action = f"Institutional inflow & absorption validating the uptrend {vol_state}."
+                real_trend = "Bullish"
+                trend_strength = "Fake (Distribution)" if bearish_flow else "Strong (Accumulation)"
+            else: # Bearish
+                if bullish_flow: market_action = f"Silent accumulation & supply absorption building a bottom {vol_state}."
+                else: market_action = f"Heavy selling dominance and continuous liquidity drain {vol_state}."
+                real_trend = "Bearish"
+                trend_strength = "Bounce (Bottoming)" if bullish_flow else "Liquidity Drain"
+                
+            if is_spoofed: market_action += " [Alert: Orderbook Spoofing Detected]"
+            if is_orderbook_hollow: market_action += " [Alert: Hollow Orderbook / Low Depth]"
+
+        # 2. بناء التقرير النهائي (The Formatter)
+        macd_fmt = format_price(safe_macd)
         
-        # 🚨 إضافة تحذيرات التلاعب والهشاشة المؤسساتية
-        if is_spoofed:
-            market_action_text += " [تحذير : تلاعب مؤسساتي]" if lang == "ar" else " [Warning : Orderbook Spoofing]"
-        elif is_orderbook_hollow:
-            market_action_text += " [تحذير : سيولة وهمية/جدار هش]" if lang == "ar" else " [Warning : Hollow Orderbook]"
-
-
-        # 🟢 حالات المشتقات الاستثنائية (تطغى على ما سبق لأنها حركات تصفية عنيفة)
-        if fut_sig == "Short_Squeeze":
-            trend_str = "انفجار شورت" if lang == "ar" else "Short Squeeze"
-            market_action_text = ("ضغط تصفية مراكز بيع يدفع السعر بقوة عكسية." if lang == "ar" else "Liquidation pressure pushing price upwards.") + vol_text + fvg_text
-        elif fut_sig == "Short_Covering":
-            trend_str = "إغلاق شورت" if lang == "ar" else "Short Covering"
-            market_action_text = ("ارتداد مؤقت بسبب جني أرباح البائعين وليس قوة شرائية حقيقية." if lang == "ar" else "Temporary bounce from short taking profit, no real demand.") + vol_text + fvg_text
-
-        # 🟢 استعادة تعريف متغيرات RSI و MACD
-        macd_fmt = format_price(last_macd) if 'last_macd' in locals() and last_macd is not None else "0.0"
-        safe_rsi = f"{last_rsi:.2f}" if 'last_rsi' in locals() and last_rsi is not None else "N/A"
-        
-        # 🟢 تحديد الاتجاه بشكل صارم ومباشر لعنوان التقرير
-        real_trend = "صاعد" if final_trend_dir == "Bullish" else "هابط"
-        if lang != "ar": real_trend = "Bullish" if final_trend_dir == "Bullish" else "Bearish"
-        
-        # ربط المتغير وتنبيه الـ AI إذا كانت العملة لامركزية (DEX)
-        trend_strength = trend_str 
-        market_action = market_action_text if not is_dex else (f"(تحليل شبكة DEX) | {market_action_text}" if lang == "ar" else f"(DEX Network) | {market_action_text}")
+        # ربط الـ DEX
+        if is_dex:
+            market_action = f"(تحليل شبكة DEX) | {market_action}" if lang == "ar" else f"(DEX Network) | {market_action}"
 
         if lang == "ar":
-            prompt = f"""
-أنت محلل بيانات كمية (Quant) صارم في صندوق "NaiF CHarT". مهمتك صياغة التقرير الفني لعملة {clean_sym} بناءً على الأرقام فقط.
-⚠️ تحذير شديد: يمنع منعاً باتاً تغيير أرقام الدعم، المقاومة، الأهداف، أو الوقف. الأرقام محسوبة رياضياً ويجب نسخها كما هي في القالب.
-
-قواعد التفسير المالي (التزم بها حرفياً لصياغة النقاط):
-1. RSI: إذا > 70 (تشبع شرائي/خطر تصحيح). إذا < 30 (تشبع بيعي/فرصة ارتداد). بينهما (حيادي).
-2. ADX: إذا > 25 (ترند قوي). إذا < 25 (ترند ضعيف/مسار عرضي).
-3. MACD: موجب (زخم شرائي). سالب (زخم بيعي).
-4. السيولة: قم بإعادة صياغة الجملة المعطاة لك بأسلوب مؤسساتي جاف ومقنع.
-
-⚠️ انسخ هذا القالب بدقة، واكتب تعليقاً فنياً من سطر واحد ومباشر لكل مؤشر (بدون مقدمات وبدون نصائح استثمارية):
-
+            final_report = f"""
 📊 <b>التحليل لـ {clean_sym}</b> | {tf} | <code>{format_price(price)}$</code>
 الاتجاه: {real_trend} ({trend_strength})
 
@@ -3220,28 +3211,14 @@ TP3: <code>{format_price(calc_tp3)}</code>
 🛑 <b>وقف الخسارة (SL)</b>
 Stop Loss: <code>{format_price(calc_sl)}</code>
 
-📈 <b>تحليل المؤشرات</b>
-• السيولة: (أعد صياغة هذه الجملة باحترافية بسطر واحد وبدون تناقضات: {market_action})
-• مؤشر(RSI) ({safe_rsi}): (اكتب سطر واحد يفسر الرقم بناءً على القواعد)
-• مؤشر(MACD) ({macd_fmt}): (اكتب سطر واحد يفسر الزخم)
-• مؤشر(ADX) ({adx_val:.1f}): (اكتب سطر واحد يفسر قوة الاتجاه)
+📈 <b>تحليل المؤشرات والسيولة</b>
+• <b>التدفق:</b> {market_action}
+• <b>مؤشر (RSI) ({safe_rsi:.1f}):</b> {rsi_txt}
+• <b>مؤشر (MACD) ({macd_fmt}):</b> {macd_txt}
+• <b>مؤشر (ADX) ({adx_val:.1f}):</b> {adx_txt}
 """
         else:
-            real_trend = "Bullish" if trend_dir == "Bullish" else "Bearish"
-            trend_strength = trend_str
-            
-            prompt = f"""
-You are a strict Quant Analyst at "NaiF CHarT". Your task is to format the technical report for {clean_sym} based strictly on the provided data.
-⚠️ CRITICAL WARNING: DO NOT alter the Support, Resistance, TP, or SL numbers. They are mathematically calculated.
-
-Financial Interpretation Rules (Follow strictly):
-1. RSI: > 70 (Overbought/Correction risk). < 30 (Oversold/Bounce opportunity). 30-70 (Neutral).
-2. ADX: > 25 (Strong trend). < 25 (Weak/Ranging).
-3. MACD: Positive (Bullish momentum). Negative (Bearish momentum).
-4. Liquidity: Rephrase the provided sentence into a cold, institutional tone.
-
-⚠️ Copy this exact HTML template, writing exactly ONE precise analytical line per indicator (No fluff, no financial advice):
-
+            final_report = f"""
 📊 <b>Analysis: {clean_sym}</b> | {tf} | <code>{format_price(price)}$</code>
 Trend: {real_trend} ({trend_strength})
 
@@ -3257,16 +3234,20 @@ TP3: <code>{format_price(calc_tp3)}</code>
 🛑 <b>Stop Loss (SL)</b>
 Stop Loss: <code>{format_price(calc_sl)}</code>
 
-📈 <b>Indicator Analysis</b>
-• Liquidity: (Professionally rephrase this: {market_action})
-• RSI ({safe_rsi}): (One line interpreting the number based on the rules)
-• MACD ({macd_fmt}): (One line interpreting momentum)
-• ADX ({adx_val:.1f}): (One line interpreting trend strength)
+📈 <b>Liquidity & Indicators</b>
+• <b>Flow:</b> {market_action}
+• <b>RSI ({safe_rsi:.1f}):</b> {rsi_txt}
+• <b>MACD ({macd_fmt}):</b> {macd_txt}
+• <b>ADX ({adx_val:.1f}):</b> {adx_txt}
 """
 
+    # 3. إرسال النتيجة فوراً للمستخدم (بدون انتظار أي سيرفر خارجي)
+    try:
+        await cb.message.edit_text(final_report, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        if "message is not modified" not in str(e):
+            await cb.message.answer(final_report, parse_mode=ParseMode.HTML)
 
-    res = await ask_groq(prompt, lang=lang)
-    await cb.message.answer(res, parse_mode=ParseMode.HTML)
     
     if not (await is_user_paid(pool, uid)):
         async with pool.acquire() as conn:
