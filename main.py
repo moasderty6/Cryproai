@@ -3120,116 +3120,131 @@ async def run_analysis(cb: types.CallbackQuery):
 
         # --- تعريف متغيرات التدفق (Fixing NameError) ---
         try:
-            # نحسب الفرق بين آخر شمعتين في الـ CVD لمعرفة نية الحيتان
-            cvd_diff = df['cvd'].diff().iloc[-1] if 'cvd' in df.columns else 0
-            bullish_flow = cvd_diff > 0  # سيولة شرائية
-            bearish_flow = cvd_diff < 0  # سيولة بيعية
+            # 💡 1. المؤسساتي: حساب الـ CVD عبر ميل متسارع (Slope) لتجنب ضوضاء الشمعة الواحدة
+            if 'cvd' in df.columns and len(df) >= 10:
+                cvd_slope = df['cvd'].diff(5).iloc[-1] # قياس ميل تدفق السيولة في آخر 5 شموع
+                cvd_ma = df['cvd'].rolling(10).mean().iloc[-1] # المتوسط المتحرك للسيولة
+                current_cvd = df['cvd'].iloc[-1]
+                
+                # السيولة الحقيقية إيجابية فقط إذا كان الاتجاه صاعد والسعر فوق متوسط السيولة
+                bullish_flow = (cvd_slope > 0) and (current_cvd > cvd_ma)
+                bearish_flow = (cvd_slope < 0) and (current_cvd < cvd_ma)
+            else:
+                # خط دفاعي في حال عدم توفر بيانات كافية
+                cvd_diff = df['cvd'].diff().iloc[-1] if 'cvd' in df.columns else 0
+                bullish_flow = cvd_diff > 0
+                bearish_flow = cvd_diff < 0
         except:
-            # إذا فشل الحساب، نجعلها False لتجنب توقف البوت
             bullish_flow = False
             bearish_flow = False
 
+        # 💡 2. المؤسساتي: حساب الحدود الديناميكية للـ RSI (Dynamic Thresholds)
+        try:
+            if 'rsi' in df.columns and len(df) >= 14:
+                rsi_ma = df['rsi'].rolling(14).mean().iloc[-1]
+            else:
+                rsi_ma = 50.0
+            
+            # النطاق يتسع ويضيق حسب حالة السوق (بدل 70 و 30 الثابتة)
+            rsi_upper = rsi_ma + 15  
+            rsi_lower = rsi_ma - 15  
+        except:
+            rsi_ma, rsi_upper, rsi_lower = 50.0, 65.0, 35.0
+
         # ==========================================
-        # 🤖 إغتيال الـ AI: المولد النصي الكمي (Quant Text Generator)
+        # 🤖 المولد النصي الكمي المؤسساتي (Quant Text Generator)
         # ==========================================
         
-        # 1. إعداد نصوص المؤشرات الفنية بصرامة (RSI, ADX, MACD)
         safe_rsi = float(last_rsi) if not pd.isna(last_rsi) else 50.0
         safe_macd = float(last_macd) if not pd.isna(last_macd) else 0.0
-        
-        # توحيد استخراج حالة الفوليوم لاستخدامها في كلا اللغتين
         vol_state = f"(Z-Score: {z_score:.1f})"
         
+        # 💡 3. المؤسساتي: نظام النقاط (Scoring System) لتقييم التناقضات
+        quant_score = 0.0
+        if bullish_flow: quant_score += 2.0
+        if bearish_flow: quant_score -= 2.0
+        if safe_rsi < rsi_lower: quant_score += 1.0  # تقييم الشراء من القاع
+        if safe_rsi > rsi_upper: quant_score -= 1.0  # تقييم خطر القمة
+        if safe_macd > 0: quant_score += 1.0
+        else: quant_score -= 1.0
+        
+        # إذا كان الترند قوياً (ADX > 25)، نعطي وزن أعلى للنقاط
+        if adx_val >= 25: 
+            quant_score *= 1.5 
+
         if lang == "ar":
-            # RSI Logic
-            if safe_rsi >= 70: rsi_txt = "تشبع شرائي عميق (Overbought)، خطر الانعكاس/التصحيح مرتفع."
-            elif safe_rsi <= 30: rsi_txt = "تشبع بيعي (Oversold)، استنزاف للبائعين وفرصة ارتداد."
-            else: rsi_txt = "زخم محايد، السعر يتداول ضمن مناطق التوازن."
+            # تحديث نصوص المخرجات بناءً على النطاقات الديناميكية
+            if safe_rsi >= rsi_upper: rsi_txt = "تشبع شرائي ديناميكي (Overbought)، خطر التصريف المؤسساتي مرتفع."
+            elif safe_rsi <= rsi_lower: rsi_txt = "استنزاف بيعي أسفل المتوسطات (Oversold)، فرصة ارتداد وبناء قاع."
+            else: rsi_txt = "زخم متوازن، يتداول السعر حول القيمة العادلة (Fair Value)."
             
-            # ADX Logic
-            if adx_val >= 25: adx_txt = "زخم اتجاهي قوي، استمرار المسار الحالي مرجح."
-            else: adx_txt = "ضعف في الزخم، تذبذب عرضي وانعدام الاتجاه الواضح."
+            if adx_val >= 25: adx_txt = "ترند صريح وقوي، زخم الاتجاه مهيمن بقوة على السوق."
+            else: adx_txt = "انخفاض في التقلبات (Low Volatility)، تذبذب عرضي دون اتجاه."
             
-            # MACD Logic
-            if safe_macd > 0: macd_txt = "تقاطع إيجابي، هيمنة المشترين وتزايد الزخم الصاعد."
-            else: macd_txt = "تقاطع سلبي، ضغط بيعي مهيمن وتناقص في الزخم."
+            if safe_macd > 0: macd_txt = "الزخم قصير الأجل إيجابي (تقاطع شرائي مهيمن)."
+            else: macd_txt = "الزخم قصير الأجل سلبي (ضغوط بيعية مكثفة)."
             
-            # Volume & Liquidity Flow Logic (Z-Score & CVD)
+            # دمج الرؤية: استخدام الـ Quant Score لكسر الانحياز التأكيدي
             if final_trend_dir == "Bullish":
                 real_trend = "صاعد"
-                if bearish_flow: 
-                    market_action = f"السعر صاعد، لكننا نرصد تصريفاً مخفياً {vol_state}."
+                if quant_score <= -1.0: 
+                    # تناقض: السعر صاعد لكن المؤشرات والسيولة تسربت وتصرف
+                    market_action = f"السعر صاعد، لكن التقييم الكمي سلبي! رصدنا تصريفاً مخفياً {vol_state} يهدد الترند."
                     trend_strength = "مخادع (تصريف)"
                 else:
-                    market_action = f"ضخ سيولة مؤسساتي وامتصاص قوي يعزز الصعود {vol_state}."
+                    market_action = f"ضخ سيولة مؤسساتي وامتصاص قوي يعزز مسار الصعود {vol_state}."
                     trend_strength = "قوي (تجميع)"
+            
             else: # Bearish
                 real_trend = "هابط"
-                if bullish_flow: 
-                    market_action = f"تجميع صامت وامتصاص للبيع في محاولة لبناء قاع {vol_state}."
+                if quant_score >= 1.0: 
+                    # تناقض: السعر هابط لكن الحيتان والتقييم الكمي يشتري بصمت
+                    market_action = f"السعر هابط، لكننا نرصد تجميعاً صامتاً يحاول بناء قاع محلي {vol_state}."
                     trend_strength = "ارتداد (بناء قاع)"
                 else: 
                     market_action = f"هيمنة بيعية وتفريغ مستمر للسيولة اللحظية {vol_state}."
                     trend_strength = "نزيف سيولة"
             
-            # تنبيهات الأوردر بوك (يجب أن تكون على مستوى الترند الرئيسي داخل لغة عربية)
             if is_spoofed: market_action += " [تنبيه: تلاعب وجدران وهمية في الأوردر بوك]"
             if is_orderbook_hollow: market_action += " [تنبيه: عمق سيولة هش قابل للكسر]"
 
         else: # English Version (Institutional Grade)
-            # 1. RSI Logic
-            if safe_rsi >= 70: 
-                rsi_txt = "Extreme Overbought: Significant reversal risk detected."
-            elif safe_rsi <= 30: 
-                rsi_txt = "Deep Oversold: Seller exhaustion, potential bounce zone."
-            else: 
-                rsi_txt = "Neutral Momentum: Price is trading within equilibrium levels."
+            if safe_rsi >= rsi_upper: rsi_txt = "Dynamic Overbought: High risk of institutional distribution."
+            elif safe_rsi <= rsi_lower: rsi_txt = "Deep Oversold (Below moving average): High bounce probability."
+            else: rsi_txt = "Neutral Momentum: Trading within Fair Value."
             
-            # 2. ADX Logic
-            if adx_val >= 25: 
-                adx_txt = "Strong Trend: High directional conviction in current move."
-            else: 
-                adx_txt = "Low Volatility: Choppy/Range-bound market conditions."
+            if adx_val >= 25: adx_txt = "Strong Trend: High directional conviction."
+            else: adx_txt = "Low Volatility: Choppy/Range-bound market."
             
-            # 3. MACD Logic
-            if safe_macd > 0: 
-                macd_txt = "Positive Bias: Buyer dominance with increasing momentum."
-            else: 
-                macd_txt = "Negative Bias: Heavy selling pressure and bearish momentum."
+            if safe_macd > 0: macd_txt = "Positive Momentum: Short-term buyers in control."
+            else: macd_txt = "Negative Momentum: Short-term sellers in control."
             
-            # 4. Liquidity & Order Flow Unification (CVD + Z-Score)
             if final_trend_dir == "Bullish":
                 real_trend = "Bullish"
-                if bearish_flow:
-                    # صعود سعري مع تصريف حيتان
-                    market_action = f"Uptrend active, but detecting hidden distribution {vol_state} threatening the move."
+                if quant_score <= -1.0:
+                    market_action = f"Uptrend active, but Quant Score is negative! Hidden distribution {vol_state} threatening the move."
                     trend_strength = "Fake (Distribution)"
                 else:
-                    # صعود سعري مع دعم مؤسساتي
                     market_action = f"Institutional inflow & strong absorption validating the current uptrend {vol_state}."
                     trend_strength = "Strong (Accumulation)"
             
             else: # Bearish
                 real_trend = "Bearish"
-                if bullish_flow:
-                    # هبوط سعري مع تجميع صامت (بناء قاع)
-                    market_action = f"Silent accumulation & supply absorption detected, attempting to build a local bottom {vol_state}."
+                if quant_score >= 1.0:
+                    market_action = f"Downtrend active, but detecting silent accumulation & bottom building {vol_state}."
                     trend_strength = "Bounce (Bottoming)"
                 else:
-                    # هبوط سعري مع نزيف سيولة
-                    market_action = f"Heavy selling dominance & continuous liquidity drain observed in order flow {vol_state}."
+                    market_action = f"Heavy selling dominance & continuous liquidity drain {vol_state}."
                     trend_strength = "Liquidity Drain"
 
-            # تنبيهات الأوردر بوك للإنجليزي    
             if is_spoofed: market_action += " [Alert: Orderbook Spoofing Detected]"
             if is_orderbook_hollow: market_action += " [Alert: Hollow Orderbook / Low Depth]"
 
-        # 2. بناء التقرير النهائي (The Formatter)
+        # بناء التقرير النهائي 
         macd_fmt = format_price(safe_macd)
-        
-        # ربط الـ DEX
         if is_dex:
             market_action = f"(تحليل شبكة DEX) | {market_action}" if lang == "ar" else f"(DEX Network) | {market_action}"
+
 
         if lang == "ar":
             final_report = f"""
