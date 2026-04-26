@@ -655,8 +655,7 @@ async def analyze_orderbook_spoofing_instant(symbol: str, client: httpx.AsyncCli
 async def get_institutional_orderflow(symbol, client, minutes=15):
     """ 
     [ULTRA UPGRADED] Global Tick-Level Footprint Engine 🌍
-    يجلب الصفقات اللحظية الحقيقية (AggTrades / Recent Trades) 
-    من (Binance + Bybit + OKX) في نفس اللحظة للحصول على Delta عالمية دقيقة.
+    يجلب الصفقات اللحظية الحقيقية مع عزل ضجيج الأفراد وصناع السوق (Stratification)
     """
     import time
     end_time = int(time.time() * 1000)
@@ -666,6 +665,9 @@ async def get_institutional_orderflow(symbol, client, minutes=15):
     sym_binance = f"{clean_sym}USDT"
     sym_bybit = f"{clean_sym}USDT"
     sym_okx = f"{clean_sym}-USDT"
+
+    # 🚀 فلتر الحيتان: تجاهل أي صفقة تقل عن 1000 دولار
+    MIN_WHALE_TRADE_USD = 1000.0 
     
     # --- دالة فرعية 1: بايننس ---
     async def fetch_binance():
@@ -682,9 +684,10 @@ async def get_institutional_orderflow(symbol, client, minutes=15):
                 for t in trades:
                     price = float(t['p'])
                     amount = float(t['q']) * price
+                    if amount < MIN_WHALE_TRADE_USD: continue # 👈 (Trade Stratification)
                     prices.append(price)
-                    if t['m']: s_vol += amount  # Maker is seller -> Aggressive Buy
-                    else: b_vol += amount       # Maker is buyer -> Aggressive Sell
+                    if t['m']: s_vol += amount  
+                    else: b_vol += amount       
                 return b_vol, s_vol, prices
         except: pass
         return 0.0, 0.0, []
@@ -701,6 +704,7 @@ async def get_institutional_orderflow(symbol, client, minutes=15):
                 b_vol, s_vol = 0.0, 0.0
                 for t in trades:
                     amount = float(t['v']) * float(t['p'])
+                    if amount < MIN_WHALE_TRADE_USD: continue # 👈 (Trade Stratification)
                     if t['S'] == 'Buy': b_vol += amount
                     else: s_vol += amount
                 return b_vol, s_vol
@@ -711,7 +715,7 @@ async def get_institutional_orderflow(symbol, client, minutes=15):
     async def fetch_okx():
         try:
             res = await client.get("https://www.okx.com/api/v5/market/trades", params={
-                "instId": sym_okx, "limit": 500 # أقصى حد مسموح به في OKX
+                "instId": sym_okx, "limit": 500
             }, timeout=4.0)
             
             if res.status_code == 200:
@@ -719,11 +723,14 @@ async def get_institutional_orderflow(symbol, client, minutes=15):
                 b_vol, s_vol = 0.0, 0.0
                 for t in trades:
                     amount = float(t['sz']) * float(t['px'])
+                    if amount < MIN_WHALE_TRADE_USD: continue # 👈 (Trade Stratification)
                     if t['side'] == 'buy': b_vol += amount
                     else: s_vol += amount
                 return b_vol, s_vol
         except: pass
         return 0.0, 0.0
+
+    # ... (باقي كود الدالة كما هو تماماً بدون تغيير) ...
 
     # ==========================================
     # 🚀 الإطلاق المتزامن (Scatter-Gather)
@@ -1131,15 +1138,19 @@ async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_
                 futures_signal = "Short_Covering"
             
                         # ... كودك الحالي
+                        # ... (كودك الحالي) ...
             if funding_rate < -0.0005: 
                 score_modifier += 12.0
                 if not futures_signal: futures_signal = "Short_Squeeze"
             elif funding_rate > 0.0005:
                 score_modifier -= 10.0
 
-            return score_modifier, futures_signal, funding_rate # 👈 التعديل: أضفنا funding_rate للناتج
+            # 🚀 التعديل: إرجاع oi_change_pct للمحرك الراداري
+            return score_modifier, futures_signal, funding_rate, oi_change_pct 
+            
     except Exception: pass
-    return 0.0, None, 0.0 # 👈 التعديل: أضفنا 0.0 للناتج في حال الخطأ
+    # 🚀 التعديل: إرجاع 4 قيم أصفار في حال الخطأ
+    return 0.0, None, 0.0, 0.0 
 
 def calculate_volume_zscore(df, window=720):
     """
@@ -1237,7 +1248,8 @@ async def silent_data_harvester_worker(pool):
                         global_ob_pressure = await get_aggregated_orderbook(client, sym)
                         depth_data = await analyze_orderbook_spoofing_instant(sym, client, price)
                         tick_delta, tick_buy, tick_sell, limit_abs = await get_institutional_orderflow(pair, client)
-                        _, fut_sig, funding_val = await get_futures_liquidity(sym, client, price, float(df["close"].iloc[-3]))
+                                                # 🚀 أضفنا الـ _ (الرابع) لاستقبال قيمة الـ OI وتجاهلها هنا
+                        _, fut_sig, funding_val, _ = await get_futures_liquidity(sym, client, price, float(df["close"].iloc[-3]))
                         
                         avg_vol_20 = df["volume"].tail(20).mean()
                         avg_vol_usd = avg_vol_20 * price if avg_vol_20 > 0 else 1.0
@@ -1541,7 +1553,9 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             old_price_val = df["close"].iloc[-3] if len(df) > 3 else df["open"].iloc[0]
             
             tick_delta, tick_buy, tick_sell, limit_abs_signal = await get_institutional_orderflow(f"{symbol}USDT", client)
-            _, futures_signal, funding_val = await get_futures_liquidity(symbol, client, price, old_price_val)
+            # 🚀 التعديل: استقبال oi_change_pct
+            _, futures_signal, funding_val, oi_change_pct = await get_futures_liquidity(symbol, client, price, old_price_val)
+
             approx_24h_vol_usd = df["volume"].tail(24).sum() * price 
             whale_score = await detect_real_whale_trades(symbol, client, approx_24h_vol_usd)
 
@@ -1704,7 +1718,23 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 tags.append("Spoofing_Distribution_Trap")
                 return None 
 
+            # ==========================================
+            avg_vol_usd = avg_vol_20 * price if avg_vol_20 > 0 else 1.0
+            is_strong_cvd = current_cvd > (avg_vol_usd * 0.15)
 
+            if is_strong_cvd:
+                # أ. كشف إعادة التوازن (MM Hedging): شراء قوي ماركت يقابله ثبات أو هبوط في العقود المفتوحة
+                if oi_change_pct <= 0.005:
+                    tags.append("Fake_MM_Hedging")
+                    print(f"🗑️ {symbol} - مرفوض: CVD شراء ضخم ولكن العقود المفتوحة لم ترتفع (إعادة توازن لصناع السوق).")
+                    return None 
+
+                # ب. كشف الإسفنجة (Limit Absorption Traps): شراء ضخم ماركت والسعر لا يتحرك
+                price_expansion = (current_high - current_low) / (current_low + 1e-8)
+                if price_expansion < 0.003: # توسع سعري أقل من 0.3%
+                    tags.append("Limit_Absorption_Sell_Trap")
+                    print(f"🗑️ {symbol} - مرفوض: إسفنجة Limit Orders تبتلع المشترين السعر لن يصعد!")
+                    return None 
             # 2. انعدام الشراء الحقيقي:
             if current_cvd <= 0 and current_imbalance <= 0.1 and global_ob_pressure < 1.1:
                 return None 
