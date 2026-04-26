@@ -3863,9 +3863,9 @@ async def run_analysis(cb: types.CallbackQuery):
     # ==========================================
     if lang == "ar":
         # 1. نصوص المؤشرات المبنية على الانحرافات الإحصائية
-        if safe_rsi >= rsi_upper: rsi_txt = f"انحراف شرائي حاد ({safe_rsi:.1f}). السعر خارج القيمة العادلة، خطر الانعكاس (Mean Reversion) مرتفع جداً."
-        elif safe_rsi <= rsi_lower: rsi_txt = f"تشبع بيعي عميق ({safe_rsi:.1f}). السعر يتداول بخصم كبير (Discount)، احتمالية بناء قاع واردة."
-        else: rsi_txt = f"زخم متوازن ({safe_rsi:.1f}). السوق يتداول باحترام حول مناطق القيمة العادلة (Fair Value)."
+        if safe_rsi >= rsi_upper: rsi_txt = f"انحراف شرائي حاد ({safe_rsi:.1f}). السعر خارج القيمة العادلة، خطر الانعكاس (Mean Reversion) مرتفع."
+        elif safe_rsi <= rsi_lower: rsi_txt = f"تشبع بيعي عميق ({safe_rsi:.1f}). السعر يتداول دون قيمته العادلة (Undervalued)، احتمالية تكوين قاع."
+        else: rsi_txt = f"زخم متوازن ({safe_rsi:.1f}). زخم متوازن. السعر يتمركز بثبات حول مناطق القيمة العادلة (Fair Value)."
         
         if adx_val >= 25: adx_txt = "ترند صريح وقوي. المؤسسات تدعم هذا المسار بزخم واضح."
         else: adx_txt = "انخفاض حاد في التقلبات. تذبذب عرضي وانتظار لضخ سيولة جديدة."
