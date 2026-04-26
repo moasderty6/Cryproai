@@ -818,14 +818,21 @@ async def detect_spot_perp_divergence(symbol: str, client: httpx.AsyncClient):
         spot_cvd = spot_df['delta'].cumsum()
         
         # حساب CVD للفيوتشرز
+                # حساب CVD للفيوتشرز
         fapi_df['v'] = pd.to_numeric(fapi_df['v'])
         fapi_df['tbv'] = pd.to_numeric(fapi_df['tbv'])
         fapi_df['delta'] = fapi_df['tbv'] - (fapi_df['v'] - fapi_df['tbv'])
         fapi_cvd = fapi_df['delta'].cumsum()
 
-        # حساب الارتباط (Correlation) بين المسارين
+        # 🛡️ الحماية المؤسساتية (Zero Variance Protection):
+        # يمنع انهيار Numpy (RuntimeWarning) في العملات الميتة التي لا تتحرك
+        if spot_cvd.std() == 0 or fapi_cvd.std() == 0:
+            return 0.0
+
+        # حساب الارتباط (Correlation) بين المسارين بأمان
         correlation = spot_cvd.corr(fapi_cvd)
         spot_total_delta = spot_cvd.iloc[-1] - spot_cvd.iloc[0]
+
 
         if pd.isna(correlation): return 0.0
 
@@ -1785,31 +1792,56 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 deriv_raw = 100.0 # علامة كاملة لسكور المشتقات لأن الانفجار حتمي
                 scores["cvd"] = min(scores["cvd"] + 30.0, 100.0)
 
-            # 1. تقييم الفاندنج بسلاسة (السلبية العالية ترفع السكور للتصفية)
+            # 1. حساب العتبة الديناميكية للتمويل (Dynamic Funding Threshold)
+            # عتبة الأساس هي -0.0008 (قاسية جداً)، لكنها ترتخي كلما زاد دخول الأموال للعقود
+            safe_oi_change = max(0.0, oi_change_pct)
+            
+            # المعادلة: إذا زاد الـ OI بنسبة 5% (0.05)، تصبح العتبة: -0.0008 + (0.05 * 0.012) = -0.0002!
+            # حماية: نستخدم min(-0.0001) لضمان أن الفاندنج يجب أن يكون سالباً على الأقل.
+            dynamic_nuclear_threshold = min(-0.0001, -0.0008 + (safe_oi_change * 0.012))
+            dynamic_imminent_threshold = min(0.0, -0.0004 + (safe_oi_change * 0.010))
 
+            # 2. حساسية التقييم السلس المتغيرة (Dynamic Sigmoid Sensitivity)
+            # إذا كان الـ OI يرتفع بانفجار (أكثر من 3%)، نضرب حساسية التقييم لتضخيم سكور العملة فوراً
+            funding_sensitivity = -3000.0
+            if futures_signal == "OI_Rising" and safe_oi_change > 0.03:
+                funding_sensitivity = -5000.0 # تضخيم مرعب لأن الوقود جاهز للانفجار
 
-            # 1. تقييم الفاندنج بسلاسة (السلبية العالية ترفع السكور للتصفية)
-            # حساسية -3000 تكبر الأرقام العشرية. (فاندنج -0.001 يعطي سكور قوي جداً)
-            funding_score = quant_sigmoid_score(funding_val, sensitivity=-3000.0, limit=40.0) - 20.0
+            funding_score = quant_sigmoid_score(funding_val, sensitivity=funding_sensitivity, limit=40.0) - 20.0
             deriv_raw += funding_score
 
+            # 3. صاعق التفجير (The Ignition Triggers)
             is_spot_premium = spot_lead_score > 3.0
-            is_nuclear_squeeze = (futures_signal == "OI_Rising" and funding_val <= -0.0006 and float(locals().get('micro_cvd_trend', 0.0)) > 0)
+            spot_buying_pressure = float(locals().get('micro_cvd_trend', 0.0)) > 0
+
+            # ☢️ التصفية النووية المتكيفة (Adaptive Nuclear Squeeze):
+            is_nuclear_squeeze = (
+                futures_signal == "OI_Rising" and 
+                funding_val <= dynamic_nuclear_threshold and 
+                spot_buying_pressure
+            )
             
             if limit_abs_signal == "Limit_Absorption":
                 tags.append("Limit_Absorption")
                 scores["cvd"] = min(scores["cvd"] + 30.0, 100.0)
                 
             if is_nuclear_squeeze:
+                # إذا تحقق الانفجار، نعطيه السكور الكامل ونكسر الفلاتر
                 tags.append("Nuclear_Short_Squeeze")
                 deriv_raw = 100.0 
-                scores["cvd"] = min(scores["cvd"] + 25.0, 100.0)
-            elif is_spot_premium and futures_signal == "OI_Rising" and funding_val < -0.0003:
+                scores["cvd"] = min(scores["cvd"] + 30.0, 100.0)
+                # طباعة سرية للأدمن لمعرفة العتبة التي تم ضربها
+                print(f"☢️ [SQUEEZE] {symbol} Nuclear trigger! OI: +{safe_oi_change*100:.1f}%, Fund: {funding_val:.5f} (Req: {dynamic_nuclear_threshold:.5f})")
+                
+            elif is_spot_premium and futures_signal == "OI_Rising" and funding_val <= dynamic_imminent_threshold:
+                # السكويز وشيك (السبوت يشتري والعقود ترتفع مع فاندنج سالب ديناميكي)
                 tags.append("Short_Squeeze_Imminent")
-                deriv_raw += 30.0 
+                deriv_raw += 35.0 
             elif futures_signal == "OI_Rising": 
                 deriv_raw += 15.0
                 tags.append("OI_Rising")
+            # ====================================================================
+
                 
             # 2. إضافة بصمة الحيتان (خطي ناعم)
             deriv_raw += quant_sigmoid_score(whale_score, sensitivity=0.5, limit=30.0) - 15.0
@@ -1984,6 +2016,14 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             # يمنع الـ Over-fitting عبر تكييف الأرقام مع حالة السوق
             # ==========================================
             # 1. استخراج نبض الماكرو الحالي
+            # ==========================================
+            # 🌉 جسر توحيد المتغيرات (Variable Unification Bridge)
+            # لحل مشكلة not defined وربط محركات الرادار ببعضها
+            # ==========================================
+            current_cvd = float(locals().get('micro_cvd_trend', 0.0))
+            current_imbalance = float(locals().get('imbalance', 0.0))
+            is_orderbook_hollow_flag = depth_data.get('is_hollow', False)
+
             volatility_state = market_regime['volatility'] if isinstance(market_regime, dict) else "Normal"
             macro_adx = market_regime['adx'] if isinstance(market_regime, dict) else 20.0
             
@@ -2021,7 +2061,8 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 return None 
                 
             # 2. كشف الفراغ السيولي والهشاشة (Liquidity Void)
-            if locals().get('is_orderbook_hollow', False) and current_cvd < 0:
+                        # 2. كشف الفراغ السيولي والهشاشة (Liquidity Void)
+            if is_orderbook_hollow_flag and current_cvd < 0:
                 tags.append("Liquidity_Void_Trap")
                 print(f"🗑️ {symbol} - مرفوض: جدران شراء وهمية والعمق الداعم فارغ تماماً!")
                 return None 
