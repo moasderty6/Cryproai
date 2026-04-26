@@ -3827,19 +3827,31 @@ async def run_analysis(cb: types.CallbackQuery):
         flow_ratio = (cvd_slope / avg_vol_usd) if avg_vol_usd > 0 else 0.0
         
     flow_edge = quant_sigmoid_score(flow_ratio, sensitivity=5.0, limit=100.0)
+    # 4. بناء السكور المؤسساتي النهائي (Absolute Confidence Score)
+    # نحول التدفق والمؤشرات لتكون إيجابية دائماً "باتجاه الترند" لحساب نسبة الثقة
+    if final_trend_dir == "Bullish":
+        directional_flow = flow_edge
+        directional_rsi = safe_rsi
+    else:
+        directional_flow = 100.0 - flow_edge # في الهبوط، التدفق الصفر يعني 100% ثقة بالهبوط
+        directional_rsi = 100.0 - safe_rsi   # في الهبوط، الـ RSI المنخفض يعني زخم بيعي قوي
+
+    # دمج الفوليوم مع التدفق الاتجاهي (نسبة الثقة النهائية)
+    conviction_score = (vol_edge * 0.30) + (directional_flow * 0.50) + (directional_rsi * 0.20)
     
-    # 4. بناء السكور المؤسساتي النهائي (Conviction Score)
-    # ندمج الفوليوم والتدفق مع عقاب (Penalty) رياضي إذا كان السعر متضخماً (Price Z عالي)
-    conviction_score = (vol_edge * 0.45) + (flow_edge * 0.40) + (safe_rsi * 0.15)
-    
-    # عقاب الفومو (Late FOMO Penalty): إذا طار السعر وتدفق الأموال ضعيف، نضرب السكور في مقتل
-    if price_z_score > 2.0 and flow_edge < 50.0:
+    # عقاب الفومو (Late FOMO Penalty): للسوق الصاعد
+    if final_trend_dir == "Bullish" and price_z_score > 2.0 and flow_edge < 50.0:
         conviction_score *= math.exp(-0.5 * price_z_score) 
+        
+    # عقاب الانهيار الكاذب (Fake Dump Penalty): للسوق الهابط
+    elif final_trend_dir == "Bearish" and price_z_score < -2.0 and flow_edge > 50.0:
+        conviction_score *= math.exp(0.5 * price_z_score) 
         
     # 5. تحليل التباين الهيكلي (Macro Divergence)
     is_fomo_trap = price_z_score > 2.0 and flow_edge < 40.0 and vol_edge < 60.0
     is_capitulation_absorption = price_z_score < -2.0 and flow_edge > 60.0 and vol_edge > 70.0
     is_trend_backed_by_flow = (final_trend_dir == "Bullish" and flow_edge > 60.0) or (final_trend_dir == "Bearish" and flow_edge < 40.0)
+
 
     # إرجاع القيم لدقتها الأصلية
     safe_rsi = float(last_rsi) if not pd.isna(last_rsi) else 50.0
@@ -3869,7 +3881,7 @@ async def run_analysis(cb: types.CallbackQuery):
                 trend_strength = "مخادع (احتمال انعكاس قاسي)"
             elif is_trend_backed_by_flow:
                 market_action = f"ترند صحي ومدعوم بتدفق أموال مؤسساتي (Orderflow Backed) {vol_state}. المشترون يمتصون العروض."
-                trend_strength = f"قوي (قناعة كمية {conviction_score:.0f}%)"
+                trend_strength = f"قوي (درجة الثقة {conviction_score:.0f}%)"
             else:
                 market_action = f"صعود باهت بسبب ضعف السيولة (Low Vol Markup) {vol_state}. الحركة تفتقر للزخم المؤسساتي."
                 trend_strength = "ضعيف (سيولة هشة)"
@@ -3881,7 +3893,7 @@ async def run_analysis(cb: types.CallbackQuery):
                 trend_strength = "ارتداد محتمل (بناء قاع)"
             elif is_trend_backed_by_flow:
                 market_action = f"سيطرة بيعية حقيقية وتفريغ مستمر للسيولة (Liquidity Drain) {vol_state}. الهبوط مدعوم بتدفق سلبي."
-                trend_strength = f"قوي (قناعة كمية {conviction_score:.0f}%)"
+                trend_strength = f"قوي (درجة الثقة {conviction_score:.0f}%)"
             else:
                 market_action = f"هبوط بطيء بلا زخم حقيقي (Low Vol Markdown) {vol_state}. غياب للمشترين أكثر من كونه قوة بيعية."
                 trend_strength = "متذبذب (هبوط صامت)"
