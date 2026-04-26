@@ -146,7 +146,7 @@ async def create_nowpayments_invoice(user_id: int):
     url = "https://api.nowpayments.io/v1/invoice"
     headers = {"x-api-key": NOWPAYMENTS_API_KEY, "Content-Type": "application/json"}
     data = {
-        "price_amount": 10,
+        "price_amount": 10.01,
         "price_currency": "usd",
         "order_id": str(user_id),
         "ipn_callback_url": f"{WEBHOOK_URL}/webhook/nowpayments",
@@ -791,56 +791,60 @@ async def get_institutional_orderflow(symbol, client, minutes=15):
 
 
 async def detect_spot_perp_divergence(symbol: str, client: httpx.AsyncClient):
+    """
+    [Quant Upgrade] True CVD Correlation Engine
+    يقيس الانحراف بين سيولة السبوت والعقود عبر الارتباط الإحصائي
+    """
     clean_sym = symbol.replace("USDT", "") + "USDT"
     spot_url = f"{get_random_binance_base()}/api/v3/klines?symbol={clean_sym}&interval=1m&limit=60"
     fapi_url = f"https://fapi.binance.com/fapi/v1/klines?symbol={clean_sym}&interval=1m&limit=60"
     
     try:
-        # 🛑 حارس حماية الـ API (قبل إرسال الطلبات المزدوجة)
         await binance_rate_limit_event.wait()
-        
         spot_res, fapi_res = await asyncio.gather(
             client.get(spot_url, timeout=5.0),
             client.get(fapi_url, timeout=5.0)
         )
-# ... يكمل باقي الكود كما هو ...
         
-        if spot_res.status_code != 200 or fapi_res.status_code != 200:
-            return 0.0
+        if spot_res.status_code != 200 or fapi_res.status_code != 200: return 0.0
 
-        spot_data, fapi_data = spot_res.json(), fapi_res.json()
-        if len(spot_data) < 60 or len(fapi_data) < 60:
-            return 0.0
-
-        spot_buy_vol = sum(float(c[9]) for c in spot_data)
-        spot_total_vol = sum(float(c[5]) for c in spot_data)
-        spot_delta = spot_buy_vol - (spot_total_vol - spot_buy_vol)
+        spot_df = pd.DataFrame(spot_res.json(), columns=["t","o","h","l","c","v","ct","qv","trades","tbv","tqav","ignore"])
+        fapi_df = pd.DataFrame(fapi_res.json(), columns=["t","o","h","l","c","v","ct","qv","trades","tbv","tqav","ignore"])
         
-        fapi_buy_vol = sum(float(c[9]) for c in fapi_data)
-        fapi_total_vol = sum(float(c[5]) for c in fapi_data)
-        fapi_delta = fapi_buy_vol - (fapi_total_vol - fapi_buy_vol)
+        # حساب CVD للسبوت
+        spot_df['v'] = pd.to_numeric(spot_df['v'])
+        spot_df['tbv'] = pd.to_numeric(spot_df['tbv'])
+        spot_df['delta'] = spot_df['tbv'] - (spot_df['v'] - spot_df['tbv'])
+        spot_cvd = spot_df['delta'].cumsum()
+        
+        # حساب CVD للفيوتشرز
+        fapi_df['v'] = pd.to_numeric(fapi_df['v'])
+        fapi_df['tbv'] = pd.to_numeric(fapi_df['tbv'])
+        fapi_df['delta'] = fapi_df['tbv'] - (fapi_df['v'] - fapi_df['tbv'])
+        fapi_cvd = fapi_df['delta'].cumsum()
 
-        if spot_total_vol == 0 or fapi_total_vol == 0:
-            return 0.0
+        # حساب الارتباط (Correlation) بين المسارين
+        correlation = spot_cvd.corr(fapi_cvd)
+        spot_total_delta = spot_cvd.iloc[-1] - spot_cvd.iloc[0]
 
-        # نظام زيادة وتنقيص النقاط البسيط
-        if spot_delta > (spot_total_vol * 0.10) and fapi_delta < -(fapi_total_vol * 0.15):
-            return 7.5  # حيتان السبوت تشتري بقوة
-        elif spot_delta < -(spot_total_vol * 0.10) and fapi_delta > (fapi_total_vol * 0.15):
-            return -8.5 # حيتان السبوت تصرف
-        elif spot_delta > 0 and fapi_delta < 0:
-            return 2.5  # تباين خفيف إيجابي
-        elif spot_delta < 0 and fapi_delta > 0:
-            return -2.5 # تباين خفيف سلبي
+        if pd.isna(correlation): return 0.0
+
+        # التقييم المستنبط رياضياً:
+        # إذا كان الارتباط سلبياً (أقل من -0.5) والسبوت يشتري بقوة = تجميع مخفي وتحوط في العقود
+        if correlation < -0.5 and spot_total_delta > 0:
+            return 10.0 * abs(correlation) # سكور ديناميكي يصل لـ 10
+        # إذا كان الارتباط سلبياً والسبوت يبيع = تصريف حقيقي
+        elif correlation < -0.5 and spot_total_delta < 0:
+            return -10.0 * abs(correlation)
+            
+        # إذا كانوا يتحركون معاً بشراسة (ارتباط > 0.8)
+        elif correlation > 0.8 and spot_total_delta > 0:
+            return 5.0
             
         return 0.0
 
     except Exception:
         return 0.0
-
-
-import ta
-import pandas as pd
 
 async def detect_market_regime(client):
     """
@@ -1505,6 +1509,28 @@ async def detect_phantom_liquidity_ws(symbol: str, client: httpx.AsyncClient, cu
         return rest_score, []
         
     return final_whale_score, phantom_tags
+def get_dynamic_window(df, base_window=20, min_window=5, max_window=100):
+    """
+    محرك النوافذ الديناميكية (Volatility-Adjusted Lookback):
+    يستخدم نسبة التذبذب الحالي مقارنة بالتذبذب التاريخي لضبط حجم النافذة.
+    """
+    if len(df) < max_window:
+        return base_window
+
+    # حساب التذبذب التاريخي (طويل الأمد) والتذبذب اللحظي
+    returns = df['close'].pct_change().dropna()
+    hist_vol = returns.tail(max_window).std()
+    current_vol = returns.tail(min_window * 2).std()
+    
+    if hist_vol == 0 or pd.isna(hist_vol) or pd.isna(current_vol):
+        return base_window
+
+    # معامل كفاءة السوق: كلما زاد التذبذب اللحظي، صغرت النافذة
+    volatility_ratio = hist_vol / current_vol
+    
+    # حساب النافذة الديناميكية مع حماية الحدود
+    dynamic_window = int(base_window * volatility_ratio)
+    return max(min_window, min(dynamic_window, max_window))
 
 async def analyze_radar_coin(c, client, market_regime, sem):
     async with sem:  
@@ -1725,31 +1751,42 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             deriv_raw += (spot_lead_score * 2.5) 
 
             scores["deriv"] = max(0.0, min(deriv_raw, 100.0))
-
             # ----------------------------------------------------------------
-            # هـ. تقييم الهيكلة الفنية (Technical Convergence Mapping)
+            # هـ. تقييم الهيكلة الفنية (Statistically Derived Scoring)
             # ----------------------------------------------------------------
             tech_raw = 50.0
             
-            sma20_bb = df["close"].rolling(20).mean()
-            std20_bb = df["close"].rolling(20).std(ddof=0)
-            upper_band = sma20_bb + 2 * std20_bb
-            lower_band = sma20_bb - 2 * std20_bb
-            bb_width = (upper_band - lower_band) / sma20_bb
+            # 1. ديناميكية النوافذ (Dynamic Windows)
+            dyn_window = get_dynamic_window(df, base_window=20)
             
-            avg_bb_width = bb_width.rolling(100).mean().iloc[-1] if len(bb_width) >= 100 else float('nan')
+            # 2. انضغاط البولينجر المطور (Statistically Scaled Squeeze)
+            sma = df["close"].rolling(dyn_window).mean()
+            std = df["close"].rolling(dyn_window).std(ddof=0)
+            bb_width = (4 * std) / sma
+            
+            avg_bb_width = bb_width.rolling(dyn_window * 5).mean().iloc[-1]
             current_bb_width = bb_width.iloc[-1]
 
-            # معادلة ضغط مرنة: كلما انضغط الباند عن متوسطه، ارتفعت الدرجة هندسياً
             if not pd.isna(current_bb_width) and not pd.isna(avg_bb_width) and avg_bb_width > 0:
                 squeeze_ratio = current_bb_width / avg_bb_width
-                if squeeze_ratio < 0.8:
-                    tech_raw += (1.0 - squeeze_ratio) * 40.0
+                # تحويل هندسي: كلما قل الـ ratio اقترب السكور من 30 نقطة إضافية بنعومة
+                if squeeze_ratio < 1.0:
+                    tech_boost = quant_sigmoid_score(1.0 - squeeze_ratio, sensitivity=5.0, limit=30.0)
+                    tech_raw += tech_boost
                     if squeeze_ratio < 0.5: tags.append("Squeeze")
-                    
+
+            # 3. دايفرجنس الـ RSI الموزون إحصائياً (Volatility Adjusted Divergence)
             ema200_val = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else df["close"].ewm(span=50).mean().iloc[-1]
-            if price < ema200_val and last_rsi > 30 and df["rsi"].iloc[-10:-1].min() < 30:
-                tech_raw += 15.0; tags.append("RSI_Div")
+            
+            if price < ema200_val and last_rsi > 30:
+                # قياس عمق القاع السابق في الـ RSI لتحديد قوة الارتداد
+                min_rsi_recent = df["rsi"].iloc[-15:-1].min()
+                if min_rsi_recent < 30:
+                    # معادلة: كلما كان القاع أعمق والارتداد أقوى، زادت النقاط (بحد أقصى 20)
+                    divergence_strength = (last_rsi - min_rsi_recent) / 10.0
+                    tech_raw += quant_sigmoid_score(divergence_strength, sensitivity=2.0, limit=20.0)
+                    tags.append("RSI_Div")
+
                 
             recent_low_20 = df["low"].iloc[-21:-1].min()
             current_low = df["low"].iloc[-1]
@@ -1775,8 +1812,8 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             tech_raw += quant_sigmoid_score(rs_score, sensitivity=0.5, limit=20.0) - 10.0
                 
             scores["tech"] = max(0.0, min(tech_raw, 100.0))
-            # ====================================================================
-            # ⚖️ الدمج النهائي وخصم السيولة (Institutional Haircut)
+               # ====================================================================
+            # ⚖️ الدمج النهائي وخصم السيولة (Institutional Haircut & Convexity)
             # ====================================================================
             final_weighted_score = (
                 (scores["vol"]   * weights["vol"]) +
@@ -1785,6 +1822,21 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 (scores["deriv"] * weights["deriv"]) +
                 (scores["tech"]  * weights["tech"])
             )
+
+            # 🚀 محرك التحدب وعدم التكافؤ (Convexity Alpha Override)
+            # يمنع ظاهرة "غسيل الإشارات". إذا كان هناك شذوذ متطرف في قطاع واحد، يفرض نفسه.
+            max_category_score = max(scores["vol"], scores["cvd"], scores["ob"], scores["deriv"])
+            
+            # العتبة: إذا تجاوز أي مؤشر 88/100 (شذوذ حاد جداً)
+            if max_category_score > 88.0:
+                # حساب قوة الاختراق للعتبة
+                override_power = max_category_score - 88.0 
+                
+                # المعادلة: إضافة أُسّية ترفع السكور النهائي بقوة تتناسب مع حجم الشذوذ
+                # الصيغة: $Score_{new} = Score_{old} + (Override \times 1.5)$
+                alpha_boost = override_power * 1.5
+                final_weighted_score += alpha_boost
+                tags.append("Alpha_Override_Triggered")
 
             # 🛡️ خنق المخاطرة (Liquidity Penalty Haircut)
             # إذا كان LAR أقل من 1 (سيولة سيئة أو تذبذب مجنون)، يتم قص السكور بنعومة
