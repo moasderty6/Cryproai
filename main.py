@@ -1284,8 +1284,16 @@ def process_dataframe_sync(candles_data):
     current_z_val, vol_mean_val, vol_std_val = calculate_volume_zscore(df, window=720)
     
     return df, last_rsi_val, current_adx_val, current_z_val, vol_mean_val, vol_std_val
+
+
 async def detect_real_whale_trades(symbol: str, client: httpx.AsyncClient, volume_24h: float):
+    """
+    [Institutional Upgrade] Algorithmic Execution Detection (TWAP/VWAP & Iceberg)
+    يبحث عن البصمة الإحصائية لخوارزميات المؤسسات التي تقوم بتقطيع الطلبات الكبيرة إلى 
+    مئات الطلبات الصغيرة ذات الأحجام المتجانسة والكثافة الزمنية العالية.
+    """
     clean_sym = symbol.replace("USDT", "") + "USDT"
+    # جلب آخر 1000 صفقة (تمثل دقائق أو ثواني في العملات النشطة)
     trades_url = f"{get_random_binance_base()}/api/v3/trades?symbol={clean_sym}&limit=1000"
     
     try:
@@ -1294,43 +1302,71 @@ async def detect_real_whale_trades(symbol: str, client: httpx.AsyncClient, volum
             return 0.0
             
         trades = res.json()
-        whale_buy_vol = 0.0
-        whale_sell_vol = 0.0
-        
-        # 🧠 محرك الحدود المرنة (Dynamic Quant Bounds)
-        # 0.2% من السيولة اليومية تعتبر صفقة حوت، بحد أدنى 15 ألف وحد أقصى 500 ألف
-        MIN_BLOCK = 15_000.0   
-        MAX_BLOCK = 500_000.0  
-        WHALE_FACTOR = 0.002   
-        
-        DYNAMIC_WHALE_THRESHOLD = max(MIN_BLOCK, min(volume_24h * WHALE_FACTOR, MAX_BLOCK))
-        
-        for t in trades:
-            trade_value_usd = float(t['qty']) * float(t['price'])
-            if trade_value_usd >= DYNAMIC_WHALE_THRESHOLD:
-                if not t['isBuyerMaker']: 
-                    whale_buy_vol += trade_value_usd 
-                else: 
-                    whale_sell_vol += trade_value_usd 
-                    
-        if whale_buy_vol == 0 and whale_sell_vol == 0:
-            return 0.0
+        if not trades: return 0.0
 
-        whale_delta = whale_buy_vol - whale_sell_vol
+        df = pd.DataFrame(trades)
+        df['qty'] = df['qty'].astype(float)
+        df['price'] = df['price'].astype(float)
+        df['value'] = df['qty'] * df['price']
         
-        # 🧠 نظام النقاط النسبي (Relative Scoring)
-        # تقييم قوة الحيتان بناءً على تأثيرهم كنسبة من حجم التداول الكلي وليس كرقم ثابت
-        delta_pct = whale_delta / (volume_24h + 1) # +1 لتجنب القسمة على صفر
+        # تقسيم الصفقات: من الذي يسحب السيولة (Taker)؟
+        buy_trades = df[~df['isBuyerMaker'].astype(bool)]
+        sell_trades = df[df['isBuyerMaker'].astype(bool)]
         
-        if delta_pct > 0.03: return 9.5     # حيتان تسيطر بأكثر من 3% من سيولة اليوم
-        elif delta_pct > 0.01: return 5.5   # سيطرة معتدلة 1%
-        elif delta_pct < -0.03: return -10.5 # تصريف عنيف
-        elif delta_pct < -0.01: return -6.5
+        buy_vol = buy_trades['value'].sum()
+        sell_vol = sell_trades['value'].sum()
+        total_vol = buy_vol + sell_vol
+        
+        if total_vol == 0: return 0.0
+
+        # --- 🧠 Quantitative Algo Footprint Engine ---
+        
+        # 1. التكدس الزمني (Time-Execution Clustering)
+        # كم عدد الصفقات التي نُفذت في نفس الثانية بالضبط؟ (دليل على HFT Sweeps)
+        df['time_sec'] = df['time'] // 1000
+        cluster_counts = df.groupby('time_sec')['value'].count()
+        algo_clusters = cluster_counts[cluster_counts > 7] # 7 صفقات فأكثر في ثانية واحدة
+        cluster_weight = min(len(algo_clusters) / 10.0, 4.0) # أقصى تعزيز 4 نقاط
+
+        # 2. كشف تجانس الأحجام (Iceberg / TWAP Variance Detection)
+        # تجاهل صفقات التجزئة البسيطة للأفراد (أقل من 200 دولار) للتركيز على مسار المؤسسات
+        meaningful_buys = buy_trades[buy_trades['value'] > 200]
+        meaningful_sells = sell_trades[sell_trades['value'] > 200]
+
+        algo_buy_score = 0.0
+        algo_sell_score = 0.0
+
+        # Coefficient of Variation (CV) = Standard Deviation / Mean
+        # الخوارزميات تترك CV منخفض جداً لأنها تقطع الأحجام بشكل رياضي متساوٍ
+        if len(meaningful_buys) > 15:
+            buy_cv = meaningful_buys['value'].std() / (meaningful_buys['value'].mean() + 1e-8)
+            if buy_cv < 1.2: # تجانس رياضي غير طبيعي (روبوت تجميع)
+                algo_buy_score += (1.2 - buy_cv) * 10
+
+        if len(meaningful_sells) > 15:
+            sell_cv = meaningful_sells['value'].std() / (meaningful_sells['value'].mean() + 1e-8)
+            if sell_cv < 1.2: # تجانس رياضي (روبوت تصريف)
+                algo_sell_score += (1.2 - sell_cv) * 10
+
+        # 3. الهيمنة الاتجاهية (Directional Delta)
+        delta_pct = (buy_vol - sell_vol) / total_vol
+        
+        # 4. دمج السكور النهائي بناءً على بصمة الـ Algo + هيمنة الاتجاه
+        final_score = 0.0
+        
+        # إذا كان هناك اختلال شرائي مع بصمة خوارزميات التجميع
+        if delta_pct > 0.05:
+            final_score = 4.0 + algo_buy_score + cluster_weight + (delta_pct * 10)
+        # إذا كان هناك اختلال بيعي مع بصمة خوارزميات التصريف
+        elif delta_pct < -0.05:
+            final_score = -4.0 - algo_sell_score - cluster_weight + (delta_pct * 10)
             
+        # تحجيم النتيجة لتتناسب مع أوزان الرادار الأساسي (بين -12 و +12)
+        return round(max(-12.0, min(12.0, final_score)), 2)
+
+    except Exception as e:
         return 0.0
-        
-    except Exception:
-        return 0.0
+
 
 
 async def analyze_radar_coin(c, client, market_regime, sem):
@@ -1707,6 +1743,15 @@ async def analyze_radar_coin(c, client, market_regime, sem):
 
             # إرجاع النتيجة فقط إذا تحقق السكور + الإجماع الفني + اجتياز الفيتو
             if score >= required_score and confluence_count >= required_confluence:    
+                
+                # 🛑 إضافة الحارس الأخير المتقدم للرادار هنا:
+                # نقوم بفحص الـ WebSocket اللحظي (لمدة ثانيتين) لهذه العملة القوية فقط للتأكد أنها ليست فخاً
+                ws_depth_check = await analyze_orderbook_advanced_manual(symbol, client, price)
+                
+                if ws_depth_check.get('is_spoofed', False) or ws_depth_check.get('is_hollow', False):
+                    print(f"🗑️ {symbol} - تم الإلغاء في اللحظة الأخيرة! الرادار اكتشف جدران وهمية عبر الـ WebSocket.")
+                    return None # نلغي الإشارة حتى لو كان سكورها 99
+                
                 # 1. جلب بيانات السلسلة (On-Chain)
                 whale_inflow = await get_whale_inflow_score()
                 
@@ -3360,31 +3405,76 @@ def calculate_vpvr_levels(df, current_price, trend_direction, num_bins=50):
 # --- دالة التحليل المعدلة ---
 async def analyze_orderbook_advanced_manual(symbol: str, client: httpx.AsyncClient, current_price: float):
     """
-    محرك كشف الخداع المتقدم للتحليل اليدوي (Multi-Frame TWOB)
-    يأخذ 3 لقطات متتالية لتأكيد الجدران الحقيقية وتجاهل الـ Flash Spoofing.
-    لا يتدخل في عمل الرادار السريع.
+    [Institutional Upgrade] True Order Flow Imbalance (OFI) & Flash Spoofing Detection
+    يستخدم WebSocket لالتقاط 20 إطاراً في ثانيتين (100ms interval) لكشف الخوارزميات، 
+    مع وجود Fallback لـ REST API في حال فشل الاتصال لضمان استقرار البوت.
     """
-    frames = []
-    for _ in range(3):
-        await binance_rate_limit_event.wait() # حارس حماية الـ API الإجباري
-        # نستدعي الدالة اللحظية الأصلية للحصول على اللقطة
-        data = await analyze_orderbook_spoofing_instant(symbol, client, current_price)
-        frames.append(data)
-        await asyncio.sleep(0.4) # تأخير بسيط لالتقاط تلاعب الخوارزميات
+    clean_symbol = symbol.replace("USDT", "").lower() + "usdt"
+    ws_url = f"wss://stream.binance.com:9443/ws/{clean_symbol}@depth10@100ms"
 
-    # تحليل استقرار الجدران الوهمية
-    spoof_count = sum(1 for f in frames if f.get('is_spoofed', False))
-    hollow_count = sum(1 for f in frames if f.get('is_hollow', False))
-    avg_imbalance = sum(f.get('imbalance', 0.0) for f in frames) / 3
+    frames = []
+    try:
+        # فتح اتصال سريع لالتقاط التلاعب اللحظي (Microseconds manipulation)
+        async with websockets.connect(ws_url, ping_interval=None, close_timeout=1) as ws:
+            start_time = time.time()
+            while time.time() - start_time < 2.0: # ثانيتين تكفي لاستخراج الـ OFI
+                try:
+                    msg = await asyncio.wait_for(ws.recv(), timeout=0.5)
+                    data = json.loads(msg)
+                    if data.get('bids') and data.get('asks'):
+                        frames.append(data)
+                except asyncio.TimeoutError:
+                    continue
+    except Exception as e:
+        # Fallback أمني: إذا فشل الـ WS (بسبب ليمت أو جدار حماية)، نعود للنسخة الأصلية
+        return await analyze_orderbook_spoofing_instant(symbol, client, current_price)
+
+    # إذا لم نجمع بيانات كافية، نلجأ للطريقة الآمنة
+    if len(frames) < 5:
+        return await analyze_orderbook_spoofing_instant(symbol, client, current_price)
+
+    # --- 🧠 Advanced OFI Engine ---
+    ofi_scores = []
+    bid_vols = []
+    ask_vols = []
+
+    for i in range(1, len(frames)):
+        prev_bids = {float(p): float(v) for p, v in frames[i-1].get('bids', [])}
+        curr_bids = {float(p): float(v) for p, v in frames[i].get('bids', [])}
+        prev_asks = {float(p): float(v) for p, v in frames[i-1].get('asks', [])}
+        curr_asks = {float(p): float(v) for p, v in frames[i].get('asks', [])}
+
+        # Delta Calculation: من يضخ سيولة ومن يسحبها؟
+        bid_vol_change = sum(curr_bids.values()) - sum(prev_bids.values())
+        ask_vol_change = sum(curr_asks.values()) - sum(prev_asks.values())
+
+        ofi_scores.append(bid_vol_change - ask_vol_change)
+        bid_vols.append(sum(curr_bids.values()))
+        ask_vols.append(sum(curr_asks.values()))
+
+    # معامل الاختلاف (Coefficient of Variation) لكشف الـ Flash Spoofing
+    bid_cv = np.std(bid_vols) / (np.mean(bid_vols) + 1e-8)
+    ask_cv = np.std(ask_vols) / (np.mean(ask_vols) + 1e-8)
+
+    # شروط التلاعب المؤسساتي (الجدران تظهر وتختفي بتذبذب عالي)
+    is_spoofed = (bid_cv > 0.6 or ask_cv > 0.6)
+    
+    # الفراغ السيولي (Hollowness): العمق الحقيقي هش جداً
+    is_hollow = (np.mean(bid_vols) * current_price) < 15000 
+    
+    avg_ofi = np.mean(ofi_scores)
+    total_vol_mean = np.mean(bid_vols) + np.mean(ask_vols) + 1e-8
+    
+    # تطبيع الخلل ليكون قيمة بين -1 و 1
+    imbalance = avg_ofi / total_vol_mean
 
     return {
-        # الجدار يكون هشاً فقط إذا استمر الفراغ لأكثر من لقطة
-        "is_hollow": hollow_count >= 2, 
-        "imbalance": round(avg_imbalance, 2),
-        # التلاعب الصريح: الجدار ظهر واختفى فجأة (Spoofing_Distribution_Trap)
-        "is_spoofed": spoof_count > 0 and spoof_count < 3, 
-        "bid_pressure_ratio": frames[-1].get('bid_pressure_ratio', 1.0)
+        "is_hollow": bool(is_hollow),
+        "imbalance": round(float(max(-1.0, min(1.0, imbalance))), 2),
+        "is_spoofed": bool(is_spoofed),
+        "bid_pressure_ratio": float(np.mean(bid_vols) / (np.mean(ask_vols) + 1e-8))
     }
+
 # --- دالة التحليل المعدلة ---
 async def evaluate_dex_risk(liquidity_usd: float, vol_24h: float):
     """محرك تقييم مخاطر السيولة في الـ DEX"""
