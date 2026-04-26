@@ -2079,11 +2079,12 @@ async def analyze_radar_coin(c, client, market_regime, sem):
 
             # إرجاع النتيجة فقط إذا تحقق السكور + الإجماع الفني + اجتياز الفيتو
             if score >= required_score and confluence_count >= required_confluence:    
-                
                 # 🛑 إضافة الحارس الأخير المتقدم للرادار هنا:
-                # نقوم بفحص الـ WebSocket اللحظي (لمدة ثانيتين) لهذه العملة القوية فقط للتأكد أنها ليست فخاً
-                ws_depth_check = await analyze_orderbook_advanced_manual(symbol, client, price)
-                
+                # نقوم بفحص الـ WebSocket اللحظي (لمدة ثانيتين) للتأكد من صلابة الجدران
+                # نمرر الفوليوم المعتاد للعملة لمحرك هشاشة السيولة
+                avg_vol_usd_for_depth = avg_vol_20 * price if avg_vol_20 > 0 else 15000.0
+                ws_depth_check = await analyze_orderbook_advanced_manual(symbol, client, price, avg_vol_usd_for_depth)
+
                 if ws_depth_check.get('is_spoofed', False) or ws_depth_check.get('is_hollow', False):
                     print(f"🗑️ {symbol} - تم الإلغاء في اللحظة الأخيرة! الرادار اكتشف جدران وهمية عبر الـ WebSocket.")
                     return None # نلغي الإشارة حتى لو كان سكورها 99
@@ -3739,7 +3740,7 @@ def calculate_vpvr_levels(df, current_price, trend_direction, num_bins=50):
         return current_price*0.95, current_price*1.02, current_price*1.04, current_price*1.06
 
 # --- دالة التحليل المعدلة ---
-async def analyze_orderbook_advanced_manual(symbol: str, client: httpx.AsyncClient, current_price: float):
+async def analyze_orderbook_advanced_manual(symbol: str, client: httpx.AsyncClient, current_price: float, recent_vol_usd: float = 15000.0):
     """
     [Institutional Upgrade] True Order Flow Imbalance (OFI) & Flash Spoofing Detection
     يستخدم WebSocket لالتقاط 20 إطاراً في ثانيتين (100ms interval) لكشف الخوارزميات، 
@@ -3792,14 +3793,39 @@ async def analyze_orderbook_advanced_manual(symbol: str, client: httpx.AsyncClie
     bid_cv = np.std(bid_vols) / (np.mean(bid_vols) + 1e-8)
     ask_cv = np.std(ask_vols) / (np.mean(ask_vols) + 1e-8)
 
-    # شروط التلاعب المؤسساتي (الجدران تظهر وتختفي بتذبذب عالي)
+    # شروط التلاعب المؤسساتي (الجدران تظهر وتختفي بتذبذب عالي)    # شروط التلاعب المؤسساتي (الجدران تظهر وتختفي بتذبذب عالي)
     is_spoofed = (bid_cv > 0.6 or ask_cv > 0.6)
     
-    # الفراغ السيولي (Hollowness): العمق الحقيقي هش جداً
-    is_hollow = (np.mean(bid_vols) * current_price) < 15000 
+    # ====================================================================
+    # 🧠 محرك "هشاشة السيولة" (Orderbook Slippage Vulnerability - OSV)
+    # نختبر قدرة الأوردر بوك على تحمل ضربة "ماركت" بناءً على السيولة الفعلية للعملة
+    # ====================================================================
+    mean_bid_vol_usd = np.mean(bid_vols) * current_price
+    
+    # 1. اختبار الصدمة (Shock Absorption Test):
+    # هل أعلى 10 مستويات في الأوردر بوك قادرة على تحمل 2% فقط من الفوليوم المعتاد للعملة؟
+    # إذا كانت السيولة الداعمة أقل من 2% من سيولة الشمعة العادية، فالجدار من ورق.
+    is_fragile_vs_volume = mean_bid_vol_usd < (recent_vol_usd * 0.02)
+
+    # 2. اختبار تشتت السيولة (Density & Spread Test):
+    try:
+        best_bid = float(frames[-1]['bids'][0][0])
+        worst_bid = float(frames[-1]['bids'][-1][0])
+        spread_depth_pct = (best_bid - worst_bid) / best_bid
+    except:
+        spread_depth_pct = 0.001 
+        
+    # إذا كانت المسافة بين أفضل طلب (Level 1) وعاشر طلب (Level 10) واسعة جداً (أكثر من 0.3%) 
+    # والسيولة داخل هذا النطاق أقل من 5% من حجم التداول، فهذا أوردر بوك "مثقوب" (Swiss Cheese).
+    is_hollow_spread = spread_depth_pct > 0.003 and mean_bid_vol_usd < (recent_vol_usd * 0.05)
+
+    # القرار الحاسم: الجدار وهمي (Hollow) إذا فشل في تحمل الصدمة أو كان مثقوباً ومشتتاً
+    is_hollow = bool(is_fragile_vs_volume or is_hollow_spread)
+    # ====================================================================
     
     avg_ofi = np.mean(ofi_scores)
     total_vol_mean = np.mean(bid_vols) + np.mean(ask_vols) + 1e-8
+
     
     # تطبيع الخلل ليكون قيمة بين -1 و 1
     imbalance = avg_ofi / total_vol_mean
@@ -3955,8 +3981,12 @@ async def run_analysis(cb: types.CallbackQuery):
                 safe_old_price = float(df["close"].iloc[-3]) if len(df) > 3 else safe_price
 
                 # 🟢 التعديل الجذري: لا تطلب الأوردر بوك إذا كان الفريم كبير!
+                                # 🟢 التعديل الجذري: لا تطلب الأوردر بوك إذا كان الفريم كبير!
                 if current_tf["use_ob"]:
-                    depth_task = analyze_orderbook_advanced_manual(clean_sym, client, safe_price)
+                    # نحسب الفوليوم اللحظي لآخر 5 شموع ليكون معياراً لقوة الأوردر بوك
+                    recent_vol_usd = df["volume"].tail(5).mean() * safe_price if len(df) >= 5 else 15000.0
+                    depth_task = analyze_orderbook_advanced_manual(clean_sym, client, safe_price, recent_vol_usd)
+
                 else:
                     # إرجاع بيانات محايدة للفريمات الكبيرة لمنع تلوث التحليل
                     async def mock_depth():
@@ -4028,6 +4058,8 @@ async def run_analysis(cb: types.CallbackQuery):
             delta_usd, funding_val = 0.0, 0.0
 
     # 2. كشف الفخاخ وتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه بطريقة مؤسساتية (Quant Trend Unification)    # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه بطريقة مؤسساتية (Quant Trend Unification)
+    import time
+    # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه بطريقة مؤسساتية (Quant Trend Unification)
     ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
     ema50 = df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
     classic_trend = "Bullish" if ema20 > ema50 else "Bearish"
@@ -4037,23 +4069,57 @@ async def run_analysis(cb: types.CallbackQuery):
     avg_vol_20 = df["volume"].tail(20).mean()
     current_vol = df["volume"].iloc[-1]
 
-    # أ. شروط انعكاس الاتجاه من هابط إلى صاعد (اصطياد القاع الآمن)
+    # ====================================================================
+    # 🧠 محرك "إسقاط الفوليوم التنبؤي" (Predictive Volume Projection Engine)
+    # يسبق صانع السوق بخطوة عبر قياس "سرعة تدفق السيولة" مع كابح الخداع اللحظي
+    # ====================================================================
+    # 1. تحديد الفريم الزمني بدقة (طول الشمعة بالثواني)
+    # نعمل هكذا لكي يكون الكود مرناً لأي فريم (ساعة، 4 ساعات، 15 دقيقة)
+    candle_open_ts = float(df["timestamp"].iloc[-1])
+    prev_candle_ts = float(df["timestamp"].iloc[-2])
+    candle_duration = max(60.0, candle_open_ts - prev_candle_ts) 
+    
+    # 2. حساب الوقت المنقضي من الشمعة الحالية
+    current_ts = time.time()
+    elapsed_time = max(1.0, current_ts - candle_open_ts)
+    elapsed_time = min(elapsed_time, candle_duration) # لا يتجاوز طول الشمعة
+    
+    # 3. حساب سرعة السيولة (Volume Velocity - Vol/Sec)
+    current_velocity = current_vol / elapsed_time
+    avg_velocity = avg_vol_20 / candle_duration
+    
+    # 4. الإسقاط الخطي مع كابح الضجيج (Linear Projection with Anti-Spoof Dampener)
+    time_progress_pct = elapsed_time / candle_duration
+    
+    if time_progress_pct < 0.15: # أول 15% من عمر الشمعة (مرحلة فخاخ الحيتان)
+        # [THE APEX ALPHA] 
+        # إذا كنا في بداية الشمعة، صانع السوق قد ينفذ صفقة وهمية لرفع الفوليوم التنبؤي.
+        # لا نعتمد التنبؤ إلا إذا قام بضخ كمية "مرعبة" فعلياً (أكثر من 30% من متوسط 20 شمعة كاملة!)
+        # في هذه الحالة، هو لا يخدعنا، هو بدأ الانفجار فعلياً ولا يمكنه التراجع.
+        if current_vol > (avg_vol_20 * 0.3):
+            projected_vol = current_velocity * candle_duration
+        else:
+            projected_vol = current_vol # تجاهل الإسقاط، اعتبر الفوليوم كما هو لتجنب الفخ
+    else:
+        # الإسقاط الطبيعي لما بعد مرحلة الخطر
+        projected_vol = current_velocity * candle_duration
+
+    # 5. اتخاذ قرار الانفجار (Surge) بناءً على "المستقبل" و"السرعة"
+    # الانفجار يتحقق إذا كان الفوليوم الفعلي ضخم (شمعة أغلقت)، أو الفوليوم التنبؤي مرعب، أو سرعة التدفق أضعاف المعتاد
+    vol_surge = (current_vol > (avg_vol_20 * 1.5)) or (projected_vol > (avg_vol_20 * 1.8)) or (current_velocity > (avg_velocity * 2.2))
+    # ====================================================================
+
+    # أ. شروط انعكاس الاتجاه من هابط إلى صاعد (اصطياد القاع الاستباقي)
     if classic_trend == "Bearish":
-        vol_surge = current_vol > (avg_vol_20 * 1.5)
-        
         # 🛡️ الفلتر المؤسساتي القاتل: هل السيولة حقيقية أم مجرد إغلاق شورت؟
-        # fut_sig يأتي من تحليل العقود الآجلة ويخبرنا بانخفاض الـ Open Interest 
         is_short_covering = (fut_sig == "Short_Covering")
 
-        # نسمح بانعكاس الاتجاه فقط إذا لم يكن الهبوط مجرد سكاكين ساقطة يتم تغطيتها
         if not is_short_covering:
             if (cvd_sig == "Micro_Silent_Accumulation" or buy_v > (sell_v * 1.5)) or (last_rsi < 35 and last_macd > 0 and vol_surge):
                 final_trend_dir = "Bullish"
 
-    # ب. شروط انعكاس الاتجاه من صاعد إلى هابط (الهروب من القمة المخادعة)
+    # ب. شروط انعكاس الاتجاه من صاعد إلى هابط (الهروب المبكر من القمة)
     elif classic_trend == "Bullish":
-        vol_surge = current_vol > (avg_vol_20 * 1.5)
-        
         # 🛡️ حماية عكسية: هل هو تصريف أم تصفية مراكز شراء مفرطة الرافعة (Long Squeeze)؟
         is_long_squeeze = (fut_sig == "OI_Rising" and delta_usd < 0 and funding_val > 0.001)
 
