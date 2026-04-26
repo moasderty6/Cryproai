@@ -15,7 +15,26 @@ import uuid
 import numpy as np
 import datetime
 import websockets
+import math
 
+def quant_cdf_score(z_value, limit=100.0):
+    """
+    محرك التقييم الاحتمالي (Probability Engine):
+    يحول قيمة Z-Score إلى نسبة مئوية سلسة جداً (CDF) باستخدام دالة الخطأ (erf).
+    مثال: z=0 يعطي 50, z=2 يعطي 97.7
+    """
+    probability = 0.5 * (1.0 + math.erf(z_value / math.sqrt(2.0)))
+    return probability * limit
+
+def quant_sigmoid_score(value, sensitivity=1.0, limit=100.0):
+    """
+    محرك النعومة (Sigmoid Activation):
+    يحول القيم المطلقة المفتوحة أو السلبية (مثل Imbalance أو Funding) إلى سكور بين 0 و 100 بسلاسة.
+    """
+    # حماية من الطفح الرياضي (Overflow) للقيم المتطرفة جداً
+    safe_value = max(-20.0, min(20.0, sensitivity * value))
+    sig = 1.0 / (1.0 + math.exp(-safe_value))
+    return sig * limit
 from aiohttp import web
 from dotenv import load_dotenv
 
@@ -1445,195 +1464,167 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             scores = {"vol": 0.0, "cvd": 0.0, "ob": 0.0, "deriv": 0.0, "tech": 0.0}
 
             # ----------------------------------------------------------------
-            # أ. تقييم الفوليوم (Z-Score & Pump Penalty) - دوال متصلة
+            # أ. تقييم الفوليوم (Statistical Z-Score Mapping)
             # ----------------------------------------------------------------
             recent_pump = (df["close"].iloc[-1] - df["close"].iloc[-10]) / df["close"].iloc[-10]
             
-            if current_z > 0:
-                # تحويل الـ Z-Score إلى نسبة مئوية (الذروة الصحية عند 3.5)
-                vol_raw = min((current_z / 3.5) * 100, 100) 
+            # 1. التقييم المستمر: تحويل Z-Score لاحتمالية دقيقة بدلاً من القطع العشوائي
+            vol_raw = quant_cdf_score(current_z, limit=100.0) 
+            
+            # 2. الخصم المستمر (Continuous Penalty) للفومو: خنق رياضي أسي وليس طرحاً عادياً
+            if current_z >= 2.5 and recent_pump > 0.02:
+                penalty_factor = math.exp(-15.0 * recent_pump) # كلما زاد البمب، انهار السكور بقسوة
+                vol_raw *= penalty_factor
+                if vol_raw < 30: tags.append("Late_FOMO")
+            elif 1.0 <= current_z <= 3.5 and recent_pump <= 0.02:
+                tags.append("Smart_Accumulation")
+            elif current_z > 3.5 and recent_pump <= 0.02:
+                tags.append("Z_Anom_Silent")
                 
-                # خنق السكور (Continuous Penalty) إذا كان هناك بمب عالي متأخر
-                if current_z >= 3.5 and recent_pump > 0.02:
-                    penalty_factor = max(0.0, 1.0 - (recent_pump * 15)) # يخنق السكور تدريجياً
-                    vol_raw *= penalty_factor
-                    if vol_raw < 30: tags.append("Late_FOMO")
-                
-                elif 1.0 <= current_z <= 3.5 and recent_pump <= 0.02:
-                    tags.append("Smart_Accumulation")
-                elif current_z > 3.5 and recent_pump <= 0.02:
-                    tags.append("Z_Anom_Silent")
-                    
-                scores["vol"] = vol_raw
-            # (أضف هذا تحت سطر: scores["vol"] = vol_raw)
-                global_alt_volume = await verify_global_liquidity(symbol, client)
-                if global_alt_volume > 100000: 
-                    scores["vol"] = min(scores["vol"] + 15, 100) # تعزيز سلس لسكور الفوليوم
+            global_alt_volume = await verify_global_liquidity(symbol, client)
+            if global_alt_volume > 100000: 
+                # تعزيز لوغاريتمي سلس للسيولة العالمية
+                vol_raw += math.log10(global_alt_volume / 10000.0) * 5.0
+
+            scores["vol"] = min(vol_raw, 100.0)
 
             # ----------------------------------------------------------------
-            # ب. تقييم السيولة اللحظية (Micro CVD)
+            # ب. تقييم السيولة اللحظية (Sigmoid CVD Mapping)
             # ----------------------------------------------------------------
             avg_vol_20 = df["volume"].tail(20).mean()
             micro_cvd_boost, micro_cvd_signal, micro_cvd_trend = await get_micro_cvd_absorption(f"{symbol}USDT", client, "1h")
-
             
             if avg_vol_20 > 0:
-                # نسبة الـ CVD لمتوسط الفوليوم (0.3 تعتبر 100%)
                 cvd_ratio = micro_cvd_trend / avg_vol_20
+                # تحويل النسبة إلى سكور سلس بحساسية 5.0 (0 يعطي 50 نقطة، 0.3 يعطي ~81 نقطة)
+                cvd_raw = quant_sigmoid_score(cvd_ratio, sensitivity=5.0, limit=100.0)
                 
-                if cvd_ratio > 0:
-                    scores["cvd"] = min((cvd_ratio / 0.3) * 100, 100)
-                    if cvd_ratio > 0.15 and abs(recent_pump) <= 0.015:
-                        tags.append("Micro_Silent_Accumulation")
-                else:
-                    scores["cvd"] = 0 # تجميع سلبي
-                    if cvd_ratio < -0.15 and recent_pump > 0.02:
-                        tags.append("Hidden_Distribution")
+                if cvd_ratio > 0.15 and abs(recent_pump) <= 0.015:
+                    tags.append("Micro_Silent_Accumulation")
+                elif cvd_ratio < -0.15 and recent_pump > 0.02:
+                    tags.append("Hidden_Distribution")
+                    
+                scores["cvd"] = cvd_raw
+            else:
+                scores["cvd"] = 50.0 # حيادي تماماً
 
             # ----------------------------------------------------------------
-            # ج. تقييم الأوردر بوك (Spoofing & Global Pressure)
-            # ----------------------------------------------------------------
-                        # ----------------------------------------------------------------
-            # ج. تقييم الأوردر بوك (Spoofing & Global Pressure) - النسخة اللحظية
+            # ج. تقييم الأوردر بوك (Continuous Imbalance & Pressure)
             # ----------------------------------------------------------------
             global_ob_pressure = await get_aggregated_orderbook(client, symbol)
             depth_data = await analyze_orderbook_spoofing_instant(symbol, client, price)
 
-            ob_raw = 50.0
             imbalance = depth_data.get('imbalance', 0.0)
-            ob_raw += (imbalance * 40)
+            # تحويل الخلل (من -1 إلى 1) إلى سكور (0 إلى 100) بسلاسة
+            ob_raw = quant_sigmoid_score(imbalance, sensitivity=3.0, limit=100.0)
 
-            # فحص الهشاشة
-            is_orderbook_hollow = depth_data.get('is_hollow', False)
-            if is_orderbook_hollow:
+            if depth_data.get('is_hollow', False):
                 ob_raw *= 0.4 
                 tags.append("Liquidity_Void_Trap")
 
-            # فحص التلاعب
             if depth_data.get('is_spoofed', False):
                 ob_raw *= 0.2
                 tags.append("Spoofing_Distribution_Trap")
             elif depth_data.get('bid_pressure_ratio', 0.0) > 2.0:
                 tags.append("OB_Buy")
-                ob_raw = min(ob_raw + 20, 100)
-
-            # دمج الضغط العالمي
-            if global_ob_pressure > 0:
-                ob_raw += min((global_ob_pressure / 2.0) * 20, 20)
                 
-            scores["ob"] = max(0, min(ob_raw, 100))
-
+            # تعزيز سلس للضغط العالمي
+            if global_ob_pressure > 1.0:
+                ob_raw += math.log(global_ob_pressure) * 10.0
+                
+            scores["ob"] = max(0.0, min(ob_raw, 100.0))
 
             # ----------------------------------------------------------------
-            # د. تقييم المشتقات والحيتان (Derivatives & Whales)
-            # ----------------------------------------------------------------
-                        # ----------------------------------------------------------------
-            # د. تقييم المشتقات وتصيّد التصفية (Derivatives & Squeeze Mechanics)
+            # د. تقييم المشتقات (Derivatives Squeeze Mechanics)
             # ----------------------------------------------------------------
             deriv_raw = 50.0
             old_price_val = df["close"].iloc[-3] if len(df) > 3 else df["open"].iloc[0]
             
-            # Fetching the upgraded Institutional Tick Data & OFI
             tick_delta, tick_buy, tick_sell, limit_abs_signal = await get_institutional_orderflow(f"{symbol}USDT", client)
             _, futures_signal, funding_val = await get_futures_liquidity(symbol, client, price, old_price_val)
-            
             approx_24h_vol_usd = df["volume"].tail(24).sum() * price 
             whale_score = await detect_real_whale_trades(symbol, client, approx_24h_vol_usd)
 
-                        # ==========================================
-            # 💣 THE NUCLEAR SHORT SQUEEZE ENGINE 
-            # ==========================================
+            # 1. تقييم الفاندنج بسلاسة (السلبية العالية ترفع السكور للتصفية)
+            # حساسية -3000 تكبر الأرقام العشرية. (فاندنج -0.001 يعطي سكور قوي جداً)
+            funding_score = quant_sigmoid_score(funding_val, sensitivity=-3000.0, limit=40.0) - 20.0
+            deriv_raw += funding_score
+
             is_spot_premium = spot_lead_score > 3.0
-            
-            # الشرط النووي: الفائدة المفتوحة ترتفع بقوة + تمويل سلبي جداً + سيولة سبوت تدخل لحظياً
             is_nuclear_squeeze = (futures_signal == "OI_Rising" and funding_val <= -0.0006 and float(locals().get('micro_cvd_trend', 0.0)) > 0)
             
             if limit_abs_signal == "Limit_Absorption":
                 tags.append("Limit_Absorption")
-                scores["cvd"] = min(scores["cvd"] + 30, 100)
+                scores["cvd"] = min(scores["cvd"] + 30.0, 100.0)
                 
             if is_nuclear_squeeze:
                 tags.append("Nuclear_Short_Squeeze")
-                deriv_raw = 100.0 # علامة كاملة إجبارية
-                scores["cvd"] = min(scores["cvd"] + 25, 100) # تعزيز سكور السيولة
-                print(f"🔥 {symbol} - ALERT: قنبلة تصفية بائعين جاهزة للانفجار!")
+                deriv_raw = 100.0 
+                scores["cvd"] = min(scores["cvd"] + 25.0, 100.0)
             elif is_spot_premium and futures_signal == "OI_Rising" and funding_val < -0.0003:
                 tags.append("Short_Squeeze_Imminent")
-                deriv_raw += 45.0 
+                deriv_raw += 30.0 
             elif futures_signal == "OI_Rising": 
                 deriv_raw += 15.0
                 tags.append("OI_Rising")
                 
-            if whale_score > 0:
-                deriv_raw += min((whale_score / 10.0) * 30, 30) # أقصاها 30 نقطة إضافية
-            else:
-                deriv_raw *= 0.6 # ضريبة غياب سيولة الحيتان الكبيرة
-                
-            # تطبيق متغير القوة النسبية للسبوت على السكور النهائي
-            div_score = spot_lead_score 
-            deriv_raw += (div_score * 2.5) 
+            # 2. إضافة بصمة الحيتان (خطي ناعم)
+            deriv_raw += quant_sigmoid_score(whale_score, sensitivity=0.5, limit=30.0) - 15.0
+            deriv_raw += (spot_lead_score * 2.5) 
 
-            scores["deriv"] = max(0, min(deriv_raw, 100))
+            scores["deriv"] = max(0.0, min(deriv_raw, 100.0))
 
             # ----------------------------------------------------------------
-            # هـ. تقييم الهيكلة الفنية (Technical Structure)
+            # هـ. تقييم الهيكلة الفنية (Technical Convergence Mapping)
             # ----------------------------------------------------------------
             tech_raw = 50.0
             
-            # 👇 تم استرجاع حسابات البولينجر باند المفقودة هنا 👇
             sma20_bb = df["close"].rolling(20).mean()
             std20_bb = df["close"].rolling(20).std(ddof=0)
             upper_band = sma20_bb + 2 * std20_bb
             lower_band = sma20_bb - 2 * std20_bb
             bb_width = (upper_band - lower_band) / sma20_bb
             
-            # حماية من الأخطاء إذا كانت بيانات العملة أقل من 100 شمعة
             avg_bb_width = bb_width.rolling(100).mean().iloc[-1] if len(bb_width) >= 100 else float('nan')
             current_bb_width = bb_width.iloc[-1]
-            # 👆 نهاية الحسابات 👆
 
-            # انضغاط البولينجر باند (Squeeze)
-            if not pd.isna(current_bb_width) and not pd.isna(avg_bb_width):
-                if current_bb_width < (avg_bb_width * 0.5):
-                    tech_raw += 20
-                    tags.append("Squeeze")
+            # معادلة ضغط مرنة: كلما انضغط الباند عن متوسطه، ارتفعت الدرجة هندسياً
+            if not pd.isna(current_bb_width) and not pd.isna(avg_bb_width) and avg_bb_width > 0:
+                squeeze_ratio = current_bb_width / avg_bb_width
+                if squeeze_ratio < 0.8:
+                    tech_raw += (1.0 - squeeze_ratio) * 40.0
+                    if squeeze_ratio < 0.5: tags.append("Squeeze")
                     
             ema200_val = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else df["close"].ewm(span=50).mean().iloc[-1]
             if price < ema200_val and last_rsi > 30 and df["rsi"].iloc[-10:-1].min() < 30:
-                tech_raw += 20; tags.append("RSI_Div")
-                            # 👇👇 التعديل الجديد: محرك صيد مصائد السيولة (Liquidity Sweep) 👇👇
+                tech_raw += 15.0; tags.append("RSI_Div")
+                
             recent_low_20 = df["low"].iloc[-21:-1].min()
             current_low = df["low"].iloc[-1]
             current_close = df["close"].iloc[-1]
             
-            # هل السعر ضرب القاع السابق (أخذ السيولة) ثم أغلق فوقه مع تدفق شرائي (CVD)؟
             is_liquidity_sweep = (current_low < recent_low_20) and (current_close > recent_low_20)
             current_cvd_check = float(locals().get('micro_cvd_trend', 0.0))
             
             if is_liquidity_sweep and current_cvd_check > 0 and limit_abs_signal == "Limit_Absorption":
-                tech_raw += 40.0 # دفعة هائلة للسكور الفني
-                tags.append("Liquidity_Sweep_Absorption") # أقوى إشارة برايس أكشن مؤسساتية
-            # 👆👆 نهاية التعديل 👆👆
-            # الفخاخ الفنية (Fakeouts & Candle Strength)
+                tech_raw += 35.0 
+                tags.append("Liquidity_Sweep_Absorption") 
+
             candle_score = detect_candle_strength(df)
             fake_out_penalty = detect_fake_breakout(df)
             
-            if candle_score > 0: tech_raw += 15; tags.append("Bullish_Hammer_Absorption")
+            if candle_score > 0: tech_raw += 10.0; tags.append("Bullish_Hammer_Absorption")
             if fake_out_penalty < 0: 
-                tech_raw *= 0.3 # عقاب قاسي فنياً
+                tech_raw *= 0.3 
                 tags.append("Fake_Breakout_Trap")
 
-            # التمرد ضد البيتكوين (القوة النسبية)
             rs_score = await detect_btc_relative_strength(symbol, client)
-            tech_raw += (rs_score * 3.0) 
+            # تمرير القوة النسبية بدالة سيجمويد
+            tech_raw += quant_sigmoid_score(rs_score, sensitivity=0.5, limit=20.0) - 10.0
                 
-            scores["tech"] = max(0, min(tech_raw, 100))
-
+            scores["tech"] = max(0.0, min(tech_raw, 100.0))
             # ====================================================================
-            # ⚖️ الدمج النهائي بناءً على الأوزان المؤسساتية
-            # ====================================================================
-                        # ====================================================================
-            # ⚖️ الدمج النهائي بناءً على الأوزان المؤسساتية
+            # ⚖️ الدمج النهائي وخصم السيولة (Institutional Haircut)
             # ====================================================================
             final_weighted_score = (
                 (scores["vol"]   * weights["vol"]) +
@@ -1643,24 +1634,27 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 (scores["tech"]  * weights["tech"])
             )
 
-            # 👇👇 التعديل الجديد: فلتر التداخل الزمني (Session Overlap Filter) 👇👇
+            # 🛡️ خنق المخاطرة (Liquidity Penalty Haircut)
+            # إذا كان LAR أقل من 1 (سيولة سيئة أو تذبذب مجنون)، يتم قص السكور بنعومة
+            if lar_score < 1.0:
+                liquidity_penalty = 0.5 + (0.5 * quant_sigmoid_score(lar_score, sensitivity=3.0, limit=1.0))
+                final_weighted_score *= liquidity_penalty
+
             import datetime
             current_hour_utc = datetime.datetime.utcnow().hour
             
-            # جلسة نيويورك / لندن (أعلى سيولة وحركات حقيقية: من 12 ظهراً إلى 5 عصراً UTC)
             if 12 <= current_hour_utc <= 17:
                 session_multiplier = 1.05 
-            # الجلسة الآسيوية المتأخرة (سيولة ضعيفة، فخاخ عالية: من 1 ليلاً إلى 6 صباحاً UTC)
             elif 1 <= current_hour_utc <= 6:
                 session_multiplier = 0.90 
             else:
-                session_multiplier = 1.0 # طبيعي
+                session_multiplier = 1.0 
                 
             final_weighted_score *= session_multiplier
-            # 👆👆 نهاية التعديل 👆👆
 
-            # 🟢 ضبط السكور ليكون واقعياً (الكمال مستحيل)
+            # السكور النهائي الموثوق
             score = round(max(0.0, min(final_weighted_score, 98.5)), 1)
+
 
 
             # --- جدار الفيتو الإجباري والفلترة (تم نقله هنا ليعمل كحارس أخير) ---
