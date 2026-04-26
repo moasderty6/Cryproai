@@ -546,7 +546,7 @@ async def get_micro_cvd_absorption(symbol, client, base_interval="1m", is_dex: b
         pass
     
     return 0.0, None, cvd_trend # 👈 إرجاع القيمة بدلاً من الأصفار المطلقة
-async def detect_btc_relative_strength(symbol: str, client: httpx.AsyncClient, is_dex: bool = False):
+async def detect_btc_relative_strength(symbol: str, client: httpx.AsyncClient, dyn_beta: float = 0.5, is_dex: bool = False):
     """
     [UPGRADED] Statistical Beta Decoupling Engine
     """
@@ -580,15 +580,12 @@ async def detect_btc_relative_strength(symbol: str, client: httpx.AsyncClient, i
         beta = covariance / btc_variance if btc_variance != 0 else 1.0
         btc_total_change = btc_returns.sum() * 100
         alt_total_change = alt_returns.sum() * 100
-
-        # Institutional Logic: Decoupling during a dump
         if btc_total_change < -0.5 and alt_total_change > 0:
-            if beta < 0.5: # True decoupling
+            if beta < dyn_beta: # 👈 استبدال الرقم السحري
                 return 10.0 # Massive hidden buyer
         elif btc_total_change > 0.5 and alt_total_change < -0.5:
-             if beta < 0.5:
+             if beta < dyn_beta: # 👈 استبدال الرقم السحري
                 return -8.0 # Hidden distribution
-                
         return 2.0 if beta > 1.2 and btc_total_change > 0 else 0.0
         
     except Exception: return 0.0
@@ -1114,7 +1111,7 @@ def detect_smart_money_absorption(df):
 
     return score_boost, signal_upgrade
 
-async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_price: float, old_price: float):
+async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_price: float, old_price: float, dyn_funding: float = -0.0005):
     fapi_base = "https://fapi.binance.com"
     pair = f"{symbol}USDT"
 
@@ -1158,8 +1155,12 @@ async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_
             
                         # ... كودك الحالي
                         # ... (كودك الحالي) ...
-            if funding_rate < -0.0005: 
+            if funding_rate < dyn_funding: 
                 score_modifier += 12.0
+                if not futures_signal: futures_signal = "Short_Squeeze"
+            # عكسنا العتبة الديناميكية لضربات الـ Long Squeeze
+            elif funding_rate > abs(dyn_funding):
+                score_modifier -= 10.0
                 if not futures_signal: futures_signal = "Short_Squeeze"
             elif funding_rate > 0.0005:
                 score_modifier -= 10.0
@@ -1531,6 +1532,54 @@ def get_dynamic_window(df, base_window=20, min_window=5, max_window=100):
     # حساب النافذة الديناميكية مع حماية الحدود
     dynamic_window = int(base_window * volatility_ratio)
     return max(min_window, min(dynamic_window, max_window))
+def calculate_dynamic_thresholds(df, market_regime):
+    returns = df['close'].pct_change().dropna()
+    
+    # 🛡️ جدار حماية العملات الجديدة: إذا لم تكن هناك بيانات كافية، نرجع للقيم الافتراضية بأمان
+    if len(returns) < 48:
+        return {"funding_squeeze": -0.0003, "beta_decoupling": 0.5, "lar": 0.6}
+        
+    recent_vol = returns.tail(24).std() 
+    hist_vol = returns.tail(168).std()  
+    
+    if pd.isna(hist_vol) or hist_vol == 0: hist_vol = 0.001
+    if pd.isna(recent_vol) or recent_vol == 0: recent_vol = 0.001
+    
+    vol_ratio = recent_vol / hist_vol
+    # ... (باقي الدالة كما هي)
+
+    
+    # 2. استخراج حالة السوق العامة
+    macro_vol = market_regime.get('volatility', 'Normal') if isinstance(market_regime, dict) else 'Normal'
+    macro_scalar = 1.3 if macro_vol == "High_Vol" else (0.7 if macro_vol == "Low_Vol" else 1.0)
+    
+    # ==========================================
+    # 🧠 هندسة الأرقام السحرية لتصبح ديناميكية
+    # ==========================================
+    
+    # أ. الفاندنج ريت (Funding Rate): 
+    # في الأسواق المتطايرة، نحتاج فاندنج أسوأ بكثير لنعتبره شذوذاً
+    base_funding = -0.0003
+    dyn_funding = base_funding * vol_ratio * macro_scalar
+    # حصر النطاق ليبقى منطقياً (بين -0.0001 كحد أدنى و -0.001 كحد أقصى)
+    dyn_funding = max(-0.001, min(-0.0001, dyn_funding))
+    
+    # ب. معامل فك الارتباط (Beta Decoupling):
+    # إذا كانت العملة أصلاً مجنونة التذبذب، يجب أن نكون أشد قسوة في قبول فك الارتباط
+    base_beta = 0.5
+    dyn_beta = base_beta / (vol_ratio + 1e-8)
+    dyn_beta = max(0.15, min(0.7, dyn_beta))
+    
+    # ج. عتبة امتصاص السيولة (LAR Threshold):
+    base_lar = 0.6
+    dyn_lar = base_lar * macro_scalar * (1.0 if vol_ratio < 1 else 1.2) # نطلب امتصاص أعلى إذا كان التذبذب عالياً
+    dyn_lar = max(0.4, min(1.2, dyn_lar))
+    
+    return {
+        "funding_squeeze": dyn_funding,
+        "beta_decoupling": dyn_beta,
+        "lar": dyn_lar
+    }
 
 async def analyze_radar_coin(c, client, market_regime, sem):
     async with sem:  
@@ -1558,20 +1607,22 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             current_high = df["high"].iloc[-1]
             current_low = df["low"].iloc[-1]
             candle_spread_pct = ((current_high - current_low) / current_low) * 100
+            # 🧠 1. تشغيل محرك العتبات الديناميكية (لا يستهلك API)
+            dyn_thresholds = calculate_dynamic_thresholds(df, market_regime)
             
-            # 2. حساب مؤشر LAR (مع حماية من القسمة على صفر)            # 2. حساب مؤشر LAR (عملية رياضية سريعة جداً محلياً)
+            # 2. حساب مؤشر LAR 
             lar_score = current_z / (candle_spread_pct + 0.001)
             # ==========================================================
             # 🛑 المرحلة الأولى: جدار الإعدام الرياضي (Fail-Fast Veto)
             # ==========================================================
             
-            # تعديل عتبة Z-Score ديناميكياً بناءً على تقلبات الماكرو
             current_regime_trend = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
             volatility_state = market_regime['volatility'] if isinstance(market_regime, dict) else "Normal"
 
-            # عتبة مرنة (Dynamic Threshold)
             z_threshold = 2.0 if volatility_state == "Low_Vol" else (3.0 if volatility_state == "High_Vol" else 2.5)
-            lar_threshold = 0.6 if current_regime_trend == "Trending_Bull" else 0.8
+            
+            # 👈 سحب العتبة من المحرك الديناميكي بدلاً من الأرقام الثابتة
+            lar_threshold = dyn_thresholds["lar"] 
 
             # أ. الهروب من الفومو (Late FOMO Veto):
             if current_z > z_threshold and candle_spread_pct > 4.0:
@@ -1694,7 +1745,11 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             old_price_val = df["close"].iloc[-3] if len(df) > 3 else df["open"].iloc[0]
             
             tick_delta, tick_buy, tick_sell, limit_abs_signal = await get_institutional_orderflow(f"{symbol}USDT", client)
-            _, futures_signal, funding_val, oi_change_pct = await get_futures_liquidity(symbol, client, price, old_price_val)
+                      # تمرير الفاندنج الديناميكي
+            _, futures_signal, funding_val, oi_change_pct = await get_futures_liquidity(
+                symbol, client, price, old_price_val, dyn_funding=dyn_thresholds["funding_squeeze"]
+            )
+            
 
             approx_24h_vol_usd = df["volume"].tail(24).sum() * price 
             
@@ -1729,7 +1784,8 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             deriv_raw += funding_score
 
             is_spot_premium = spot_lead_score > 3.0
-            is_nuclear_squeeze = (futures_signal == "OI_Rising" and funding_val <= -0.0006 and float(locals().get('micro_cvd_trend', 0.0)) > 0)
+                        # الكود الجديد:
+            is_nuclear_squeeze = (futures_signal == "OI_Rising" and funding_val <= (dyn_thresholds["funding_squeeze"] * 1.5) and float(locals().get('micro_cvd_trend', 0.0)) > 0)
             
             if limit_abs_signal == "Limit_Absorption":
                 tags.append("Limit_Absorption")
@@ -1807,15 +1863,22 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 tech_raw *= 0.3 
                 tags.append("Fake_Breakout_Trap")
 
-            rs_score = await detect_btc_relative_strength(symbol, client)
+                        
+            # ... وفي الأسفل عند استدعاء البيتا:
+            # تمرير البيتا الديناميكي
+            rs_score = await detect_btc_relative_strength(
+                symbol, client, dyn_beta=dyn_thresholds["beta_decoupling"], is_dex=False
+            )
             # تمرير القوة النسبية بدالة سيجمويد
             tech_raw += quant_sigmoid_score(rs_score, sensitivity=0.5, limit=20.0) - 10.0
                 
             scores["tech"] = max(0.0, min(tech_raw, 100.0))
-               # ====================================================================
-            # ⚖️ الدمج النهائي وخصم السيولة (Institutional Haircut & Convexity)
             # ====================================================================
-            final_weighted_score = (
+            # ⚖️ الدمج النهائي غير الخطي (Non-Linear Institutional Aggregation)
+            # ====================================================================
+            
+            # 1. الدمج الخطي الأساسي لإنشاء قاعدة التقييم (Baseline)
+            base_weighted_score = (
                 (scores["vol"]   * weights["vol"]) +
                 (scores["cvd"]   * weights["cvd"]) +
                 (scores["ob"]    * weights["ob"]) +
@@ -1823,23 +1886,43 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 (scores["tech"]  * weights["tech"])
             )
 
-            # 🚀 محرك التحدب وعدم التكافؤ (Convexity Alpha Override)
-            # يمنع ظاهرة "غسيل الإشارات". إذا كان هناك شذوذ متطرف في قطاع واحد، يفرض نفسه.
+            final_weighted_score = base_weighted_score
+
+            # 🚀 2. محرك التنافر والتوافق (Cross-Validation Non-Linearity Engine)
+            # يقضي على خطية الأوزان: التناقض بين المؤشرات يسحق السكور، وتوافقها يضاعفه.
+            
+            # أ. عقاب التنافر العنيف (Toxic Divergence Penalty): بين الشراء اللحظي (CVD) وعمق السوق (OB)
+            ob_cvd_gap = abs(scores["cvd"] - scores["ob"])
+            
+            if ob_cvd_gap > 40.0:
+                # إذا كانت المسافة بينهما شاسعة (تناقض صريح)، نطبق عقاباً يتزايد كلما زاد الخلاف.
+                # معامل الخصم: يخصم من السكور ما يصل إلى 60% في أقصى حالات التنافر
+                dissonance_penalty = 1.0 - ((ob_cvd_gap - 40.0) * 0.01)
+                final_weighted_score *= max(0.4, dissonance_penalty) # الحد الأدنى للعقاب 40% من السكور
+                tags.append("Orderflow_Dissonance_Penalty")
+            
+            # ب. تعزيز التوافق المؤسساتي (Confluence Multiplier: 1+1=3)
+            # إذا اتفق الأوردر بوك والسيولة اللحظية بقوة (كلاهما فوق 75)، فهذا جدار سيولة يتحرك باتجاه واحد.
+            elif scores["cvd"] >= 75.0 and scores["ob"] >= 75.0:
+                final_weighted_score *= 1.15 # تعزيز السكور بنسبة 15%
+                tags.append("True_Orderflow_Confluence")
+
+            # ج. فخ السيولة الجافة (Hollow Pump Trap)
+            # فوليوم انفجاري (vol عالي جداً) لكن لا يوجد تدفق مالي حقيقي (cvd ميت)
+            if scores["vol"] > 80.0 and scores["cvd"] < 40.0:
+                final_weighted_score *= 0.6  # سحق السكور بنسبة 40% لقتل إشارات البمب الوهمي
+                tags.append("Hollow_Volume_Trap")
+
+            # 🚀 3. محرك التحدب وعدم التكافؤ (Convexity Alpha Override)
             max_category_score = max(scores["vol"], scores["cvd"], scores["ob"], scores["deriv"])
             
-            # العتبة: إذا تجاوز أي مؤشر 88/100 (شذوذ حاد جداً)
             if max_category_score > 88.0:
-                # حساب قوة الاختراق للعتبة
                 override_power = max_category_score - 88.0 
-                
-                # المعادلة: إضافة أُسّية ترفع السكور النهائي بقوة تتناسب مع حجم الشذوذ
-                # الصيغة: $Score_{new} = Score_{old} + (Override \times 1.5)$
                 alpha_boost = override_power * 1.5
                 final_weighted_score += alpha_boost
                 tags.append("Alpha_Override_Triggered")
 
-            # 🛡️ خنق المخاطرة (Liquidity Penalty Haircut)
-            # إذا كان LAR أقل من 1 (سيولة سيئة أو تذبذب مجنون)، يتم قص السكور بنعومة
+            # 🛡️ 4. خنق المخاطرة (Liquidity Penalty Haircut)
             if lar_score < 1.0:
                 liquidity_penalty = 0.5 + (0.5 * quant_sigmoid_score(lar_score, sensitivity=3.0, limit=1.0))
                 final_weighted_score *= liquidity_penalty
@@ -3910,38 +3993,56 @@ async def run_analysis(cb: types.CallbackQuery):
             delta_usd, funding_val = 0.0, 0.0
 
     # 2. كشف الفخاخ وتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه بطريقة مؤسساتية (Quant Trend Unification)    # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه بطريقة مؤسساتية (Quant Trend Unification)
+    # 2. التناغم الزمني (Timeframe Convergence) وتوحيد الاتجاه المؤسساتي
     ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
     ema50 = df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
-    classic_trend = "Bullish" if ema20 > ema50 else "Bearish"
     
+    # 🌟 الجديد: مؤشر الزخم اللحظي (Micro-Momentum Bridge) لردم الفجوة الزمنية
+    ema9 = df['close'].ewm(span=9, adjust=False).mean().iloc[-1]
+    
+    classic_trend = "Bullish" if ema20 > ema50 else "Bearish"
     final_trend_dir = classic_trend
+    
     df["volume"] = pd.to_numeric(df["volume"], errors='coerce')
     avg_vol_20 = df["volume"].tail(20).mean()
     current_vol = df["volume"].iloc[-1]
+    
+    # 🛡️ الحماية من فخ الصفر (Zero-Volume Trap): نطلب انفجاراً بنسبة 20% + سيولة لا تقل عن 5000 دولار في الشمعة
+    current_vol_usd = current_vol * price
+    vol_surge = (current_vol > (avg_vol_20 * 1.2)) and (current_vol_usd > 5000.0) 
 
-    # أ. شروط انعكاس الاتجاه من هابط إلى صاعد (اصطياد القاع الآمن)
+    # أ. جسر التناغم الصاعد (Micro Bull Convergence) لاصطياد الانفجار مبكراً
     if classic_trend == "Bearish":
-        vol_surge = current_vol > (avg_vol_20 * 1.5)
-        
-        # 🛡️ الفلتر المؤسساتي القاتل: هل السيولة حقيقية أم مجرد إغلاق شورت؟
-        # fut_sig يأتي من تحليل العقود الآجلة ويخبرنا بانخفاض الـ Open Interest 
         is_short_covering = (fut_sig == "Short_Covering")
+        
+        # هل السعر بدأ يتسارع لحظياً (EMA 9 تقاطع مع EMA 20) مع تدفق أموال حقيقي؟
+        micro_bullish_shift = (ema9 > ema20) and vol_surge
+        heavy_orderflow_buy = (cvd_sig == "Micro_Silent_Accumulation") or (buy_v > (sell_v * 1.3))
 
-        # نسمح بانعكاس الاتجاه فقط إذا لم يكن الهبوط مجرد سكاكين ساقطة يتم تغطيتها
         if not is_short_covering:
-            if (cvd_sig == "Micro_Silent_Accumulation" or buy_v > (sell_v * 1.5)) or (last_rsi < 35 and last_macd > 0 and vol_surge):
+            # 🚀 Override: إذا رصدنا الزخم اللحظي وتدفق الحيتان، نلغي انتظار EMA 50 البطيء وندخل فوراً!
+            if micro_bullish_shift and heavy_orderflow_buy:
+                final_trend_dir = "Bullish"
+            # احتفظنا بشرط V-Shape Reversal لاصطياد القيعان الحادة جداً التي تعكس السعر بشمعة واحدة
+            elif (last_rsi < 35 and last_macd > 0 and vol_surge and heavy_orderflow_buy):
                 final_trend_dir = "Bullish"
 
-    # ب. شروط انعكاس الاتجاه من صاعد إلى هابط (الهروب من القمة المخادعة)
+    # ب. جسر التناغم الهابط (Micro Bear Convergence) للهروب من القمم المخادعة
     elif classic_trend == "Bullish":
-        vol_surge = current_vol > (avg_vol_20 * 1.5)
+        is_long_squeeze = (fut_sig == "OI_Rising" and delta_usd < 0 and funding_val > 0.0005)
         
-        # 🛡️ حماية عكسية: هل هو تصريف أم تصفية مراكز شراء مفرطة الرافعة (Long Squeeze)؟
-        is_long_squeeze = (fut_sig == "OI_Rising" and delta_usd < 0 and funding_val > 0.001)
+        # هل السعر كسر دعمه اللحظي مع تصريف حقيقي مستمر؟
+        micro_bearish_shift = (ema9 < ema20) and vol_surge
+        heavy_orderflow_sell = (cvd_sig == "Hidden_Distribution") or (sell_v > (buy_v * 1.3))
 
         if not is_long_squeeze:
-            if (cvd_sig == "Hidden_Distribution" or sell_v > (buy_v * 1.5)) or (last_rsi > 75 and last_macd < 0 and vol_surge):
+            # 🚀 Override: الخروج المبكر جداً قبل أن يكتشف EMA 50 انهيار السوق
+            if micro_bearish_shift and heavy_orderflow_sell:
                 final_trend_dir = "Bearish"
+            # الهروب من التشبع الشرائي الذروي (Top Exhaustion)
+            elif (last_rsi > 70 and last_macd < 0 and vol_surge and heavy_orderflow_sell):
+                final_trend_dir = "Bearish"
+
  
     # 3. حساب الدعم والمقاومة والأهداف بناءً على الاتجاه "المُوحّد" لمنع التضارب
             # 3. حساب الدعم والمقاومة والأهداف في الخلفية لمنع التضارب والتعليق
