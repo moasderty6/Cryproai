@@ -1531,6 +1531,71 @@ def get_dynamic_window(df, base_window=20, min_window=5, max_window=100):
     # حساب النافذة الديناميكية مع حماية الحدود
     dynamic_window = int(base_window * volatility_ratio)
     return max(min_window, min(dynamic_window, max_window))
+def detect_dark_pool_vca(df, current_cvd_usd, oi_change_pct):
+    """
+    [THE APEX ALPHA] Dark Pool Vacuum Coil Algorithm (DP-VCA)
+    خوارزمية حصرية لاصطياد "كثافة الامتصاص" قبل الانفجارات السعرية (God Candles).
+    تدمج بين خنق التذبذب، كثافة الفوليوم للنقطة الواحدة، والتهرب من سوق المشتقات.
+    """
+    if len(df) < 336: # نحتاج أسبوعين من البيانات على الأقل للمقارنة الإحصائية (فريم 1H)
+        return 0.0, None
+
+    # 1. عدسة الضغط الحالية (آخر 7 أيام) مقابل الخلفية التاريخية (آخر شهر)
+    recent_window = df.tail(168)
+    historic_window = df.iloc[-672:-168] # الـ 3 أسابيع التي سبقت الأسبوع الأخير
+    
+    avg_price = recent_window['close'].mean()
+    
+    # 2. حساب "خنق التذبذب" (Volatility Chokehold)
+    # نحسب النطاق السعري الحقيقي كنسبة مئوية
+    recent_range_pct = (recent_window['high'].max() - recent_window['low'].min()) / avg_price
+    historic_range_pct = (historic_window['high'].max() - historic_window['low'].min()) / historic_window['close'].mean()
+    
+    # حماية رياضية من القسمة على صفر أو النطاقات الميتة تماماً
+    recent_range_pct = max(recent_range_pct, 0.005) 
+    historic_range_pct = max(historic_range_pct, 0.01)
+
+    # 3. محرك "كثافة الامتصاص" (Absorption Density Engine) - [السر الحقيقي]
+    # كم دولاراً تم تداوله لكل 1% من حركة السعر؟
+    recent_vol = recent_window['volume'].sum()
+    historic_vol_avg = historic_window['volume'].sum() / 3.0 # متوسط الفوليوم الأسبوعي
+    
+    recent_density = recent_vol / recent_range_pct
+    historic_density = historic_vol_avg / historic_range_pct
+    
+    # الشروط المعقدة لانفجار الزنبرك:
+    # أ. التذبذب تم خنقه (النطاق السعري الحالي أقل من نصف النطاق التاريخي)
+    is_volatility_choked = recent_range_pct < (historic_range_pct * 0.5)
+    
+    # ب. كثافة الفوليوم تضاعفت بـ 3 مرات على الأقل (السعر محبوس، لكن الأموال تتدفق بعنف)
+    is_heavy_absorption = recent_density > (historic_density * 3.0)
+    
+    if not (is_volatility_choked and is_heavy_absorption):
+        return 0.0, None
+
+    # 4. شرارة التخفي المؤسساتي (Stealth Ignition & Synthetic Delta)
+    # صانع السوق المحترف يجمع في السبوت (Spot) ولا يرفع العقود المفتوحة (OI) لكي لا يكشف نفسه
+    is_spot_driven = current_cvd_usd > (recent_window['volume'].mean() * avg_price * 0.3)
+    is_stealth_derivatives = oi_change_pct < 0.015 # العقود المفتوحة هادئة وميتة
+    
+    # ==========================================
+    # 🧠 التقييم السري (The Apex Score)
+    # ==========================================
+    vca_score = 0.0
+    signal_tag = None
+
+    if is_spot_driven and is_stealth_derivatives:
+        # هذه بصمة حتمية لانفجار قادم (God Candle Prep)
+        vca_score = 55.0
+        signal_tag = "Dark_Pool_God_Candle_Prep"
+        
+    elif is_heavy_absorption:
+        # السعر لا يزال في مرحلة الامتصاص العميق (مرحلة التجميع)
+        vca_score = 30.0
+        signal_tag = "MM_Deep_Absorption_Phase"
+
+    return round(vca_score, 1), signal_tag
+
 
 async def analyze_radar_coin(c, client, market_regime, sem):
     async with sem:  
@@ -1812,6 +1877,35 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             tech_raw += quant_sigmoid_score(rs_score, sensitivity=0.5, limit=20.0) - 10.0
                 
             scores["tech"] = max(0.0, min(tech_raw, 100.0))
+                        # 🚀 استدعاء خوارزمية "الزنبرك المفرغ" (The Proprietary Alpha)
+                        # ====================================================================
+            # 🚀 استدعاء خوارزمية الثقب الأسود المؤسساتية (The Dark Pool VCA)
+            # ====================================================================
+            # تمرير البيانات الحالية المطلوبة (df, CVD بالدولار، والتغير في العقود)
+            vca_bonus_score, vca_tag = detect_dark_pool_vca(
+                df, 
+                float(locals().get('current_cvd', 0.0)), 
+                float(locals().get('oi_change_pct', 0.0))
+            )
+            
+            if vca_tag:
+                tags.append(vca_tag)
+                print(f"☢️ [ALERT] {symbol} أظهر بصمة {vca_tag}! يتم تفعيل تجاوز السكور المتقدم.")
+                
+                # إعطاء أولوية قصوى واختراق التقييم الكلاسيكي
+                scores["tech"] = 100.0 # التحليل الفني مخترق من قبل صانع السوق
+                scores["vol"] = min(100.0, scores["vol"] + vca_bonus_score)
+                scores["cvd"] = min(100.0, scores["cvd"] + (vca_bonus_score * 0.5))
+                
+                # حماية السكور لضمان ظهوره في أعلى القائمة
+                weights["tech"] = 0.40 # نعطي الهيكلة الفنية وزن أعلى لأنها التقطت الـ VCA
+                weights["vol"] = 0.30
+                weights["cvd"] = 0.20
+                weights["ob"] = 0.05
+                weights["deriv"] = 0.05
+            # ====================================================================
+
+
                # ====================================================================
             # ⚖️ الدمج النهائي وخصم السيولة (Institutional Haircut & Convexity)
             # ====================================================================
@@ -1885,30 +1979,55 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             elif "Squeeze" in tags and "OB_Buy" in tags: final_signal = "(Liquidity Breakout) ⚡"
             elif "Micro_Silent_Accumulation" in tags: final_signal = "Silent Accumulation 🧲"
             elif "Smart_Accumulation" in tags: final_signal = "Smart Money Inflow 💸"
-
-            # استدعاء المتغيرات للفيتو            # استدعاء المتغيرات للفيتو
-            current_cvd = float(locals().get('micro_cvd_trend', 0.0)) * price
-            current_imbalance = float(locals().get('depth_data', {}).get('imbalance', 0) if locals().get('depth_data') else 0.0)
-            
             # ==========================================
-            # 🛡️ الفيتو الإجباري المطور (Institutional Veto)
+            # 🧠 محرك العتبات الديناميكية (Dynamic Thresholding Engine)
+            # يمنع الـ Over-fitting عبر تكييف الأرقام مع حالة السوق
+            # ==========================================
+            # 1. استخراج نبض الماكرو الحالي
+            volatility_state = market_regime['volatility'] if isinstance(market_regime, dict) else "Normal"
+            macro_adx = market_regime['adx'] if isinstance(market_regime, dict) else 20.0
+            
+            # 2. ديناميكية الفومو (VWAP Z-Score)
+            # في التذبذب العالي، السعر يبتعد كثيراً بشكل طبيعي. في الركود، الانحراف البسيط يعتبر خطراً.
+            dyn_vwap_z = 2.5
+            if volatility_state == "High_Vol": dyn_vwap_z = 3.2 
+            elif volatility_state == "Low_Vol": dyn_vwap_z = 2.2 
+
+            # 3. ديناميكية التوسع السعري (Price Expansion)
+            # بدلاً من 0.003 ثابتة، نأخذ 35% من متوسط حركة الشموع الـ 14 الأخيرة للعملة نفسها
+            recent_candle_spread = (abs(df['high'] - df['low']) / df['low']).tail(14).mean()
+            dyn_expansion_threshold = max(0.0015, recent_candle_spread * 0.35) 
+
+            # 4. ديناميكية اختلال الأوردر بوك (Imbalance & Pressure)
+            # إذا كان السوق عرضياً (ADX ضعيف)، نطلب سيولة هجومية كاسحة لإقناعنا.
+            # إذا كان الترند قوياً (ADX عالي)، أي خلل بسيط لصالح الترند يكفينا.
+            dyn_imbalance_req = 0.1
+            dyn_ob_req = 1.1
+            if macro_adx < 25: 
+                dyn_imbalance_req = 0.25 
+                dyn_ob_req = 1.25
+            elif macro_adx > 40:
+                dyn_imbalance_req = 0.05 
+                dyn_ob_req = 1.05
+
+            # ==========================================
+            # 🛡️ الفيتو الإجباري المتكيف (Adaptive Institutional Veto)
             # ==========================================
             
             # 1. كشف الفومو وجني الأرباح (Late FOMO / Mean Reversion)
-            if current_vwap_z > 2.8:
+            if current_vwap_z > dyn_vwap_z:
                 tags.append("Late_FOMO_Pump_VWAP")
-                print(f"🗑️ {symbol} - مرفوض: السعر انحرف عن VWAP بأكثر من 2.8 (منطقة جني أرباح)")
+                print(f"🗑️ {symbol} - مرفوض: السعر انحرف عن VWAP بـ {current_vwap_z:.2f} (عتبة السوق الحالية {dyn_vwap_z:.2f})")
                 return None 
                 
             # 2. كشف الفراغ السيولي والهشاشة (Liquidity Void)
-            # 🟢 التعديل الأمني هنا لتجنب انهيار الكود مع عملات الـ DEX
             if locals().get('is_orderbook_hollow', False) and current_cvd < 0:
                 tags.append("Liquidity_Void_Trap")
                 print(f"🗑️ {symbol} - مرفوض: جدران شراء وهمية والعمق الداعم فارغ تماماً!")
                 return None 
 
-            # 3. فخ الجدران الوهمية (Spoofing Trap):
-            if global_ob_pressure > 1.1 and current_cvd < 0:
+            # 3. فخ الجدران الوهمية (Spoofing Trap) المتكيف:
+            if global_ob_pressure > dyn_ob_req and current_cvd < 0:
                 tags.append("Spoofing_Distribution_Trap")
                 return None 
 
@@ -1917,29 +2036,28 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             is_strong_cvd = current_cvd > (avg_vol_usd * 0.15)
 
             if is_strong_cvd:
-                # أ. كشف إعادة التوازن (MM Hedging): شراء قوي ماركت يقابله ثبات أو هبوط في العقود المفتوحة
+                # أ. كشف إعادة التوازن (MM Hedging)
                 if oi_change_pct <= 0.005:
                     tags.append("Fake_MM_Hedging")
-                    print(f"🗑️ {symbol} - مرفوض: CVD شراء ضخم ولكن العقود المفتوحة لم ترتفع (إعادة توازن لصناع السوق).")
+                    print(f"🗑️ {symbol} - مرفوض: CVD شراء ضخم ولكن العقود المفتوحة لم ترتفع.")
                     return None 
 
-                # ب. كشف الإسفنجة (Limit Absorption Traps): شراء ضخم ماركت والسعر لا يتحرك
+                # ب. كشف الإسفنجة (Limit Absorption Traps) المتكيف
                 price_expansion = (current_high - current_low) / (current_low + 1e-8)
-                if price_expansion < 0.003: # توسع سعري أقل من 0.3%
+                if price_expansion < dyn_expansion_threshold: 
                     tags.append("Limit_Absorption_Sell_Trap")
-                    print(f"🗑️ {symbol} - مرفوض: إسفنجة Limit Orders تبتلع المشترين السعر لن يصعد!")
+                    print(f"🗑️ {symbol} - مرفوض: إسفنجة (التوسع {price_expansion:.4f} أقل من المطلوب للعملة {dyn_expansion_threshold:.4f})")
                     return None 
-            # 2. انعدام الشراء الحقيقي:
-            if current_cvd <= 0 and current_imbalance <= 0.1 and global_ob_pressure < 1.1:
+                    
+            # 2. انعدام الشراء الحقيقي (معايير متكيفة):
+            if current_cvd <= 0 and current_imbalance <= dyn_imbalance_req and global_ob_pressure < dyn_ob_req:
                 return None 
 
-            # 3. فخ السكاكين الساقطة (Falling Knife / Pump & Dump Trap) - (GALA FIX):
-            # إذا كان السعر في ترند هابط (تحت متوسط 200) وزخم السوق ميت تماماً (ADX < 20)،
-            # فإن أي انفجار فوليوم هو مجرد "فخ" أو ارتداد مؤقت قبل انهيار جديد.
+            # 3. فخ السكاكين الساقطة (Falling Knife Trap):
             ema200_veto = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else df["close"].ewm(span=50).mean().iloc[-1]
             if price < ema200_veto and current_adx < 20.0 and current_z > 2.0:
                 tags.append("Dead_Trend_Pump_Trap")
-                return None 
+                return None  
 
             # ==========================================
             # 🛡️ استرجاع شروط القناص النهائي والمتغيرات المفقودة
