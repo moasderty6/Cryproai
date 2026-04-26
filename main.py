@@ -1117,7 +1117,8 @@ async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_
             oi_data = oi_res.json()
             fund_data = fund_res.json()
 
-            if len(oi_data) < 2: return 0.0, None, 0.0
+            if len(oi_data) < 2: return 0.0, None, 0.0, 0.0
+
 
 
             old_oi = float(oi_data[0]["sumOpenInterest"])
