@@ -1504,21 +1504,29 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             approx_24h_vol_usd = df["volume"].tail(24).sum() * price 
             whale_score = await detect_real_whale_trades(symbol, client, approx_24h_vol_usd)
 
-            # THE SQUEEZE ENGINE (Spot Premium > Perp Premium + High OI)
+                        # ==========================================
+            # 💣 THE NUCLEAR SHORT SQUEEZE ENGINE 
+            # ==========================================
             is_spot_premium = spot_lead_score > 3.0
-            is_perp_dumping = futures_signal == "OI_Rising" and tick_delta < 0 and funding_val < -0.0005
+            
+            # الشرط النووي: الفائدة المفتوحة ترتفع بقوة + تمويل سلبي جداً + سيولة سبوت تدخل لحظياً
+            is_nuclear_squeeze = (futures_signal == "OI_Rising" and funding_val <= -0.0006 and float(locals().get('micro_cvd_trend', 0.0)) > 0)
             
             if limit_abs_signal == "Limit_Absorption":
                 tags.append("Limit_Absorption")
-                scores["cvd"] = min(scores["cvd"] + 30, 100) # Heavy boost for tick-level limit absorption
+                scores["cvd"] = min(scores["cvd"] + 30, 100)
                 
-            if is_spot_premium and is_perp_dumping:
+            if is_nuclear_squeeze:
+                tags.append("Nuclear_Short_Squeeze")
+                deriv_raw = 100.0 # علامة كاملة إجبارية
+                scores["cvd"] = min(scores["cvd"] + 25, 100) # تعزيز سكور السيولة
+                print(f"🔥 {symbol} - ALERT: قنبلة تصفية بائعين جاهزة للانفجار!")
+            elif is_spot_premium and futures_signal == "OI_Rising" and funding_val < -0.0003:
                 tags.append("Short_Squeeze_Imminent")
-                deriv_raw += 45.0 # Max out derivatives score
+                deriv_raw += 45.0 
             elif futures_signal == "OI_Rising": 
-                deriv_raw += 15.0; tags.append("OI_Rising")
-            elif futures_signal == "Short_Covering": 
-                deriv_raw -= 20.0; tags.append("Short_Covering")
+                deriv_raw += 15.0
+                tags.append("OI_Rising")
                 
             if whale_score > 0:
                 deriv_raw += min((whale_score / 10.0) * 30, 30) # أقصاها 30 نقطة إضافية
@@ -1557,7 +1565,19 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             ema200_val = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else df["close"].ewm(span=50).mean().iloc[-1]
             if price < ema200_val and last_rsi > 30 and df["rsi"].iloc[-10:-1].min() < 30:
                 tech_raw += 20; tags.append("RSI_Div")
-                
+                            # 👇👇 التعديل الجديد: محرك صيد مصائد السيولة (Liquidity Sweep) 👇👇
+            recent_low_20 = df["low"].iloc[-21:-1].min()
+            current_low = df["low"].iloc[-1]
+            current_close = df["close"].iloc[-1]
+            
+            # هل السعر ضرب القاع السابق (أخذ السيولة) ثم أغلق فوقه مع تدفق شرائي (CVD)؟
+            is_liquidity_sweep = (current_low < recent_low_20) and (current_close > recent_low_20)
+            current_cvd_check = float(locals().get('micro_cvd_trend', 0.0))
+            
+            if is_liquidity_sweep and current_cvd_check > 0 and limit_abs_signal == "Limit_Absorption":
+                tech_raw += 40.0 # دفعة هائلة للسكور الفني
+                tags.append("Liquidity_Sweep_Absorption") # أقوى إشارة برايس أكشن مؤسساتية
+            # 👆👆 نهاية التعديل 👆👆
             # الفخاخ الفنية (Fakeouts & Candle Strength)
             candle_score = detect_candle_strength(df)
             fake_out_penalty = detect_fake_breakout(df)
@@ -1576,6 +1596,9 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             # ====================================================================
             # ⚖️ الدمج النهائي بناءً على الأوزان المؤسساتية
             # ====================================================================
+                        # ====================================================================
+            # ⚖️ الدمج النهائي بناءً على الأوزان المؤسساتية
+            # ====================================================================
             final_weighted_score = (
                 (scores["vol"]   * weights["vol"]) +
                 (scores["cvd"]   * weights["cvd"]) +
@@ -1584,16 +1607,39 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 (scores["tech"]  * weights["tech"])
             )
 
+            # 👇👇 التعديل الجديد: فلتر التداخل الزمني (Session Overlap Filter) 👇👇
+            import datetime
+            current_hour_utc = datetime.datetime.utcnow().hour
+            
+            # جلسة نيويورك / لندن (أعلى سيولة وحركات حقيقية: من 12 ظهراً إلى 5 عصراً UTC)
+            if 12 <= current_hour_utc <= 17:
+                session_multiplier = 1.05 
+            # الجلسة الآسيوية المتأخرة (سيولة ضعيفة، فخاخ عالية: من 1 ليلاً إلى 6 صباحاً UTC)
+            elif 1 <= current_hour_utc <= 6:
+                session_multiplier = 0.90 
+            else:
+                session_multiplier = 1.0 # طبيعي
+                
+            final_weighted_score *= session_multiplier
+            # 👆👆 نهاية التعديل 👆👆
+
             # 🟢 ضبط السكور ليكون واقعياً (الكمال مستحيل)
             score = round(max(0.0, min(final_weighted_score, 98.5)), 1)
 
+
             # --- جدار الفيتو الإجباري والفلترة (تم نقله هنا ليعمل كحارس أخير) ---
+            final_signal = "High Probability Setup 🎯"
+            
+                        # --- جدار الفيتو الإجباري والفلترة ---
             final_signal = "High Probability Setup 🎯"
             
             if "Fake_Pump" in tags or "Fake_Breakout_Trap" in tags or "Flash_Spoofing_Manipulation" in tags or "Short_Covering" in tags or "Late_FOMO" in tags or "Hidden_Distribution" in tags:
                 return None 
 
-            if score >= 95.0: final_signal = "Deep Liquidity Absorption 🏦"
+            # 👇 إضافة الإشارات المؤسساتية الجديدة للواجهة 👇
+            if "Nuclear_Short_Squeeze" in tags: final_signal = "NUCLEAR SHORT SQUEEZE ☢️"
+            elif "Liquidity_Sweep_Absorption" in tags: final_signal = "Stop-Loss Hunt / Reversal 🩸"
+            elif score >= 95.0: final_signal = "Deep Liquidity Absorption 🏦"
             elif score >= 90.0: final_signal = "Institutional Orderflow 🐋"
             elif "Micro_Silent_Accumulation" in tags and "OB_Buy" in tags: final_signal = "Active Accumulation 🦈"
             elif "Short_Squeeze" in tags: final_signal = "(Short Squeeze) 🔥"
@@ -1958,6 +2004,30 @@ async def macro_data_worker():
             pass
             
         await asyncio.sleep(1800) # التحديث كل نصف ساعة
+async def check_btc_gravity_veto(client: httpx.AsyncClient):
+    """
+    مستشعر الجاذبية اللحظي للبيتكوين (Micro-Veto)
+    يفحص آخر 5 دقائق. إذا كان البيتكوين ينزف بقوة، يتم تجميد الشراء.
+    """
+    try:
+        base_url = get_random_binance_base()
+        res = await client.get(f"{base_url}/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=2", timeout=3.0)
+        if res.status_code == 200:
+            data = res.json()
+            current_close = float(data[-1][4])
+            current_open = float(data[-1][1])
+            prev_close = float(data[-2][4])
+            
+            # حساب نسبة الهبوط اللحظية
+            drop_pct = (current_close - prev_close) / prev_close
+            candle_drop = (current_close - current_open) / current_open
+            
+            # إذا هبط البيتكوين أكثر من 0.4% في 5 دقائق، هذا نزيف حاد (Flash Drop)
+            if drop_pct < -0.004 or candle_drop < -0.004:
+                return True # تفعيل الفيتو (خطر)
+    except Exception as e:
+        pass
+    return False # الوضع آمن
 
 async def ai_opportunity_radar(pool):
     print("🚀 تم تشغيل الرادار الشامل (وضع صيد القيعان)...")
@@ -2017,14 +2087,18 @@ async def ai_opportunity_radar(pool):
                             "priceChangePercent": price_change # 👈 أضفنا هذا السطر لكي تتعرف عليه دالة الترتيب
                         })
                 
-                # الفرز بناءً على أضيق نسبة تغير في السعر (من الأقرب للصفر) لاصطياد العملات المضغوطة
-                                # الفرز بناءً على أعلى سيولة دولاريه (Volume) لاصطياد أهداف الحيتان الحقيقية
-                # نترك كشف الانضغاط للتحليل العميق لكي لا ننخدع بالتذبذب الوهمي (Whipsaws)
+                # الفرز بناءً على أضيق نسبة تغير في السعر (من الأقرب للصفر) لاصطياد العملات المضغوطة                # --- الكود القديم لديك ---
                 coins = sorted(coins, key=lambda x: float(x.get("volume", 0)), reverse=True)[:350]
 
-
+                # 👇👇 التعديل الجديد: تفعيل الفيتو اللحظي للبيتكوين 👇👇
+                is_btc_dumping = await check_btc_gravity_veto(client)
+                if is_btc_dumping:
+                    print("🛑 [BTC Gravity Veto] البيتكوين ينزف لحظياً! تم تجميد الرادار لحماية المحفظة.")
+                    await asyncio.sleep(120) # تجميد دقيقتين حتى يهدأ السوق
+                    continue
+                # 👆👆 نهاية التعديل 👆👆
                 
-                # ✅ التعديل الجديد: إرسال الطلبات بالتدريج لحماية الـ API من الحظر
+                # --- الكود القديم لديك ---
                 tasks = []
                 for c in coins:
                     await asyncio.sleep(0.2) # استراحة 200 ملي ثانية بين كل عملة
