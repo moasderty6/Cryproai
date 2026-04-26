@@ -35,6 +35,20 @@ def quant_sigmoid_score(value, sensitivity=1.0, limit=100.0):
     safe_value = max(-20.0, min(20.0, sensitivity * value))
     sig = 1.0 / (1.0 + math.exp(-safe_value))
     return sig * limit
+def quant_fat_tail_score(z_value, tail_weight=1.5, limit=100.0):
+    """
+    محرك التقييم للذيول السميكة (Fat-Tailed / Cauchy CDF Engine):
+    مصمم خصيصاً لسوق الكريبتو. يستخدم توزيع كوشي لاستيعاب أحجام التداول المتطرفة (Black Swans)
+    بدون سحق البيانات مبكراً كما تفعل دالة الخطأ (erf).
+    - tail_weight (γ): معامل التحكم في سمك الذيل. 1.5 يعتبر قياسياً لأسواق الكريبتو.
+    """
+    # حماية من القيم السالبة جداً أو الصفر لتجنب أي أخطاء رياضية
+    safe_z = max(0.0, float(z_value))
+    
+    # استخدام arctan لاستيعاب الأرقام المتطرفة جداً بمرونة
+    probability = 0.5 + (math.atan(safe_z / tail_weight) / math.pi)
+    
+    return probability * limit
 from aiohttp import web
 from dotenv import load_dotenv
 
@@ -1573,14 +1587,16 @@ async def analyze_radar_coin(c, client, market_regime, sem):
 
             # 2. تهيئة محفظة النقاط (كل مؤشر سيتم تقييمه من 0 إلى 100)
             scores = {"vol": 0.0, "cvd": 0.0, "ob": 0.0, "deriv": 0.0, "tech": 0.0}
-
             # ----------------------------------------------------------------
-            # أ. تقييم الفوليوم (Statistical Z-Score Mapping)
+            # أ. تقييم الفوليوم (Fat-Tailed Institutional Mapping)
             # ----------------------------------------------------------------
             recent_pump = (df["close"].iloc[-1] - df["close"].iloc[-10]) / df["close"].iloc[-10]
             
-            # 1. التقييم المستمر: تحويل Z-Score لاحتمالية دقيقة بدلاً من القطع العشوائي
-            vol_raw = quant_cdf_score(current_z, limit=100.0) 
+            # 1. التقييم المؤسساتي: استيعاب سيولة الحيتان المتطرفة باستخدام توزيع كوشي
+            vol_raw = quant_fat_tail_score(current_z, tail_weight=1.5, limit=100.0) 
+            
+            # 2. الخصم المستمر (Continuous Penalty) للفومو: خنق رياضي أسي وليس طرحاً عادياً
+ 
             
             # 2. الخصم المستمر (Continuous Penalty) للفومو: خنق رياضي أسي وليس طرحاً عادياً
             if current_z >= 2.5 and recent_pump > 0.02:
