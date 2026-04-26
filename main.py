@@ -1400,6 +1400,97 @@ async def detect_real_whale_trades(symbol: str, client: httpx.AsyncClient, volum
         return 0.0
 
 
+async def detect_phantom_liquidity_ws(symbol: str, client: httpx.AsyncClient, current_price: float, volume_24h: float, duration: float = 3.0):
+    """
+    [ULTRA INSTITUTIONAL] Phantom Liquidity & TWAP Rhythm Engine 🕸️
+    يدمج بين Time-CV و Iceberg Regeneration لاصطياد نشاط الـ Dark Pools والـ OTC
+    """
+    clean_sym = symbol.replace("USDT", "").lower() + "usdt"
+    # دمج بثين في اتصال واحد: الصفقات اللحظية + الأوردر بوك السريع
+    ws_url = f"wss://stream.binance.com:9443/stream?streams={clean_sym}@aggTrade/{clean_sym}@depth5@100ms"
+    
+    taker_buy_vol, taker_sell_vol = 0.0, 0.0
+    buy_times, sell_times = [], []
+    depth_snapshots = []
+    
+    try:
+        async with websockets.connect(ws_url, ping_interval=None, close_timeout=1) as ws:
+            start_time = time.time()
+            while time.time() - start_time < duration:
+                try:
+                    msg = await asyncio.wait_for(ws.recv(), timeout=0.5)
+                    data = json.loads(msg)
+                    stream = data.get('stream', '')
+                    payload = data.get('data', {})
+                    
+                    # 1. التقاط إيقاع الصفقات (Execution Rhythm)
+                    if 'aggTrade' in stream:
+                        trade_vol = float(payload.get('p', 0)) * float(payload.get('q', 0))
+                        trade_time = payload.get('T', 0)
+                        is_buyer_maker = payload.get('m', False)
+                        
+                        if not is_buyer_maker: # Taker Buy (يضرب العروض)
+                            taker_buy_vol += trade_vol
+                            buy_times.append(trade_time)
+                        else: # Taker Sell (يضرب الطلبات)
+                            taker_sell_vol += trade_vol
+                            sell_times.append(trade_time)
+                            
+                    # 2. التقاط عمق السوق (Liquidity State)
+                    elif 'depth' in stream:
+                        bids_vol = sum([float(p)*float(v) for p, v in payload.get('bids', [])])
+                        asks_vol = sum([float(p)*float(v) for p, v in payload.get('asks', [])])
+                        depth_snapshots.append({'bids': bids_vol, 'asks': asks_vol})
+                        
+                except asyncio.TimeoutError:
+                    continue
+    except Exception as e:
+        # 🛡️ Fallback: إذا فشل الـ WebSocket، نعود فوراً لدالتك القديمة القوية
+        return await detect_real_whale_trades(symbol, client, volume_24h), []
+
+    # إذا لم نجمع بيانات كافية خلال 3 ثوانٍ، نستخدم الدالة القديمة
+    if len(depth_snapshots) < 2:
+        return await detect_real_whale_trades(symbol, client, volume_24h), []
+
+    # ==========================================
+    # 🧠 المحرك الرياضي (Quant Logic)
+    # ==========================================
+    score_boost = 0.0
+    phantom_tags = []
+    
+    # 1. حساب معدل تجدد الجليد (Iceberg Regeneration Rate - IRR)
+    start_bids = depth_snapshots[0]['bids']
+    end_bids = depth_snapshots[-1]['bids']
+    bid_depth_change = start_bids - end_bids 
+    
+    # المعادلة: السيولة المباعة - التغير في عمق الطلبات = السيولة المخفية التي تجددت
+    regenerated_bids = taker_sell_vol - bid_depth_change
+    
+    # إذا باع الأفراد بقوة، لكن الطلبات لم تنقص بل تجددت (امتصاص الحيتان المخفي)
+    if regenerated_bids > (taker_sell_vol * 0.6) and regenerated_bids > 15000:
+        score_boost += 6.0
+        phantom_tags.append("Iceberg_Bid_Absorption")
+
+    # 2. حساب إيقاع التنفيذ الزمني (Time-CV) لكشف خوارزميات TWAP
+    if len(buy_times) > 8:
+        # حساب المسافة الزمنية بين كل صفقة شراء والتي تليها
+        buy_intervals = np.diff(buy_times)
+        buy_time_cv = np.std(buy_intervals) / (np.mean(buy_intervals) + 1e-8)
+        
+        # إذا كان الانحراف المعياري للزمن شبه معدوم، فهذا روبوت مؤسساتي يشتري بإيقاع ثابت
+        if buy_time_cv < 0.4:
+            score_boost += 6.0
+            phantom_tags.append("TWAP_Algo_Accumulation")
+
+    # تحجيم السكور ليتوافق مع نظامك (-12 إلى +12)
+    final_whale_score = round(max(-12.0, min(12.0, score_boost)), 2)
+    
+    # إذا لم نجد بصمة شبحية، ندمج مع دالتك القديمة لتعزيز الدقة
+    if final_whale_score == 0:
+        rest_score = await detect_real_whale_trades(symbol, client, volume_24h)
+        return rest_score, []
+        
+    return final_whale_score, phantom_tags
 
 async def analyze_radar_coin(c, client, market_regime, sem):
     async with sem:  
@@ -1430,18 +1521,25 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             
             # 2. حساب مؤشر LAR (مع حماية من القسمة على صفر)            # 2. حساب مؤشر LAR (عملية رياضية سريعة جداً محلياً)
             lar_score = current_z / (candle_spread_pct + 0.001)
-
             # ==========================================================
             # 🛑 المرحلة الأولى: جدار الإعدام الرياضي (Fail-Fast Veto)
             # ==========================================================
             
+            # تعديل عتبة Z-Score ديناميكياً بناءً على تقلبات الماكرو
+            current_regime_trend = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
+            volatility_state = market_regime['volatility'] if isinstance(market_regime, dict) else "Normal"
+
+            # عتبة مرنة (Dynamic Threshold)
+            z_threshold = 2.0 if volatility_state == "Low_Vol" else (3.0 if volatility_state == "High_Vol" else 2.5)
+            lar_threshold = 0.6 if current_regime_trend == "Trending_Bull" else 0.8
+
             # أ. الهروب من الفومو (Late FOMO Veto):
-            if current_z > 2.5 and candle_spread_pct > 4.0:
+            if current_z > z_threshold and candle_spread_pct > 4.0:
                 tags.append("Late_FOMO_Pump")
                 return None 
 
             # ب. فلتر العملات الميتة (Dead Asset Veto):
-            if lar_score < 0.8 and current_z < 1.5:
+            if lar_score < lar_threshold and current_z < (z_threshold - 1.0):
                 print(f"🗑️ {symbol} - قُتلت مبكراً (انعدام الامتصاص)") 
                 return None 
 
@@ -1554,11 +1652,34 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             old_price_val = df["close"].iloc[-3] if len(df) > 3 else df["open"].iloc[0]
             
             tick_delta, tick_buy, tick_sell, limit_abs_signal = await get_institutional_orderflow(f"{symbol}USDT", client)
-            # 🚀 التعديل: استقبال oi_change_pct
             _, futures_signal, funding_val, oi_change_pct = await get_futures_liquidity(symbol, client, price, old_price_val)
 
             approx_24h_vol_usd = df["volume"].tail(24).sum() * price 
-            whale_score = await detect_real_whale_trades(symbol, client, approx_24h_vol_usd)
+            
+            # 🟢 [التحديث المؤسساتي]: استدعاء محرك السيولة الشبحية بدلاً من الطريقة القديمة
+            whale_score, phantom_tags = await detect_phantom_liquidity_ws(symbol, client, price, approx_24h_vol_usd)
+            tags.extend(phantom_tags) # إضافة الإشارات الشبحية لقائمة التقييم
+
+            # =========================================================
+            # 🕸️ كشف تحوط الـ OTC (Synthetic Delta Trap)
+            # =========================================================
+            # إذا كان هناك شراء صامت في السبوت يقابله ارتفاع هائل في العقود 
+            # مع تمويل سالب، والسعر شبه ثابت = صانع سوق يتحوط لصفقة OTC ضخمة!
+            current_cvd_check = float(locals().get('micro_cvd_trend', 0.0))
+            is_otc_hedging = (
+                current_cvd_check > (approx_24h_vol_usd * 0.005) and # تجميع سبوت
+                oi_change_pct > 0.03 and                             # قفزة جنونية في العقود
+                funding_val < -0.0003 and                            # شورت للتحوط
+                abs(recent_pump) <= 0.01                             # كتم السعر
+            )
+            
+            if is_otc_hedging:
+                tags.append("OTC_Hedging_Trap")
+                deriv_raw = 100.0 # علامة كاملة لسكور المشتقات لأن الانفجار حتمي
+                scores["cvd"] = min(scores["cvd"] + 30.0, 100.0)
+
+            # 1. تقييم الفاندنج بسلاسة (السلبية العالية ترفع السكور للتصفية)
+
 
             # 1. تقييم الفاندنج بسلاسة (السلبية العالية ترفع السكور للتصفية)
             # حساسية -3000 تكبر الأرقام العشرية. (فاندنج -0.001 يعطي سكور قوي جداً)
@@ -1682,7 +1803,11 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 return None 
 
             # 👇 إضافة الإشارات المؤسساتية الجديدة للواجهة 👇
-            if "Nuclear_Short_Squeeze" in tags: final_signal = "NUCLEAR SHORT SQUEEZE ☢️"
+                        # 👇 إضافة الإشارات المؤسساتية الجديدة للواجهة 👇
+            if "OTC_Hedging_Trap" in tags: final_signal = "OTC HEDGING / SYNTHETIC DELTA 🏦"
+            elif "TWAP_Algo_Accumulation" in tags: final_signal = "TWAP ALGO ACCUMULATION 🤖"
+            elif "Iceberg_Bid_Absorption" in tags: final_signal = "ICEBERG ABSORPTION (DARK POOL) 🧊"
+            elif "Nuclear_Short_Squeeze" in tags: final_signal = "NUCLEAR SHORT SQUEEZE ☢️"
             elif "Liquidity_Sweep_Absorption" in tags: final_signal = "Stop-Loss Hunt / Reversal 🩸"
             elif score >= 95.0: final_signal = "Deep Liquidity Absorption 🏦"
             elif score >= 90.0: final_signal = "Institutional Orderflow 🐋"
