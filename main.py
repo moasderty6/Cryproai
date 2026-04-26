@@ -3803,107 +3803,133 @@ async def run_analysis(cb: types.CallbackQuery):
             # 💡 التعديل: إخفاء Z-Score تماماً لعملات الـ DEX
     vol_state = "" if is_dex else f"(Z-Score: {z_score:.1f})"
 
+    # ====================================================================
+    # 🧠 المحرك الكمي المطور (Institutional Conviction & Mean Reversion Engine)
+    # يقضي على التحيز التأكيدي (Confirmation Bias) للفريمات الكبيرة والصغيرة
+    # ====================================================================
     
-    # نظام النقاط (Scoring System) لتقييم التناقضات
-    quant_score = 0.0
-    if bullish_flow: quant_score += 2.0
-    if bearish_flow: quant_score -= 2.0
-    if safe_rsi < rsi_lower: quant_score += 1.0  
-    if safe_rsi > rsi_upper: quant_score -= 1.0  
-    if safe_macd > 0: quant_score += 1.0
-    else: quant_score -= 1.0
+    # 1. حساب الانحراف المعياري لحركة السعر (Price Z-Score / Mean Reversion Risk)
+    # هل المستخدم يسأل عن عملة طارت بالفعل وصارت خطرة؟ أم عملة في القاع؟
+    recent_returns = df['close'].pct_change().dropna().tail(20)
+    price_z_score = (recent_returns.iloc[-1] - recent_returns.mean()) / (recent_returns.std() + 1e-8)
     
-    if adx_val >= 25: 
-        quant_score *= 1.5 
+    # 2. حساب حافة الفوليوم (Volume Edge) باستخدام CDF (احتمالية من 0 إلى 100)
+    vol_edge = quant_cdf_score(z_score, limit=100.0)
+    
+    # 3. حساب حافة التدفق (Orderflow Edge) للتغلب على نقص الأوردر بوك في الفريمات الكبيرة
+    # نستخدم delta_usd مقارنة بمتوسط السيولة
+    avg_vol_usd = df["volume"].tail(20).mean() * price
+    flow_ratio = (delta_usd / avg_vol_usd) if avg_vol_usd > 0 else 0.0
+    
+    # إذا كانت DEX، التدفق اللحظي غير متاح، فنعتمد على ميل السيولة الكلية
+    if is_dex and 'cvd' in df.columns and len(df) >= 10:
+        cvd_slope = df['cvd'].diff(5).iloc[-1]
+        flow_ratio = (cvd_slope / avg_vol_usd) if avg_vol_usd > 0 else 0.0
+        
+    flow_edge = quant_sigmoid_score(flow_ratio, sensitivity=5.0, limit=100.0)
+    
+    # 4. بناء السكور المؤسساتي النهائي (Conviction Score)
+    # ندمج الفوليوم والتدفق مع عقاب (Penalty) رياضي إذا كان السعر متضخماً (Price Z عالي)
+    conviction_score = (vol_edge * 0.45) + (flow_edge * 0.40) + (safe_rsi * 0.15)
+    
+    # عقاب الفومو (Late FOMO Penalty): إذا طار السعر وتدفق الأموال ضعيف، نضرب السكور في مقتل
+    if price_z_score > 2.0 and flow_edge < 50.0:
+        conviction_score *= math.exp(-0.5 * price_z_score) 
+        
+    # 5. تحليل التباين الهيكلي (Macro Divergence)
+    is_fomo_trap = price_z_score > 2.0 and flow_edge < 40.0 and vol_edge < 60.0
+    is_capitulation_absorption = price_z_score < -2.0 and flow_edge > 60.0 and vol_edge > 70.0
+    is_trend_backed_by_flow = (final_trend_dir == "Bullish" and flow_edge > 60.0) or (final_trend_dir == "Bearish" and flow_edge < 40.0)
 
-    # 💡 التعديل الثاني: ربط المنطق السعري بحجم الفوليوم (Z-Score Logic)
+    # إرجاع القيم لدقتها الأصلية
+    safe_rsi = float(last_rsi) if not pd.isna(last_rsi) else 50.0
+    safe_macd = float(last_macd) if not pd.isna(last_macd) else 0.0
+    vol_state = "" if is_dex else f"(Z-Score: {z_score:.1f})"
+
+    # ==========================================
+    # 🤖 المولد النصي الكمي المؤسساتي (Quant Text Generator)
+    # ==========================================
     if lang == "ar":
-        # نصوص المؤشرات
-        if safe_rsi >= rsi_upper: rsi_txt = "تشبع شرائي ديناميكي (Overbought)، خطر التصريف المؤسساتي مرتفع."
-        elif safe_rsi <= rsi_lower: rsi_txt = "استنزاف بيعي أسفل المتوسطات (Oversold)، فرصة ارتداد وبناء قاع."
-        else: rsi_txt = "زخم متوازن، يتداول السعر حول القيمة العادلة (Fair Value)."
+        # 1. نصوص المؤشرات المبنية على الانحرافات الإحصائية
+        if safe_rsi >= rsi_upper: rsi_txt = f"انحراف شرائي حاد ({safe_rsi:.1f}). السعر خارج القيمة العادلة، خطر الانعكاس (Mean Reversion) مرتفع جداً."
+        elif safe_rsi <= rsi_lower: rsi_txt = f"تشبع بيعي عميق ({safe_rsi:.1f}). السعر يتداول بخصم كبير (Discount)، احتمالية بناء قاع واردة."
+        else: rsi_txt = f"زخم متوازن ({safe_rsi:.1f}). السوق يتداول باحترام حول مناطق القيمة العادلة (Fair Value)."
         
-        if adx_val >= 25: adx_txt = "ترند صريح وقوي، زخم الاتجاه مهيمن بقوة على السوق."
-        else: adx_txt = "انخفاض في التقلبات (Low Volatility)، تذبذب عرضي دون اتجاه."
+        if adx_val >= 25: adx_txt = "ترند صريح وقوي. المؤسسات تدعم هذا المسار بزخم واضح."
+        else: adx_txt = "انخفاض حاد في التقلبات. تذبذب عرضي وانتظار لضخ سيولة جديدة."
         
-        if safe_macd > 0: macd_txt = "الزخم قصير الأجل إيجابي (تقاطع شرائي مهيمن)."
-        else: macd_txt = "الزخم قصير الأجل سلبي (ضغوط بيعية مكثفة)."
+        if safe_macd > 0: macd_txt = "تمركز سيولة إيجابي على المدى القصير (سيطرة مشترين)."
+        else: macd_txt = "ضغوط تسييل بيعية على المدى القصير (سيطرة بائعين)."
         
-        # معالجة الترند مع الـ Z-Score
+        # 2. توليد حالة السوق (Market Action) بناءً على قناعة الذكاء الاصطناعي
         if final_trend_dir == "Bullish":
             real_trend = "صاعد"
-            if quant_score <= -1.0: 
-                market_action = f"السعر صاعد، لكن التقييم الكمي سلبي! رصدنا تصريفاً مخفياً {vol_state} يهدد الترند."
-                trend_strength = "مخادع (تصريف)"
+            if is_fomo_trap:
+                market_action = f"فخ تحيز تأكيدي (FOMO Trap)! السعر صعد بقوة لكن التدفق المالي ضعيف جداً {vol_state}. احذر من تصريف مفاجئ."
+                trend_strength = "مخادع (احتمال انعكاس قاسي)"
+            elif is_trend_backed_by_flow:
+                market_action = f"ترند صحي ومدعوم بتدفق أموال مؤسساتي (Orderflow Backed) {vol_state}. المشترون يمتصون العروض."
+                trend_strength = f"قوي (قناعة كمية {conviction_score:.0f}%)"
             else:
-                # 🟢 الحل: الاعتماد على Z-score فقط (تم حذف or is_dex الكارثية)
-                if z_score > 0.5:
-                    market_action = f"ضخ سيولة مؤسساتي وامتصاص قوي يعزز مسار الصعود {vol_state}."
-                    trend_strength = "قوي (تجميع مؤسساتي)"
-                else:
-                    market_action = f"صعود باهت بسيولة ضعيفة (Low Volume Markup) وغياب للمؤسسات {vol_state}."
-                    trend_strength = "ضعيف (سيولة هشة)"
-
-        
+                market_action = f"صعود باهت بسبب ضعف السيولة (Low Vol Markup) {vol_state}. الحركة تفتقر للزخم المؤسساتي."
+                trend_strength = "ضعيف (سيولة هشة)"
+                
         else: # Bearish
             real_trend = "هابط"
-            if quant_score >= 1.0: 
-                market_action = f"السعر هابط، لكننا نرصد تجميعاً صامتاً يحاول بناء قاع محلي {vol_state}."
-                trend_strength = "ارتداد (بناء قاع)"
-            else: 
-                # التحقق من وجود سيولة بيعية حقيقية
-                if z_score > 0.5:
+            if is_capitulation_absorption:
+                market_action = f"استسلام بيعي (Capitulation) يقابله امتصاص شرائي ضخم {vol_state}! الحيتان تشتري الذعر اللحظي لبناء قاع."
+                trend_strength = "ارتداد محتمل (بناء قاع)"
+            elif is_trend_backed_by_flow:
+                market_action = f"سيطرة بيعية حقيقية وتفريغ مستمر للسيولة (Liquidity Drain) {vol_state}. الهبوط مدعوم بتدفق سلبي."
+                trend_strength = f"قوي (قناعة كمية {conviction_score:.0f}%)"
+            else:
+                market_action = f"هبوط بطيء بلا زخم حقيقي (Low Vol Markdown) {vol_state}. غياب للمشترين أكثر من كونه قوة بيعية."
+                trend_strength = "متذبذب (هبوط صامت)"
 
-                    market_action = f"هيمنة بيعية وتفريغ مؤسساتي مستمر للسيولة اللحظية {vol_state}."
-                    trend_strength = "نزيف سيولة"
-                else:
-                    market_action = f"هبوط باهت بسيولة ضعيفة (Low Volume Markdown) وغياب للزخم {vol_state}."
-                    trend_strength = "ضعيف (هبوط صامت)"
-        
-        if is_spoofed: market_action += " [تنبيه: تلاعب وجدران وهمية في الأوردر بوك]"
-        if is_orderbook_hollow: market_action += " [تنبيه: عمق سيولة هش قابل للكسر]"
+        if is_spoofed: market_action += " [رصدنا خوارزميات تضع جدران وهمية للتلاعب بالسعر]"
+        if is_orderbook_hollow: market_action += " [رصدنا فراغ سيولي، السعر قد ينزلق بعنف]"
+        if funding_val < -0.001 and not is_dex: market_action += " [تمويل سالب بشدة: خطر تصفية البائعين Short Squeeze]"
 
     else: # English Version (Institutional Grade)
-        if safe_rsi >= rsi_upper: rsi_txt = "Dynamic Overbought: High risk of institutional distribution."
-        elif safe_rsi <= rsi_lower: rsi_txt = "Deep Oversold (Below MA): High bounce probability."
-        else: rsi_txt = "Neutral Momentum: Trading within Fair Value."
+        if safe_rsi >= rsi_upper: rsi_txt = f"Statistical deviation ({safe_rsi:.1f}). Overextended beyond Fair Value, extreme Mean Reversion risk."
+        elif safe_rsi <= rsi_lower: rsi_txt = f"Deep Oversold ({safe_rsi:.1f}). Trading at a severe discount, bottom formation probable."
+        else: rsi_txt = f"Balanced Momentum ({safe_rsi:.1f}). Price respecting Fair Value boundaries."
         
-        if adx_val >= 25: adx_txt = "Strong Trend: High directional conviction."
-        else: adx_txt = "Low Volatility: Choppy/Range-bound market."
+        if adx_val >= 25: adx_txt = "Strong Directional Conviction. Trend backed by institutional momentum."
+        else: adx_txt = "Volatility Contraction. Range-bound chop, awaiting liquidity injection."
         
-        if safe_macd > 0: macd_txt = "Positive Momentum: Short-term buyers in control."
-        else: macd_txt = "Negative Momentum: Short-term sellers in control."
+        if safe_macd > 0: macd_txt = "Positive short-term capital deployment."
+        else: macd_txt = "Negative short-term capital extraction."
         
         if final_trend_dir == "Bullish":
             real_trend = "Bullish"
-            if quant_score <= -1.0:
-                market_action = f"Uptrend active, but Quant Score is negative! Hidden distribution {vol_state} threatening the move."
-                trend_strength = "Fake (Distribution)"
+            if is_fomo_trap:
+                market_action = f"FOMO TRAP! Price rallied but Orderflow is severely disconnected {vol_state}. High risk of sudden distribution."
+                trend_strength = "Fake (High Reversion Risk)"
+            elif is_trend_backed_by_flow:
+                market_action = f"Healthy trend fully backed by positive Institutional Orderflow {vol_state}. Bids absorbing ask liquidity."
+                trend_strength = f"Strong ({conviction_score:.0f}% Quant Conviction)"
             else:
-                if z_score > 0.5:
-                    market_action = f"Institutional inflow & strong absorption validating the current uptrend {vol_state}."
-                    trend_strength = "Strong (Institutional Accumulation)"
-                else:
-                    market_action = f"Low Volume Markup: Weak liquidity & absence of institutional inflow {vol_state}."
-                    trend_strength = "Weak (Low Liquidity)"
-        
+                market_action = f"Low Volume Markup {vol_state}. Uptrend lacks genuine institutional footprint."
+                trend_strength = "Weak (Fragile Liquidity)"
+                
         else: # Bearish
             real_trend = "Bearish"
-            if quant_score >= 1.0:
-                market_action = f"Downtrend active, but detecting silent accumulation & bottom building {vol_state}."
-                trend_strength = "Bounce (Bottoming)"
+            if is_capitulation_absorption:
+                market_action = f"Capitulation Event! Massive panic selling met with hidden limit buy absorption {vol_state}. Bottom forming."
+                trend_strength = "Reversal (Bottoming)"
+            elif is_trend_backed_by_flow:
+                market_action = f"Genuine distribution and continuous liquidity drain {vol_state}. Sellers in full control."
+                trend_strength = f"Strong ({conviction_score:.0f}% Quant Conviction)"
             else:
-                if z_score > 0.5:
-                    market_action = f"Heavy selling dominance & continuous institutional liquidity drain {vol_state}."
-                    trend_strength = "Liquidity Drain"
-                else:
-                    market_action = f"Low Volume Markdown: Weak selling pressure & lack of momentum {vol_state}."
-                    trend_strength = "Weak (Silent Drop)"
+                market_action = f"Low Volume Markdown {vol_state}. Dropping due to lack of bids rather than aggressive selling."
+                trend_strength = "Choppy (Silent Drop)"
 
-        if is_spoofed: market_action += " [Alert: Orderbook Spoofing Detected]"
-        if is_orderbook_hollow: market_action += " [Alert: Hollow Orderbook / Low Depth]"
+        if is_spoofed: market_action += " [Algorithmic Spoofing Detected in Orderbook]"
+        if is_orderbook_hollow: market_action += " [Liquidity Void: High slippage risk]"
+        if funding_val < -0.001 and not is_dex: market_action += " [Deep Negative Funding: Short Squeeze Imminent]"
 
-    # بناء التقرير النهائي    # بناء التقرير النهائي 
+    # بناء التقرير النهائي
     macd_fmt = format_price(safe_macd)
     if is_dex:
         market_action = f"(تحليل شبكة DEX) | {market_action}" if lang == "ar" else f"(DEX Network) | {market_action}"
