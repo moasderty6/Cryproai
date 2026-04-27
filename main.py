@@ -2082,8 +2082,25 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
             current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
 
-            golden_tags = {"Z_Anom_Silent", "Smart_Accumulation", "Micro_Silent_Accumulation", "Institutional_Buy_Spike", "OB_Buy", "Squeeze"}
-            confluence_count = sum(1 for tag in tags if tag in golden_tags)
+                        # ==========================================
+            # 🛡️ استرجاع شروط القناص النهائي والمتغيرات المفقودة
+            # ==========================================
+            avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
+            avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
+            current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
+
+            # [تعديل صانع السوق]: بناء محاور الإجماع الفني بشكل غير متضارب
+            # تم تقسيم الإجماع إلى 6 فئات رئيسية. تحقق أي شرط داخل الفئة يعطي نقطة.
+            confluence_axes = [
+                any(t in tags for t in ["Smart_Accumulation", "Z_Anom_Silent", "DARK_POOL_COIL"]), # 1. شذوذ الفوليوم المؤسساتي
+                any(t in tags for t in ["Micro_Silent_Accumulation", "High_Liquidity_Absorption", "DEEP_ABSORPTION"]), # 2. امتصاص السيولة والتدفق
+                any(t in tags for t in ["OB_Buy"]), # 3. هيمنة الأوردر بوك الهجومية
+                any(t in tags for t in ["Squeeze"]), # 4. انضغاط التذبذب (استعداد للانفجار)
+                any(t in tags for t in ["Liquidity_Sweep_Absorption", "Bullish_Hammer_Absorption"]), # 5. البنية السعرية واصطياد الوقف
+                any(t in tags for t in ["RSI_Div"]) # 6. انحراف الزخم الإيجابي (دايفرجنس)
+            ]
+            
+            confluence_count = sum(1 for axis in confluence_axes if axis)
 
             ema200_val = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else df["close"].ewm(span=50).mean().iloc[-1]
             is_macro_downtrend = price < ema200_val
