@@ -1662,113 +1662,116 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             # ==========================================================
             # لم نصل إلى هذا السطر إلا والعملة تستحق دفع ثمن الـ API Call
             
+                        # ==========================================================
+            # 🟢 المرحلة الثانية: جلب البيانات المؤسساتية أولاً (Data Fetching Block)
+            # ==========================================================
             spot_lead_score = await detect_spot_perp_divergence(symbol, client)
-            
             if spot_lead_score < -3.0:
                 tags.append("Spot_Dumping_Fakeout")
-                return None # تلاعب من صناع السوق
-         # ====================================================================
+                return None 
+
+            old_price_val = df["close"].iloc[-3] if len(df) > 3 else df["open"].iloc[0]
+            approx_24h_vol_usd = df["volume"].tail(24).sum() * price 
+
+            # 🚀 جلب جميع المتغيرات اللحظية من الـ API لتجنب أي NameError لاحقاً
+            micro_cvd_boost, micro_cvd_signal, micro_cvd_trend = await get_micro_cvd_absorption(f"{symbol}USDT", client, "1h")
+            global_ob_pressure = await get_aggregated_orderbook(client, symbol)
+            depth_data = await analyze_orderbook_spoofing_instant(symbol, client, price)
+            tick_delta, tick_buy, tick_sell, limit_abs_signal = await get_institutional_orderflow(f"{symbol}USDT", client)
+            _, futures_signal, funding_val, oi_change_pct = await get_futures_liquidity(symbol, client, price, old_price_val)
+            whale_score, phantom_tags = await detect_phantom_liquidity_ws(symbol, client, price, approx_24h_vol_usd)
+            rs_score = await detect_btc_relative_strength(symbol, client)
+            
+            tags.extend(phantom_tags)
+            if limit_abs_signal == "Limit_Absorption": tags.append("Limit_Absorption")
+
+            # 🚀 استدعاء خوارزمية الدارك بول (VCA) بشكل صحيح بالبيانات الجاهزة
+            vca_bonus_score, vca_tag = detect_dark_pool_vca(df, micro_cvd_trend, oi_change_pct, funding_val)
+            if vca_tag: tags.append(vca_tag)
+
+            # ⚙️ تجهيز الهيكلة الفنية (Bollinger & Sweeps) للتقييم
+            dyn_window = get_dynamic_window(df, base_window=20)
+            sma = df["close"].rolling(dyn_window).mean()
+            std = df["close"].rolling(dyn_window).std(ddof=0)
+            bb_width = (4 * std) / sma
+            avg_bb_width = bb_width.rolling(dyn_window * 5).mean().iloc[-1]
+            current_bb_width = bb_width.iloc[-1]
+            
+            recent_low_20 = df["low"].iloc[-21:-1].min()
+            current_low = df["low"].iloc[-1]
+            current_close = df["close"].iloc[-1]
+            is_liquidity_sweep = (current_low < recent_low_20) and (current_close > recent_low_20)
+
+            # ====================================================================
+            # 🧠 المرحلة الثالثة: محرك التقييم الكمي الصارم (Strict Scoring Engine)
+            # ====================================================================
             REGIME_WEIGHTS = {
                 "Trending_Bull": {"vol": 0.30, "cvd": 0.30, "ob": 0.15, "deriv": 0.15, "tech": 0.10},
                 "Trending_Bear": {"vol": 0.20, "cvd": 0.30, "ob": 0.15, "deriv": 0.25, "tech": 0.10},
                 "Ranging":       {"vol": 0.25, "cvd": 0.30, "ob": 0.15, "deriv": 0.15, "tech": 0.15},
                 "Unknown":       {"vol": 0.25, "cvd": 0.25, "ob": 0.20, "deriv": 0.15, "tech": 0.15}
             }
-            
             current_regime = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
             weights = REGIME_WEIGHTS.get(current_regime, REGIME_WEIGHTS["Unknown"])
             scores = {"vol": 0.0, "cvd": 0.0, "ob": 0.0, "deriv": 0.0, "tech": 0.0}
 
-            # ----------------------------------------------------------------
-            # 1. ركيزة الفوليوم (Volume & VCA Pillar)
-            # ----------------------------------------------------------------
+            # 1. ركيزة الفوليوم
             vol_base = quant_fat_tail_score(current_z, tail_weight=1.5, limit=70.0)
-            vca_bonus = min(30.0, locals().get('vca_bonus_score', 0.0))
             vol_penalty_factor = math.exp(-2.0 / (lar_score + 1e-8)) if lar_score < 1.0 else 1.0
-            scores["vol"] = (vol_base + vca_bonus) * vol_penalty_factor
+            scores["vol"] = (vol_base + min(30.0, vca_bonus_score)) * vol_penalty_factor
 
-            # ----------------------------------------------------------------
-            # 2. ركيزة تدفق السيولة (CVD & Spot Lead Pillar)
-            # ----------------------------------------------------------------
+            # 2. ركيزة السيولة (مع تصحيح الدولار)
             avg_vol_20_temp = df["volume"].tail(20).mean()
             avg_vol_usd_temp = avg_vol_20_temp * price if avg_vol_20_temp > 0 else 1.0
-            
-            real_cvd_usd_eval = float(micro_cvd_trend) * price # تقييم مبدئي لـ CVD كدولار
-            
+            real_cvd_usd_eval = float(micro_cvd_trend) * price 
             cvd_ratio = real_cvd_usd_eval / avg_vol_usd_temp
             cvd_base = quant_sigmoid_score(cvd_ratio, sensitivity=6.0, limit=80.0)
             spot_lead_bonus = max(0.0, min(20.0, spot_lead_score * 2.0))
             scores["cvd"] = cvd_base + spot_lead_bonus
 
-            # ----------------------------------------------------------------
-            # 3. ركيزة الأوردر بوك (Orderbook Dominance Pillar)
-            # ----------------------------------------------------------------
+            # 3. ركيزة الأوردر بوك
             imbalance = depth_data.get('imbalance', 0.0)
             ob_base = quant_sigmoid_score(imbalance, sensitivity=4.0, limit=80.0)
             global_ob_bonus = min(20.0, math.log1p(max(0, global_ob_pressure - 1.0)) * 10.0)
             ob_penalty = 0.3 if (depth_data.get('is_hollow', False) or depth_data.get('is_spoofed', False)) else 1.0
             scores["ob"] = (ob_base + global_ob_bonus) * ob_penalty
 
-            # ----------------------------------------------------------------
-            # 4. ركيزة المشتقات (Derivatives & Phantom Liquidity Pillar)
-            # ----------------------------------------------------------------
+            # 4. ركيزة المشتقات
             phantom_bonus = quant_sigmoid_score(whale_score, sensitivity=0.5, limit=40.0)
             funding_sensitivity = -3000.0 if (futures_signal == "OI_Rising" and oi_change_pct > 0.02) else -1000.0
             funding_score = quant_sigmoid_score(funding_val, sensitivity=funding_sensitivity, limit=60.0)
             scores["deriv"] = min(100.0, phantom_bonus + funding_score)
 
-            # ----------------------------------------------------------------
-            # 5. ركيزة الهيكلة الفنية (Technical & RS Pillar)
-            # ----------------------------------------------------------------
+            # 5. ركيزة التقني
             tech_base = 50.0
-            squeeze_ratio = current_bb_width / (avg_bb_width + 1e-8) if avg_bb_width else 1.0
+            squeeze_ratio = current_bb_width / (avg_bb_width + 1e-8) if not pd.isna(avg_bb_width) and avg_bb_width > 0 else 1.0
             if squeeze_ratio < 0.8: tech_base += quant_sigmoid_score(1.0 - squeeze_ratio, sensitivity=5.0, limit=20.0)
             tech_base += quant_sigmoid_score(rs_score, sensitivity=0.5, limit=15.0)
-            
             if is_liquidity_sweep and real_cvd_usd_eval > 0: tech_base += 15.0
             scores["tech"] = min(100.0, tech_base)
 
-            # ====================================================================
-            # ⚖️ الدمج النهائي والتحدب (Convexity & Confluence)
-            # ====================================================================
-            base_weighted_score = (
-                (scores["vol"]   * weights["vol"]) +
-                (scores["cvd"]   * weights["cvd"]) +
-                (scores["ob"]    * weights["ob"]) +
-                (scores["deriv"] * weights["deriv"]) +
-                (scores["tech"]  * weights["tech"])
-            )
-
+            # --- ⚖️ الدمج النهائي والتحدب ---
+            base_weighted_score = sum(scores[k] * weights[k] for k in scores)
             scores_above_80 = sum(1 for s in scores.values() if s >= 80.0)
             
-            if scores_above_80 >= 3:
-                final_weighted_score = min(99.1, base_weighted_score + (scores_above_80 * 2.5))
-            elif scores_above_80 == 0 and base_weighted_score > 85.0:
-                final_weighted_score = base_weighted_score * 0.95
-            else:
-                final_weighted_score = base_weighted_score
+            if scores_above_80 >= 3: final_weighted_score = min(99.1, base_weighted_score + (scores_above_80 * 2.5))
+            elif scores_above_80 == 0 and base_weighted_score > 85.0: final_weighted_score = base_weighted_score * 0.95
+            else: final_weighted_score = base_weighted_score
 
             score = round(max(0.0, min(final_weighted_score, 99.5)), 1)
 
-            # ====================================================================
-            # 🏷️ تحديد اسم الإشارة (5 إشارات احترافية وواقعية فقط)
-            # ====================================================================
-            final_signal = "High Probability Setup 🎯"
+            # --- 🏷️ تحديد نوع الإشارة بدقة ---
             dominant_pillar = max(scores, key=scores.get)
-            
             if score >= 80.0:
-                if dominant_pillar == "vol" and scores["vol"] >= 85.0:
-                    final_signal = "Deep MM Absorption 🏦"
-                elif dominant_pillar == "cvd" and scores["cvd"] >= 85.0:
-                    final_signal = "Stealth Accumulation 🦈"
-                elif dominant_pillar == "deriv" and scores["deriv"] >= 85.0:
-                    final_signal = "Derivatives Trapping 🔥"
-                elif dominant_pillar == "ob" and scores["ob"] >= 85.0:
-                    final_signal = "Orderflow Dominance 💸"
-                elif dominant_pillar == "tech" and scores["tech"] >= 85.0:
-                    final_signal = "Pre-Breakout Squeeze ⚡"
+                if dominant_pillar == "vol" and scores["vol"] >= 85.0: final_signal = "Deep MM Absorption 🏦"
+                elif dominant_pillar == "cvd" and scores["cvd"] >= 85.0: final_signal = "Stealth Accumulation 🦈"
+                elif dominant_pillar == "deriv" and scores["deriv"] >= 85.0: final_signal = "Derivatives Trapping 🔥"
+                elif dominant_pillar == "ob" and scores["ob"] >= 85.0: final_signal = "Orderflow Dominance 💸"
+                elif dominant_pillar == "tech" and scores["tech"] >= 85.0: final_signal = "Pre-Breakout Squeeze ⚡"
+                else: final_signal = "High Probability Setup 🎯"
             else:
                 final_signal = "Active Accumulation ⏳"
+
 
             # ==========================================
             # 🌉 جسر توحيد المتغيرات (Variable Unification Bridge)
