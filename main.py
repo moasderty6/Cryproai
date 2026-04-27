@@ -1768,18 +1768,12 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             # 🟢 [التحديث المؤسساتي]: استدعاء محرك السيولة الشبحية بدلاً من الطريقة القديمة
             whale_score, phantom_tags = await detect_phantom_liquidity_ws(symbol, client, price, approx_24h_vol_usd)
             tags.extend(phantom_tags) # إضافة الإشارات الشبحية لقائمة التقييم
-            # =========================================================
-            # 🕸️ كشف تحوط الـ OTC (Synthetic Delta Trap)
-            # =========================================================
-            # إذا كان هناك شراء صامت في السبوت يقابله ارتفاع هائل في العقود 
-            # مع تمويل سالب، والسعر شبه ثابت = صانع سوق يتحوط لصفقة OTC ضخمة!
-            current_cvd_check = cvd_trend_val
+            current_cvd_check = micro_cvd_trend
             is_otc_hedging = (
-                current_cvd_check > (approx_24h_vol_usd * 0.005) and # تجميع سبوت
-                oi_change > 0.03 and                                 # 👈 تصحيح الاسم
-                            # قفزة جنونية في العقود
-                funding_val < -0.0003 and                            # شورت للتحوط
-                abs(recent_pump) <= 0.01                             # كتم السعر
+                current_cvd_check > (approx_24h_vol_usd * 0.005) and 
+                oi_change_pct > 0.03 and                                 
+                funding_val < -0.0003 and                            
+                abs(recent_pump) <= 0.01                             
             )
             
             if is_otc_hedging:
@@ -1885,8 +1879,8 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             current_close = df["close"].iloc[-1]
             
             is_liquidity_sweep = (current_low < recent_low_20) and (current_close > recent_low_20)
-            current_cvd_check = cvd_trend_val  # 👈 قراءة مباشرة وصحيحة
-            
+            current_cvd_check = micro_cvd_trend  
+
             if is_liquidity_sweep and current_cvd_check > 0 and limit_abs_signal == "Limit_Absorption":
 
                 tech_raw += 35.0 
@@ -1905,14 +1899,14 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             tech_raw += quant_sigmoid_score(rs_score, sensitivity=0.5, limit=20.0) - 10.0
                 
             scores["tech"] = max(0.0, min(tech_raw, 100.0))
-                        # 🚀 استدعاء خوارزمية "الزنبرك المفرغ" (The Proprietary Alpha)# الاستدعاء الصحيح من دالة analyze_radar_coin            # الاستدعاء الصحيح من دالة analyze_radar_coin
-                        # الاستدعاء الصحيح من دالة analyze_radar_coin
+                        # 🚀 استدعاء خوارزمية "الزنبرك المفرغ" (The Proprietary Alpha)# الاستدعاء الصحيح من دالة analyze_radar_coin            # الاستدعاء الصحيح من دالة analyze_radar_coin            # الاستدعاء الصحيح من دالة analyze_radar_coin
             vca_bonus_score, vca_tag = detect_dark_pool_vca(
                 df, 
-                cvd_trend_val,   # 👈 تم تصحيح الاسم
-                oi_change,       # 👈 تم تصحيح الاسم
+                micro_cvd_trend, 
+                oi_change_pct,
                 funding_val 
             )
+
 
     
             # ====================================================================
@@ -1993,10 +1987,10 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             elif "Smart_Accumulation" in tags: final_signal = "Smart Money Inflow 💸"
             # ==========================================
             # 🌉 جسر توحيد المتغيرات (Variable Unification Bridge)
-            # لحل مشكلة not defined وربط محركات الرادار ببعضها
             # ==========================================
-            current_cvd = cvd_trend_val                           # 👈 تصحيح
-            current_imbalance = depth_data.get('imbalance', 0.0)  # 👈 الجلب الصحيح للبيانات
+            current_cvd = micro_cvd_trend
+            current_imbalance = depth_data.get('imbalance', 0.0)
+  # 👈 الجلب الصحيح للبيانات
             is_orderbook_hollow_flag = depth_data.get('is_hollow', False)
 
             volatility_state = market_regime['volatility'] if isinstance(market_regime, dict) else "Normal"
@@ -2049,10 +2043,8 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             avg_vol_usd = avg_vol_20 * price if avg_vol_20 > 0 else 1.0
             is_strong_cvd = current_cvd > (avg_vol_usd * 0.15)
             if is_strong_cvd:
-                # [إصلاح صانع السوق]: السماح بالتجميع المخفي (Spot Stealth)
-                # نرفض العملة فقط إذا كان هناك شراء سبوت ضخم يقابله انهيار في العقود (تغطية شورت وليس تجميع)
-                                # نرفض العملة فقط إذا كان هناك شراء سبوت ضخم يقابله انهيار في العقود (تغطية شورت وليس تجميع)
-                if oi_change < -0.015:  # 👈 تصحيح الاسم
+                # [إصلاح صانع السوق]: السماح بالتجميع المخفي (Spot Stealth)                # نرفض العملة فقط إذا كان هناك شراء سبوت ضخم يقابله انهيار في العقود (تغطية شورت وليس تجميع)
+                if oi_change_pct < -0.015:  
                     tags.append("Short_Cover_Illusion")
                     return None 
 
