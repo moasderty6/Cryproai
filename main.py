@@ -1538,10 +1538,10 @@ def get_dynamic_window(df, base_window=20, min_window=5, max_window=100):
     # حساب النافذة الديناميكية مع حماية الحدود
     dynamic_window = int(base_window * volatility_ratio)
     return max(min_window, min(dynamic_window, max_window))
-def detect_dark_pool_vca(df, current_cvd_usd, oi_change_pct, funding_rate=0.0):
+def detect_dark_pool_vca(df, current_cvd_usd, oi_change_pct, funding_rate=0.0, on_chain_proxy_score=0.0):
     """
-    [THE APEX ALPHA] Dark Pool Vacuum Coil Algorithm (DP-VCA)
-    بنسخة السكور الديناميكي المتغير (Dynamic Scoring)
+    [THE APEX ALPHA] Dark Pool Vacuum Coil Algorithm (DP-VCA) + Kinetic Potential
+    مدمجة الآن مع طاقة السحب الشبكية أو الاحتضان.
     """
     if len(df) < 336: 
         return 0.0, None
@@ -1572,29 +1572,26 @@ def detect_dark_pool_vca(df, current_cvd_usd, oi_change_pct, funding_rate=0.0):
     is_spot_driven = current_cvd_usd > (recent_window['volume'].mean() * avg_price * 0.25)
     is_stealth_derivatives = (oi_change_pct < 0.02) or (oi_change_pct >= 0.02 and funding_rate <= 0.0001)
     
-    # ==========================================
-    # 🧠 المحرك الديناميكي للسكور (Dynamic Scoring Engine)
-    # ==========================================
-    # حساب المضاعفات (كم ضعف زادت الكثافة؟ وكم مرة تم خنق السعر؟)
+    # 🧠 حساب المضاعفات الأساسية
     density_multiplier = recent_density / (historic_density + 1e-8)
     choke_ratio = historic_range_pct / (recent_range_pct + 1e-8)
     
-    # السكور الأساسي يتفاعل مع قوة الانضغاط الفعلي
     dynamic_base_score = (density_multiplier * 6.0) + (choke_ratio * 4.0)
+
+    # 🧬 دمج الطاقة الكامنة (On-Chain / Incubation)
+    # إذا كانت العملة محتضنة، يتم ضرب قوة الدارك بول بـ 1.5 لأن الضغط حقيقي
+    kinetic_multiplier = 1.0 + (on_chain_proxy_score / 100.0) 
 
     vca_score = 0.0
     signal_tag = None
 
     if is_spot_driven and is_stealth_derivatives:
-        # صاعق الانفجار: تجميع سبوت مخفي مع تحوط في العقود
-        # السكور الديناميكي يضرب بـ 1.5 بحد أقصى 45 نقطة إضافية للسكور النهائي
-        vca_score = min(45.0, dynamic_base_score * 1.5)
+        # السكور الديناميكي يتضخم بالـ Kinetic Energy بحد أقصى 50 نقطة
+        vca_score = min(50.0, (dynamic_base_score * 1.5) * kinetic_multiplier)
         signal_tag = "DARK_POOL_COIL"
         
     elif is_heavy_absorption:
-        # امتصاص عادي: تجميع واضح لكن بدون تخفي كامل في العقود
-        # السكور الديناميكي بحد أقصى 25 نقطة إضافية
-        vca_score = min(25.0, dynamic_base_score)
+        vca_score = min(30.0, dynamic_base_score * kinetic_multiplier)
         signal_tag = "DEEP_ABSORPTION"
 
     return round(vca_score, 1), signal_tag
@@ -1684,9 +1681,18 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             
             tags.extend(phantom_tags)
             if limit_abs_signal == "Limit_Absorption": tags.append("Limit_Absorption")
+            # 🚀 استدعاء خوارزمية الدارك بول (VCA) وغرفة الاحتضان
+            # ----------------------------------------------------
+            # 🧬 1. فحص الانتماء لغرفة الاحتضان (The Incubation Synergy)
+            is_incubated = f"{symbol}USDT" in INCUBATION_MATRIX
+            incubation_bonus = 20.0 if is_incubated else 0.0
+            
+            if is_incubated:
+                tags.append("Incubated_Macro_Coil")
+                print(f"🧬 [Synergy] {symbol} triggered from Incubation Room! Enhancing VCA...")
 
-            # 🚀 استدعاء خوارزمية الدارك بول (VCA) بشكل صحيح بالبيانات الجاهزة
-            vca_bonus_score, vca_tag = detect_dark_pool_vca(df, micro_cvd_trend, oi_change_pct, funding_val)
+            # 🚀 نمرر incubation_bonus كـ On-chain/Kinetic proxy
+            vca_bonus_score, vca_tag = detect_dark_pool_vca(df, micro_cvd_trend, oi_change_pct, funding_val, on_chain_proxy_score=incubation_bonus)
             if vca_tag: tags.append(vca_tag)
 
             # ⚙️ تجهيز الهيكلة الفنية (Bollinger & Sweeps) للتقييم
@@ -1718,7 +1724,8 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             # 1. ركيزة الفوليوم
             vol_base = quant_fat_tail_score(current_z, tail_weight=1.5, limit=70.0)
             vol_penalty_factor = math.exp(-2.0 / (lar_score + 1e-8)) if lar_score < 1.0 else 1.0
-            scores["vol"] = (vol_base + min(30.0, vca_bonus_score)) * vol_penalty_factor
+            # 🧬 إضافة تأثير الاحتضان لركيزة الفوليوم اللحظي (القناصة تضرب بسهولة أكبر)
+            scores["vol"] = (vol_base + min(35.0, vca_bonus_score + (incubation_bonus * 0.5))) * vol_penalty_factor
 
             # 2. ركيزة السيولة (مع تصحيح الدولار)
             avg_vol_20_temp = df["volume"].tail(20).mean()
@@ -1779,14 +1786,12 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             current_imbalance = depth_data.get('imbalance', 0.0)
             is_orderbook_hollow_flag = depth_data.get('is_hollow', False)
 
-            # 🟢 [الإصلاح الجذري]: تعريف متوسطات الفوليوم هنا قبل أي استخدام لها في الفلاتر السفلية
             df["volume"] = pd.to_numeric(df["volume"], errors='coerce')
             avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
             avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
             current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
 
             volatility_state = market_regime['volatility'] if isinstance(market_regime, dict) else "Normal"
-
             macro_adx = market_regime['adx'] if isinstance(market_regime, dict) else 20.0
             
             # 2. ديناميكية الفومو (VWAP Z-Score)
@@ -1811,10 +1816,12 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             # ==========================================
             # 🛡️ الفيتو الإجباري المتكيف (Adaptive Institutional Veto)
             # ==========================================
+            # 🌟 هنا تتدخل الإستراتيجية العظمى: إذا كانت العملة محتضنة، نتساهل مع الفيتو اللحظي!
+            veto_tolerance = 1.3 if is_incubated else 1.0 # نسبة تساهل 30% للمحتضنة
             
-            if current_vwap_z > dyn_vwap_z:
+            if current_vwap_z > (dyn_vwap_z * veto_tolerance):
                 tags.append("Late_FOMO_Pump_VWAP")
-                print(f"🗑️ {symbol} - مرفوض: السعر انحرف عن VWAP بـ {current_vwap_z:.2f} (عتبة السوق الحالية {dyn_vwap_z:.2f})")
+                print(f"🗑️ {symbol} - مرفوض: انحراف قوي عن VWAP (متجاوزاً عتبة الاحتضان {veto_tolerance}).")
                 return None 
                 
             if is_orderbook_hollow_flag and current_cvd < 0:
@@ -1848,7 +1855,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 return None  
 
             confluence_axes = [
-                any(t in tags for t in ["Smart_Accumulation", "Z_Anom_Silent", "DARK_POOL_COIL"]),
+                any(t in tags for t in ["Smart_Accumulation", "Z_Anom_Silent", "DARK_POOL_COIL", "Incubated_Macro_Coil"]),
                 any(t in tags for t in ["Micro_Silent_Accumulation", "High_Liquidity_Absorption", "DEEP_ABSORPTION"]),
                 any(t in tags for t in ["OB_Buy"]),
                 any(t in tags for t in ["Squeeze"]),
@@ -1863,6 +1870,12 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             current_regime_trend = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
 
             required_score = 75.0 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 70.0
+            
+            # 🌟 تخفيض سكور القبول 5 نقاط كاملة إذا كانت العملة تُطبخ في غرفة الاحتضان!
+            if is_incubated: 
+                required_score -= 5.0
+                print(f"🎯 [Incubator Bypass] {symbol} threshold lowered to {required_score} due to Macro Coiling!")
+
             required_confluence = 2 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 2
 
             if score >= required_score and confluence_count >= required_confluence:    
@@ -1932,6 +1945,69 @@ async def analyze_radar_coin(c, client, market_regime, sem):
 
 
 
+async def institutional_incubator_worker(pool):
+    """
+    [The Incubation Matrix] 🧬
+    يبحث عن التجميع المؤسساتي البطيء على فريمات 4H/1D ويجهزها للرادار اللحظي.
+    """
+    await asyncio.sleep(60) # انتظر استقرار السيرفر
+    print("🧪 [Incubator] The Matrix is Online. Scanning Macro Coils...")
+
+    while True:
+        try:
+            current_time = time.time()
+            # تنظيف الغرفة من العملات التي تعفنت (مر عليها أكثر من 48 ساعة دون انفجار)
+            stale_coins = [k for k, v in INCUBATION_MATRIX.items() if current_time - v['incubation_start'] > 172800]
+            for k in stale_coins:
+                del INCUBATION_MATRIX[k]
+                print(f"🧹 [Incubator] Removed {k} from matrix (Time Expired).")
+
+            async with httpx.AsyncClient(timeout=30) as client:
+                await binance_rate_limit_event.wait()
+                base_url = get_random_binance_base()
+                res = await client.get(f"{base_url}/api/v3/ticker/24hr")
+                
+                if res.status_code == 200:
+                    tickers = [t for t in res.json() if t['symbol'].endswith("USDT") and float(t['quoteVolume']) > 2_000_000]
+                    
+                    for t in tickers:
+                        sym = t['symbol']
+                        clean_sym = sym.replace("USDT", "")
+                        if clean_sym in BLACKLISTED_COINS: continue
+
+                        await binance_rate_limit_event.wait()
+                        # جلب شموع 4 ساعات للاحتضان
+                        candles = await get_candles_binance(sym, "4h", limit=100)
+                        if not candles: continue
+
+                        df, last_rsi, current_adx, current_z, vol_mean, vol_std = await asyncio.to_thread(process_dataframe_sync, candles)
+                        
+                        # 🧠 شروط الاحتضان (Macro Compression):
+                        # 1. السعر محصور في نطاق ضيق جداً (البولينجر ضيق)
+                        # 2. الفوليوم هادئ لكن هناك انحراف بسيط في الـ Z-Score
+                        # 3. الـ ADX منخفض (دليل على غياب الترند واستعداد للانفجار)
+                        
+                        dyn_window = get_dynamic_window(df, base_window=20)
+                        sma = df["close"].rolling(dyn_window).mean()
+                        std = df["close"].rolling(dyn_window).std(ddof=0)
+                        bb_width = (4 * std) / sma
+                        current_bb_width = bb_width.iloc[-1]
+                        
+                        if current_bb_width < 0.08 and current_adx < 25.0 and current_z > 1.0:
+                            if sym not in INCUBATION_MATRIX:
+                                INCUBATION_MATRIX[sym] = {
+                                    "incubation_start": time.time(),
+                                    "macro_z": current_z,
+                                    "bb_width": current_bb_width
+                                }
+                                print(f"🧬 [Incubator] Added {sym} to Incubation Matrix. Waiting for trigger...")
+                        
+                        await asyncio.sleep(2) # راحة لبايننس
+
+        except Exception as e:
+            print(f"⚠️ [Incubator] Error: {e}")
+            
+        await asyncio.sleep(14400) # يمسح السوق كل 4 ساعات
 
 async def handle_binance_rate_limit(retry_after: int = 60):
     """توقف الرادار بالكامل عند استقبال 429 لمنع حظر 418"""
@@ -2103,60 +2179,76 @@ async def ml_inspector_worker(pool):
             
         await asyncio.sleep(600) # فحص كل 10 دقائق
 
-
-# --- ذاكرة الماكرو والمشاعر اللحظية ---
+# --- الذاكرة المؤسساتية للماكرو والاحتضان ---
 MACRO_CACHE = {
-    "sp500_trend": 0.0,      # نسبة تغير السوق الأمريكي اليوم
-    "sentiment_score": 50.0, # من 0 إلى 100
+    "sp500_trend": 0.0,
+    "sentiment_score": 50.0, # سيتم تحويله لـ Institutional Risk Score
+    "global_funding_health": 0.0, # صحة التمويل الكلي (هل السوق Short/Long مكشوف؟)
+    "btc_liquidity_health": 0.0 # هل يتم سحب السيولة من البيتكوين للألتكوين؟
 }
+
+# غرفة الاحتضان (الزنبرك): { "BTCUSDT": {"incubation_start": 1712000000, "score": 85} }
+INCUBATION_MATRIX = {} 
 
 async def macro_data_worker():
     """
-    عامل خلفي (Quant Macro Engine) يعمل كل 30 دقيقة.
-    يجلب مشاعر الكريبتو وحالة الأسهم الأمريكية ويخزنها في الذاكرة.
-    لا يستهلك أي ليمت ولا يؤثر على سرعة الرادار.
+    [Institutional Macro Engine]
+    يعمل كل 30 دقيقة. يدمج الأسواق التقليدية (S&P500) مع صحة مشتقات الكريبتو الكلية.
     """
-    await asyncio.sleep(10) # انتظر حتى يعمل البوت
-    print("🌍 Macro Data Worker is live...")
+    await asyncio.sleep(10)
+    print("🌍 [Macro Engine] Quant Macro Worker is live...")
     
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
+    headers = {"User-Agent": "Mozilla/5.0"}
 
     while True:
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                # 1. جلب مؤشر المشاعر (Fear & Greed)
+            async with httpx.AsyncClient(timeout=15) as client:
+                # 1. حالة السوق الأمريكي (SPY)
                 try:
-                    fng_res = await client.get("https://api.alternative.me/fng/?limit=1")
-                    if fng_res.status_code == 200:
-                        data = fng_res.json()
-                        MACRO_CACHE["sentiment_score"] = float(data['data'][0]['value'])
-                except Exception as e:
-                    print(f"⚠️ Sentiment API Error: {e}")
-
-                # 2. جلب حالة السوق الأمريكي (S&P 500 ETF - SPY)
-                try:
-                    spy_res = await client.get(
-                        "https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=1d&range=2d",
-                        headers=headers
-                    )
+                    spy_res = await client.get("https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=1d&range=2d", headers=headers)
                     if spy_res.status_code == 200:
                         chart_data = spy_res.json()['chart']['result'][0]['indicators']['quote'][0]
                         closes = chart_data['close']
-                        # حساب نسبة التغير بين إغلاق أمس والسعر الحالي
                         if len(closes) >= 2 and closes[-1] and closes[-2]:
-                            pct_change = ((closes[-1] - closes[-2]) / closes[-2]) * 100
-                            MACRO_CACHE["sp500_trend"] = round(pct_change, 2)
+                            MACRO_CACHE["sp500_trend"] = round(((closes[-1] - closes[-2]) / closes[-2]) * 100, 2)
                 except Exception as e:
-                    print(f"⚠️ S&P 500 API Error: {e}")
-                    
-                print(f"🔄 [Macro Updated] Sentiment: {MACRO_CACHE['sentiment_score']} | S&P500 Trend: {MACRO_CACHE['sp500_trend']}%")
+                    print(f"⚠️ [Macro] S&P 500 API Error (Silent Fallback): {e}")
+
+                # 2. قياس صحة المشتقات الكلية (Global Funding Health)
+                # بدلاً من المشاعر، نسحب معدلات التمويل لأكبر العملات
+                try:
+                    fapi_url = "https://fapi.binance.com/fapi/v1/premiumIndex"
+                    fund_res = await client.get(fapi_url)
+                    if fund_res.status_code == 200:
+                        fund_data = fund_res.json()
+                        # تصفية العملات وأخذ المتوسط المرجح
+                        rates = [float(item['lastFundingRate']) for item in fund_data if 'USDT' in item['symbol']]
+                        if rates:
+                            avg_funding = sum(rates) / len(rates)
+                            # تحويلها لسكور من 0 إلى 100 (50 هو التعادل)
+                            # إذا كان التمويل سالباً جداً (شورت)، السكور يرتفع (فرصة قنص)
+                            MACRO_CACHE["global_funding_health"] = quant_sigmoid_score(avg_funding, sensitivity=-5000.0, limit=100.0)
+                except Exception as e:
+                    print(f"⚠️ [Macro] Funding API Error: {e}")
+
+                # 3. دمج الماكرو النهائي كـ "علاوة مخاطرة" (Risk Premium)
+                # نستخدمه كبديل لـ sentiment_score لتدريب الـ AI بشكل أذكى
+                base_score = 50.0
+                if MACRO_CACHE["sp500_trend"] > 0.5: base_score += 15
+                elif MACRO_CACHE["sp500_trend"] < -0.5: base_score -= 15
+                
+                # إضافة تأثير التمويل الكلي
+                final_macro_score = (base_score * 0.4) + (MACRO_CACHE["global_funding_health"] * 0.6)
+                MACRO_CACHE["sentiment_score"] = round(max(0.0, min(100.0, final_macro_score)), 1)
+
+                print(f"🔄 [Macro Updated] Inst_Risk_Score: {MACRO_CACHE['sentiment_score']} | S&P500: {MACRO_CACHE['sp500_trend']}% | Funding Health: {MACRO_CACHE['global_funding_health']:.1f}")
                 
         except Exception as e:
-            pass
+            print(f"⚠️ [Macro Engine] Critical Background Error: {e}")
             
         await asyncio.sleep(1800) # التحديث كل نصف ساعة
+ # التحديث كل نصف ساعة
+
 async def check_btc_gravity_veto(client: httpx.AsyncClient):
     """
     مستشعر الجاذبية اللحظي للبيتكوين (Micro-Veto)
