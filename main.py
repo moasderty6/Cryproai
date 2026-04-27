@@ -1692,7 +1692,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 print(f"🧬 [Synergy] {symbol} triggered from Incubation Room! Enhancing VCA...")
 
             # 🚀 نمرر incubation_bonus كـ On-chain/Kinetic proxy
-            vca_bonus_score, vca_tag = detect_dark_pool_vca(df, micro_cvd_trend, oi_change_pct, funding_val, on_chain_proxy_score=incubation_bonus)
+            vca_bonus_score, vca_tag = detect_dark_pool_vca(df, micro_cvd_trend * price, oi_change_pct, funding_val, on_chain_proxy_score=incubation_bonus)
             if vca_tag: tags.append(vca_tag)
 
             # ⚙️ تجهيز الهيكلة الفنية (Bollinger & Sweeps) للتقييم
