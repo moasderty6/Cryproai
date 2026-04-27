@@ -1768,15 +1768,14 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             # 🟢 [التحديث المؤسساتي]: استدعاء محرك السيولة الشبحية بدلاً من الطريقة القديمة
             whale_score, phantom_tags = await detect_phantom_liquidity_ws(symbol, client, price, approx_24h_vol_usd)
             tags.extend(phantom_tags) # إضافة الإشارات الشبحية لقائمة التقييم
-
             # =========================================================
             # 🕸️ كشف تحوط الـ OTC (Synthetic Delta Trap)
             # =========================================================
             # إذا كان هناك شراء صامت في السبوت يقابله ارتفاع هائل في العقود 
             # مع تمويل سالب، والسعر شبه ثابت = صانع سوق يتحوط لصفقة OTC ضخمة!
-            current_cvd_check = float(locals().get('micro_cvd_trend', 0.0))
+            current_cvd_check = micro_cvd_trend
             is_otc_hedging = (
-                current_cvd_check > (approx_24h_vol_usd * 0.005) and # تجميع سبوت
+                current_cvd_check > (approx_24h_vol_usd * 0.005) and # تجميع سبوت # تجميع سبوت
                 oi_change_pct > 0.03 and                             # قفزة جنونية في العقود
                 funding_val < -0.0003 and                            # شورت للتحوط
                 abs(recent_pump) <= 0.01                             # كتم السعر
@@ -1904,12 +1903,12 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             tech_raw += quant_sigmoid_score(rs_score, sensitivity=0.5, limit=20.0) - 10.0
                 
             scores["tech"] = max(0.0, min(tech_raw, 100.0))
-                        # 🚀 استدعاء خوارزمية "الزنبرك المفرغ" (The Proprietary Alpha)# الاستدعاء الصحيح من دالة analyze_radar_coin
+                        # 🚀 استدعاء خوارزمية "الزنبرك المفرغ" (The Proprietary Alpha)# الاستدعاء الصحيح من دالة analyze_radar_coin            # الاستدعاء الصحيح من دالة analyze_radar_coin
             vca_bonus_score, vca_tag = detect_dark_pool_vca(
                 df, 
-                float(locals().get('current_cvd', 0.0)), 
-                float(locals().get('oi_change_pct', 0.0)),
-                float(locals().get('funding_val', 0.0)) # <-- إضافة التمويل هنا
+                micro_cvd_trend, 
+                oi_change_pct,
+                funding_val 
             )
     
             # ====================================================================
@@ -1989,16 +1988,11 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             elif "Micro_Silent_Accumulation" in tags: final_signal = "Silent Accumulation 🧲"
             elif "Smart_Accumulation" in tags: final_signal = "Smart Money Inflow 💸"
             # ==========================================
-            # 🧠 محرك العتبات الديناميكية (Dynamic Thresholding Engine)
-            # يمنع الـ Over-fitting عبر تكييف الأرقام مع حالة السوق
-            # ==========================================
-            # 1. استخراج نبض الماكرو الحالي
-            # ==========================================
             # 🌉 جسر توحيد المتغيرات (Variable Unification Bridge)
             # لحل مشكلة not defined وربط محركات الرادار ببعضها
             # ==========================================
-            current_cvd = float(locals().get('micro_cvd_trend', 0.0))
-            current_imbalance = float(locals().get('imbalance', 0.0))
+            current_cvd = micro_cvd_trend
+            current_imbalance = imbalance
             is_orderbook_hollow_flag = depth_data.get('is_hollow', False)
 
             volatility_state = market_regime['volatility'] if isinstance(market_regime, dict) else "Normal"
@@ -2149,7 +2143,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     'z_score': float(current_z),
                     'cvd_to_vol_ratio': float(cvd_ratio_pct), # 👈 الأهم: نسبة السيولة لحجم التداول بدلاً من دولار مطلق
                     'ofi_imbalance': float(current_imbalance),
-                    'ob_skewness': float(locals().get('depth_data', {}).get('bid_pressure_ratio', 1.0) if locals().get('depth_data') else 1.0),
+                    'ob_skewness': float(depth_data.get('bid_pressure_ratio', 1.0)),
                     'whale_inflow': float(whale_inflow),
                     'adx': float(current_adx),
                     'rsi': float(last_rsi),
@@ -4036,14 +4030,10 @@ async def run_analysis(cb: types.CallbackQuery):
                 else:
                     # التدفق اللحظي للفريمات الصغيرة (Limit_Absorption)
                     flow_task = get_institutional_orderflow(f"{clean_sym}USDT", client, minutes=240)
-                    
                 # 4. توافق الفريم لعقود المشتقات
-                # دالة get_futures_liquidity الحالية تقبل period=15m ثابتة، سنرسل الطلب يدوياً هنا للسرعة
+                # [إصلاح صانع السوق]: استدعاء الدالة الكاملة لضمان جلب الـ OI والـ Funding معاً
                 await binance_rate_limit_event.wait()
-                futures_task = client.get(
-                    f"https://fapi.binance.com/futures/data/openInterestHist?symbol={clean_sym}USDT&period={current_tf['oi_period']}&limit=2", 
-                    timeout=3.0
-                )
+                futures_task = get_futures_liquidity(clean_sym, client, safe_price, safe_old_price)
 
                 # تنفيذ المهام المتزامنة
                 tasks_to_run = [cvd_task, depth_task, futures_task]
@@ -4059,17 +4049,10 @@ async def run_analysis(cb: types.CallbackQuery):
                 is_orderbook_hollow = depth_data.get('is_hollow', False)
                 is_spoofed = depth_data.get('is_spoofed', False)
 
-                # استخراج Futures
-                oi_res = results[2]
-                if not isinstance(oi_res, Exception) and oi_res.status_code == 200:
-                    oi_data = oi_res.json()
-                    if len(oi_data) >= 2:
-                        old_oi = float(oi_data[0]["sumOpenInterest"])
-                        current_oi = float(oi_data[-1]["sumOpenInterest"])
-                        oi_change = (current_oi - old_oi) / old_oi
-                        price_change = (safe_price - safe_old_price) / safe_old_price
-                        if price_change > 0.01 and oi_change > 0.02: fut_sig = "OI_Rising"
-                        elif price_change > 0.01 and oi_change < -0.02: fut_sig = "Short_Covering"
+                # استخراج Futures الصحيح (بما في ذلك التمويل)
+                futures_data = results[2] if not isinstance(results[2], Exception) else (0.0, None, 0.0, 0.0)
+                _, fut_sig, funding_val, oi_change = futures_data
+
 
                 # استخراج Flow
                 if current_tf["macro_flow"]:
@@ -4125,9 +4108,11 @@ async def run_analysis(cb: types.CallbackQuery):
     time_progress_pct = elapsed_time / candle_duration
     
     # استدعاء قيمة الـ CVD الحالية بشكل آمن
-    current_cvd_check = float(locals().get('current_cvd', 0.0))
+        # استدعاء قيمة الـ CVD الحالية بشكل آمن
+    current_cvd_check = cvd_trend_val
 
     if time_progress_pct < 0.15: # أول 15% من عمر الشمعة (مرحلة فخاخ الحيتان)
+ # أول 15% من عمر الشمعة (مرحلة فخاخ الحيتان)
         # [تعديل صانع السوق]: لا نقبل الفوليوم العنيف في البداية إلا إذا كان مدعوماً بتدفق شرائي (Taker Buy) حقيقي
         if current_vol > (avg_vol_20 * 0.3) and current_cvd_check > 0:
             projected_vol = current_velocity * candle_duration
