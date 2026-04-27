@@ -1667,374 +1667,153 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             if spot_lead_score < -3.0:
                 tags.append("Spot_Dumping_Fakeout")
                 return None # تلاعب من صناع السوق
-            # [إصلاح صانع السوق]: تقليل وزن OB الكاذب، رفع وزن الأموال الحقيقية (Vol & CVD)
+         # ====================================================================
             REGIME_WEIGHTS = {
-                "Trending_Bull": {"vol": 0.35, "cvd": 0.30, "ob": 0.10, "deriv": 0.15, "tech": 0.10},
-                "Trending_Bear": {"vol": 0.20, "cvd": 0.35, "ob": 0.10, "deriv": 0.20, "tech": 0.15},
-                "Ranging":       {"vol": 0.25, "cvd": 0.35, "ob": 0.15, "deriv": 0.10, "tech": 0.15},
-                "Unknown":       {"vol": 0.25, "cvd": 0.25, "ob": 0.15, "deriv": 0.20, "tech": 0.15}
+                "Trending_Bull": {"vol": 0.30, "cvd": 0.30, "ob": 0.15, "deriv": 0.15, "tech": 0.10},
+                "Trending_Bear": {"vol": 0.20, "cvd": 0.30, "ob": 0.15, "deriv": 0.25, "tech": 0.10},
+                "Ranging":       {"vol": 0.25, "cvd": 0.30, "ob": 0.15, "deriv": 0.15, "tech": 0.15},
+                "Unknown":       {"vol": 0.25, "cvd": 0.25, "ob": 0.20, "deriv": 0.15, "tech": 0.15}
             }
-
+            
             current_regime = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
             weights = REGIME_WEIGHTS.get(current_regime, REGIME_WEIGHTS["Unknown"])
-
-            # 2. تهيئة محفظة النقاط (كل مؤشر سيتم تقييمه من 0 إلى 100)
             scores = {"vol": 0.0, "cvd": 0.0, "ob": 0.0, "deriv": 0.0, "tech": 0.0}
-            # ----------------------------------------------------------------
-            # أ. تقييم الفوليوم (Fat-Tailed Institutional Mapping)
-            # ----------------------------------------------------------------
-            recent_pump = (df["close"].iloc[-1] - df["close"].iloc[-10]) / df["close"].iloc[-10]
-            
-            # 1. التقييم المؤسساتي: استيعاب سيولة الحيتان المتطرفة باستخدام توزيع كوشي
-            vol_raw = quant_fat_tail_score(current_z, tail_weight=1.5, limit=100.0) 
-            
-            # 2. الخصم المستمر (Continuous Penalty) للفومو: خنق رياضي أسي وليس طرحاً عادياً
- 
-            
-            # 2. الخصم المستمر (Continuous Penalty) للفومو: خنق رياضي أسي وليس طرحاً عادياً
-            if current_z >= 2.5 and recent_pump > 0.02:
-                penalty_factor = math.exp(-15.0 * recent_pump) # كلما زاد البمب، انهار السكور بقسوة
-                vol_raw *= penalty_factor
-                if vol_raw < 30: tags.append("Late_FOMO")
-            elif 1.0 <= current_z <= 3.5 and recent_pump <= 0.02:
-                tags.append("Smart_Accumulation")
-            elif current_z > 3.5 and recent_pump <= 0.02:
-                tags.append("Z_Anom_Silent")
-                
-            global_alt_volume = await verify_global_liquidity(symbol, client)
-            if global_alt_volume > 100000: 
-                # تعزيز لوغاريتمي سلس للسيولة العالمية
-                vol_raw += math.log10(global_alt_volume / 10000.0) * 5.0
-
-            scores["vol"] = min(vol_raw, 100.0)
 
             # ----------------------------------------------------------------
-            # ب. تقييم السيولة اللحظية (Sigmoid CVD Mapping)
+            # 1. ركيزة الفوليوم (Volume & VCA Pillar)
             # ----------------------------------------------------------------
-            avg_vol_20 = df["volume"].tail(20).mean()
-            micro_cvd_boost, micro_cvd_signal, micro_cvd_trend = await get_micro_cvd_absorption(f"{symbol}USDT", client, "1h")
+            vol_base = quant_fat_tail_score(current_z, tail_weight=1.5, limit=70.0)
+            vca_bonus = min(30.0, locals().get('vca_bonus_score', 0.0))
+            vol_penalty_factor = math.exp(-2.0 / (lar_score + 1e-8)) if lar_score < 1.0 else 1.0
+            scores["vol"] = (vol_base + vca_bonus) * vol_penalty_factor
+
+            # ----------------------------------------------------------------
+            # 2. ركيزة تدفق السيولة (CVD & Spot Lead Pillar)
+            # ----------------------------------------------------------------
+            avg_vol_20_temp = df["volume"].tail(20).mean()
+            avg_vol_usd_temp = avg_vol_20_temp * price if avg_vol_20_temp > 0 else 1.0
             
-            if avg_vol_20 > 0:
-                cvd_ratio = micro_cvd_trend / avg_vol_20
-                # تحويل النسبة إلى سكور سلس بحساسية 5.0 (0 يعطي 50 نقطة، 0.3 يعطي ~81 نقطة)
-                cvd_raw = quant_sigmoid_score(cvd_ratio, sensitivity=5.0, limit=100.0)
-                
-                if cvd_ratio > 0.15 and abs(recent_pump) <= 0.015:
-                    tags.append("Micro_Silent_Accumulation")
-                elif cvd_ratio < -0.15 and recent_pump > 0.02:
-                    tags.append("Hidden_Distribution")
-                    
-                scores["cvd"] = cvd_raw
-            else:
-                scores["cvd"] = 50.0 # حيادي تماماً
+            real_cvd_usd_eval = float(micro_cvd_trend) * price # تقييم مبدئي لـ CVD كدولار
+            
+            cvd_ratio = real_cvd_usd_eval / avg_vol_usd_temp
+            cvd_base = quant_sigmoid_score(cvd_ratio, sensitivity=6.0, limit=80.0)
+            spot_lead_bonus = max(0.0, min(20.0, spot_lead_score * 2.0))
+            scores["cvd"] = cvd_base + spot_lead_bonus
 
             # ----------------------------------------------------------------
-            # ج. تقييم الأوردر بوك (Continuous Imbalance & Pressure)
+            # 3. ركيزة الأوردر بوك (Orderbook Dominance Pillar)
             # ----------------------------------------------------------------
-            global_ob_pressure = await get_aggregated_orderbook(client, symbol)
-            depth_data = await analyze_orderbook_spoofing_instant(symbol, client, price)
-
             imbalance = depth_data.get('imbalance', 0.0)
-            # تحويل الخلل (من -1 إلى 1) إلى سكور (0 إلى 100) بسلاسة
-            ob_raw = quant_sigmoid_score(imbalance, sensitivity=3.0, limit=100.0)
-
-            if depth_data.get('is_hollow', False):
-                ob_raw *= 0.4 
-                tags.append("Liquidity_Void_Trap")
-
-            if depth_data.get('is_spoofed', False):
-                ob_raw *= 0.2
-                tags.append("Spoofing_Distribution_Trap")
-            elif depth_data.get('bid_pressure_ratio', 0.0) > 2.0:
-                tags.append("OB_Buy")
-                
-            # تعزيز سلس للضغط العالمي
-            if global_ob_pressure > 1.0:
-                ob_raw += math.log(global_ob_pressure) * 10.0
-                
-            scores["ob"] = max(0.0, min(ob_raw, 100.0))
+            ob_base = quant_sigmoid_score(imbalance, sensitivity=4.0, limit=80.0)
+            global_ob_bonus = min(20.0, math.log1p(max(0, global_ob_pressure - 1.0)) * 10.0)
+            ob_penalty = 0.3 if (depth_data.get('is_hollow', False) or depth_data.get('is_spoofed', False)) else 1.0
+            scores["ob"] = (ob_base + global_ob_bonus) * ob_penalty
 
             # ----------------------------------------------------------------
-            # د. تقييم المشتقات (Derivatives Squeeze Mechanics)
+            # 4. ركيزة المشتقات (Derivatives & Phantom Liquidity Pillar)
             # ----------------------------------------------------------------
-            deriv_raw = 50.0
-            old_price_val = df["close"].iloc[-3] if len(df) > 3 else df["open"].iloc[0]
+            phantom_bonus = quant_sigmoid_score(whale_score, sensitivity=0.5, limit=40.0)
+            funding_sensitivity = -3000.0 if (futures_signal == "OI_Rising" and oi_change_pct > 0.02) else -1000.0
+            funding_score = quant_sigmoid_score(funding_val, sensitivity=funding_sensitivity, limit=60.0)
+            scores["deriv"] = min(100.0, phantom_bonus + funding_score)
+
+            # ----------------------------------------------------------------
+            # 5. ركيزة الهيكلة الفنية (Technical & RS Pillar)
+            # ----------------------------------------------------------------
+            tech_base = 50.0
+            squeeze_ratio = current_bb_width / (avg_bb_width + 1e-8) if avg_bb_width else 1.0
+            if squeeze_ratio < 0.8: tech_base += quant_sigmoid_score(1.0 - squeeze_ratio, sensitivity=5.0, limit=20.0)
+            tech_base += quant_sigmoid_score(rs_score, sensitivity=0.5, limit=15.0)
             
-            tick_delta, tick_buy, tick_sell, limit_abs_signal = await get_institutional_orderflow(f"{symbol}USDT", client)
-            _, futures_signal, funding_val, oi_change_pct = await get_futures_liquidity(symbol, client, price, old_price_val)
+            if is_liquidity_sweep and real_cvd_usd_eval > 0: tech_base += 15.0
+            scores["tech"] = min(100.0, tech_base)
 
-            approx_24h_vol_usd = df["volume"].tail(24).sum() * price 
-            
-            # 🟢 [التحديث المؤسساتي]: استدعاء محرك السيولة الشبحية بدلاً من الطريقة القديمة
-            whale_score, phantom_tags = await detect_phantom_liquidity_ws(symbol, client, price, approx_24h_vol_usd)
-            tags.extend(phantom_tags) # إضافة الإشارات الشبحية لقائمة التقييم
-            current_cvd_check = micro_cvd_trend
-            is_otc_hedging = (
-                current_cvd_check > (approx_24h_vol_usd * 0.005) and 
-                oi_change_pct > 0.03 and                                 
-                funding_val < -0.0003 and                            
-                abs(recent_pump) <= 0.01                             
-            )
-            
-            if is_otc_hedging:
-                tags.append("OTC_Hedging_Trap")
-                deriv_raw = 100.0 # علامة كاملة لسكور المشتقات لأن الانفجار حتمي
-                scores["cvd"] = min(scores["cvd"] + 30.0, 100.0)
-
-            # 1. حساب العتبة الديناميكية للتمويل (Dynamic Funding Threshold)
-            # عتبة الأساس هي -0.0008 (قاسية جداً)، لكنها ترتخي كلما زاد دخول الأموال للعقود
-            safe_oi_change = max(0.0, oi_change_pct)
-            
-            # المعادلة: إذا زاد الـ OI بنسبة 5% (0.05)، تصبح العتبة: -0.0008 + (0.05 * 0.012) = -0.0002!
-            # حماية: نستخدم min(-0.0001) لضمان أن الفاندنج يجب أن يكون سالباً على الأقل.
-            dynamic_nuclear_threshold = min(-0.0001, -0.0008 + (safe_oi_change * 0.012))
-            dynamic_imminent_threshold = min(0.0, -0.0004 + (safe_oi_change * 0.010))
-
-            # 2. حساسية التقييم السلس المتغيرة (Dynamic Sigmoid Sensitivity)
-            # إذا كان الـ OI يرتفع بانفجار (أكثر من 3%)، نضرب حساسية التقييم لتضخيم سكور العملة فوراً
-            funding_sensitivity = -3000.0
-            if futures_signal == "OI_Rising" and safe_oi_change > 0.03:
-                funding_sensitivity = -5000.0 # تضخيم مرعب لأن الوقود جاهز للانفجار
-
-            funding_score = quant_sigmoid_score(funding_val, sensitivity=funding_sensitivity, limit=40.0) - 20.0
-            deriv_raw += funding_score
-
-            # 3. صاعق التفجير (The Ignition Triggers)
-            is_spot_premium = spot_lead_score > 3.0
-            spot_buying_pressure = float(locals().get('micro_cvd_trend', 0.0)) > 0
-
-            # ☢️ التصفية النووية المتكيفة (Adaptive Nuclear Squeeze):
-            is_nuclear_squeeze = (
-                futures_signal == "OI_Rising" and 
-                funding_val <= dynamic_nuclear_threshold and 
-                spot_buying_pressure
-            )
-            
-            if limit_abs_signal == "Limit_Absorption":
-                tags.append("Limit_Absorption")
-                scores["cvd"] = min(scores["cvd"] + 30.0, 100.0)
-                
-            if is_nuclear_squeeze:
-                # إذا تحقق الانفجار، نعطيه السكور الكامل ونكسر الفلاتر
-                tags.append("Nuclear_Short_Squeeze")
-                deriv_raw = 100.0 
-                scores["cvd"] = min(scores["cvd"] + 30.0, 100.0)
-                # طباعة سرية للأدمن لمعرفة العتبة التي تم ضربها
-                print(f"☢️ [SQUEEZE] {symbol} Nuclear trigger! OI: +{safe_oi_change*100:.1f}%, Fund: {funding_val:.5f} (Req: {dynamic_nuclear_threshold:.5f})")
-                
-            elif is_spot_premium and futures_signal == "OI_Rising" and funding_val <= dynamic_imminent_threshold:
-                # السكويز وشيك (السبوت يشتري والعقود ترتفع مع فاندنج سالب ديناميكي)
-                tags.append("Short_Squeeze_Imminent")
-                deriv_raw += 35.0 
-            elif futures_signal == "OI_Rising": 
-                deriv_raw += 15.0
-                tags.append("OI_Rising")
             # ====================================================================
-
-                
-            # 2. إضافة بصمة الحيتان (خطي ناعم)
-            deriv_raw += quant_sigmoid_score(whale_score, sensitivity=0.5, limit=30.0) - 15.0
-            deriv_raw += (spot_lead_score * 2.5) 
-
-            scores["deriv"] = max(0.0, min(deriv_raw, 100.0))
-            # ----------------------------------------------------------------
-            # هـ. تقييم الهيكلة الفنية (Statistically Derived Scoring)
-            # ----------------------------------------------------------------
-            tech_raw = 50.0
-            
-            # 1. ديناميكية النوافذ (Dynamic Windows)
-            dyn_window = get_dynamic_window(df, base_window=20)
-            
-            # 2. انضغاط البولينجر المطور (Statistically Scaled Squeeze)
-            sma = df["close"].rolling(dyn_window).mean()
-            std = df["close"].rolling(dyn_window).std(ddof=0)
-            bb_width = (4 * std) / sma
-            
-            avg_bb_width = bb_width.rolling(dyn_window * 5).mean().iloc[-1]
-            current_bb_width = bb_width.iloc[-1]
-
-            if not pd.isna(current_bb_width) and not pd.isna(avg_bb_width) and avg_bb_width > 0:
-                squeeze_ratio = current_bb_width / avg_bb_width
-                # تحويل هندسي: كلما قل الـ ratio اقترب السكور من 30 نقطة إضافية بنعومة
-                if squeeze_ratio < 1.0:
-                    tech_boost = quant_sigmoid_score(1.0 - squeeze_ratio, sensitivity=5.0, limit=30.0)
-                    tech_raw += tech_boost
-                    if squeeze_ratio < 0.5: tags.append("Squeeze")
-
-            # 3. دايفرجنس الـ RSI الموزون إحصائياً (Volatility Adjusted Divergence)
-            ema200_val = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else df["close"].ewm(span=50).mean().iloc[-1]
-            
-            if price < ema200_val and last_rsi > 30:
-                # قياس عمق القاع السابق في الـ RSI لتحديد قوة الارتداد
-                min_rsi_recent = df["rsi"].iloc[-15:-1].min()
-                if min_rsi_recent < 30:
-                    # معادلة: كلما كان القاع أعمق والارتداد أقوى، زادت النقاط (بحد أقصى 20)
-                    divergence_strength = (last_rsi - min_rsi_recent) / 10.0
-                    tech_raw += quant_sigmoid_score(divergence_strength, sensitivity=2.0, limit=20.0)
-                    tags.append("RSI_Div")
-
-                
-            recent_low_20 = df["low"].iloc[-21:-1].min()
-            current_low = df["low"].iloc[-1]
-            current_close = df["close"].iloc[-1]
-            
-            is_liquidity_sweep = (current_low < recent_low_20) and (current_close > recent_low_20)
-            current_cvd_check = micro_cvd_trend  
-
-            if is_liquidity_sweep and current_cvd_check > 0 and limit_abs_signal == "Limit_Absorption":
-
-                tech_raw += 35.0 
-                tags.append("Liquidity_Sweep_Absorption") 
-
-            candle_score = detect_candle_strength(df)
-            fake_out_penalty = detect_fake_breakout(df)
-            
-            if candle_score > 0: tech_raw += 10.0; tags.append("Bullish_Hammer_Absorption")
-            if fake_out_penalty < 0: 
-                tech_raw *= 0.3 
-                tags.append("Fake_Breakout_Trap")
-
-            rs_score = await detect_btc_relative_strength(symbol, client)
-            # تمرير القوة النسبية بدالة سيجمويد
-            tech_raw += quant_sigmoid_score(rs_score, sensitivity=0.5, limit=20.0) - 10.0
-                
-            scores["tech"] = max(0.0, min(tech_raw, 100.0))
-                        # 🚀 استدعاء خوارزمية "الزنبرك المفرغ" (The Proprietary Alpha)# الاستدعاء الصحيح من دالة analyze_radar_coin            # الاستدعاء الصحيح من دالة analyze_radar_coin            # الاستدعاء الصحيح من دالة analyze_radar_coin
-            vca_bonus_score, vca_tag = detect_dark_pool_vca(
-                df, 
-                micro_cvd_trend, 
-                oi_change_pct,
-                funding_val 
-            )
-
-
-    
+            # ⚖️ الدمج النهائي والتحدب (Convexity & Confluence)
             # ====================================================================
-
-
-               # ====================================================================
-            # ⚖️ الدمج النهائي وخصم السيولة (Institutional Haircut & Convexity)
-            # ====================================================================
-            final_weighted_score = (
+            base_weighted_score = (
                 (scores["vol"]   * weights["vol"]) +
                 (scores["cvd"]   * weights["cvd"]) +
                 (scores["ob"]    * weights["ob"]) +
                 (scores["deriv"] * weights["deriv"]) +
                 (scores["tech"]  * weights["tech"])
             )
-            
-            # [تعديل صانع السوق]: إضافة السكور الديناميكي للـ VCA بسلاسة
-            if vca_tag:
-                tags.append(vca_tag)
-                final_weighted_score += vca_bonus_score
 
-            # [إصلاح صانع السوق]: التحدب يتطلب إجماعاً (Confluence) وليس شذوذاً منفرداً
-            scores_above_80 = sum(1 for s in scores.values() if s > 80.0)
-            max_category_score = max(scores["vol"], scores["cvd"], scores["ob"], scores["deriv"])
+            scores_above_80 = sum(1 for s in scores.values() if s >= 80.0)
             
-            if max_category_score > 88.0 and scores_above_80 >= 2:
-                override_power = max_category_score - 88.0 
-                alpha_boost = override_power * 1.5
-                final_weighted_score += alpha_boost
-                tags.append("Alpha_Override_Triggered")
-
-            # 🛡️ خنق المخاطرة (Liquidity Penalty Haircut)
-            # إذا كان LAR أقل من 1 (سيولة سيئة أو تذبذب مجنون)، يتم قص السكور بنعومة
-            if lar_score < 1.0:
-                liquidity_penalty = 0.5 + (0.5 * quant_sigmoid_score(lar_score, sensitivity=3.0, limit=1.0))
-                final_weighted_score *= liquidity_penalty
-
-            import datetime
-            current_hour_utc = datetime.datetime.utcnow().hour
-            
-            if 12 <= current_hour_utc <= 17:
-                session_multiplier = 1.05 
-            elif 1 <= current_hour_utc <= 6:
-                session_multiplier = 0.90 
+            if scores_above_80 >= 3:
+                final_weighted_score = min(99.1, base_weighted_score + (scores_above_80 * 2.5))
+            elif scores_above_80 == 0 and base_weighted_score > 85.0:
+                final_weighted_score = base_weighted_score * 0.95
             else:
-                session_multiplier = 1.0 
-                
-            final_weighted_score *= session_multiplier
+                final_weighted_score = base_weighted_score
 
-            # السكور النهائي الموثوق
-            score = round(max(0.0, min(final_weighted_score, 98.5)), 1)
+            score = round(max(0.0, min(final_weighted_score, 99.5)), 1)
 
-
-
-            # --- جدار الفيتو الإجباري والفلترة (تم نقله هنا ليعمل كحارس أخير) ---
+            # ====================================================================
+            # 🏷️ تحديد اسم الإشارة (5 إشارات احترافية وواقعية فقط)
+            # ====================================================================
             final_signal = "High Probability Setup 🎯"
+            dominant_pillar = max(scores, key=scores.get)
             
-                        # --- جدار الفيتو الإجباري والفلترة ---
-            final_signal = "High Probability Setup 🎯"
-            
-            if "Fake_Pump" in tags or "Fake_Breakout_Trap" in tags or "Flash_Spoofing_Manipulation" in tags or "Short_Covering" in tags or "Late_FOMO" in tags or "Hidden_Distribution" in tags:
-                return None 
-            # 👇 إضافة الإشارات المؤسساتية الجديدة للواجهة 👇
-            if "DARK_POOL_COIL" in tags: final_signal = "DARK POOL COILED SPRING 🌌" # الزنبرك المضغوط للدارك بول
-            elif "DEEP_ABSORPTION" in tags: final_signal = "DEEP MM ABSORPTION 🧽" # امتصاص عميق لصانع السوق
-            elif "OTC_Hedging_Trap" in tags: final_signal = "OTC HEDGING / SYNTHETIC DELTA 🏦"
-            elif "TWAP_Algo_Accumulation" in tags: final_signal = "TWAP ALGO ACCUMULATION 🤖"
-            elif "Iceberg_Bid_Absorption" in tags: final_signal = "ICEBERG ABSORPTION (DARK POOL) 🧊"
-            elif "Nuclear_Short_Squeeze" in tags: final_signal = "NUCLEAR SHORT SQUEEZE ☢️"
-            elif "Liquidity_Sweep_Absorption" in tags: final_signal = "Stop-Loss Hunt / Reversal 🩸"
-            elif score >= 95.0: final_signal = "Deep Liquidity Absorption 🏦"
-            elif score >= 90.0: final_signal = "Institutional Orderflow 🐋"
-            elif "Micro_Silent_Accumulation" in tags and "OB_Buy" in tags: final_signal = "Active Accumulation 🦈"
-            elif "Short_Squeeze" in tags: final_signal = "(Short Squeeze) 🔥"
-            elif "Z_Anom_Silent" in tags and "OI_Rising" in tags: final_signal = "(Derivatives Pump) 🚀"
-            elif "Squeeze" in tags and "OB_Buy" in tags: final_signal = "(Liquidity Breakout) ⚡"
-            elif "Micro_Silent_Accumulation" in tags: final_signal = "Silent Accumulation 🧲"
-            elif "Smart_Accumulation" in tags: final_signal = "Smart Money Inflow 💸"
+            if score >= 80.0:
+                if dominant_pillar == "vol" and scores["vol"] >= 85.0:
+                    final_signal = "Deep MM Absorption 🏦"
+                elif dominant_pillar == "cvd" and scores["cvd"] >= 85.0:
+                    final_signal = "Stealth Accumulation 🦈"
+                elif dominant_pillar == "deriv" and scores["deriv"] >= 85.0:
+                    final_signal = "Derivatives Trapping 🔥"
+                elif dominant_pillar == "ob" and scores["ob"] >= 85.0:
+                    final_signal = "Orderflow Dominance 💸"
+                elif dominant_pillar == "tech" and scores["tech"] >= 85.0:
+                    final_signal = "Pre-Breakout Squeeze ⚡"
+            else:
+                final_signal = "Active Accumulation ⏳"
+
             # ==========================================
             # 🌉 جسر توحيد المتغيرات (Variable Unification Bridge)
             # ==========================================
-            current_cvd = micro_cvd_trend
+            current_cvd = micro_cvd_trend * price  # 👈 الإصلاح الموضعي: CVD أصبح دولاراً حقيقياً هنا وباقي الكود سيقرأه بشكل صحيح
             current_imbalance = depth_data.get('imbalance', 0.0)
-  # 👈 الجلب الصحيح للبيانات
+            # 👈 الجلب الصحيح للبيانات
             is_orderbook_hollow_flag = depth_data.get('is_hollow', False)
 
             volatility_state = market_regime['volatility'] if isinstance(market_regime, dict) else "Normal"
             macro_adx = market_regime['adx'] if isinstance(market_regime, dict) else 20.0
             
             # 2. ديناميكية الفومو (VWAP Z-Score)
-            # في التذبذب العالي، السعر يبتعد كثيراً بشكل طبيعي. في الركود، الانحراف البسيط يعتبر خطراً.
             dyn_vwap_z = 2.5
             if volatility_state == "High_Vol": dyn_vwap_z = 3.2 
             elif volatility_state == "Low_Vol": dyn_vwap_z = 2.2 
 
             # 3. ديناميكية التوسع السعري (Price Expansion)
-            # بدلاً من 0.003 ثابتة، نأخذ 35% من متوسط حركة الشموع الـ 14 الأخيرة للعملة نفسها
             recent_candle_spread = (abs(df['high'] - df['low']) / df['low']).tail(14).mean()
             dyn_expansion_threshold = max(0.0015, recent_candle_spread * 0.35) 
+            
             # 4. ديناميكية اختلال الأوردر بوك (Imbalance & Pressure)
             dyn_imbalance_req = 0.1
-            dyn_ob_req = 1.15 # تم رفع الأساس
+            dyn_ob_req = 1.15 
             if macro_adx < 25: 
                 dyn_imbalance_req = 0.25 
-                dyn_ob_req = 1.30 # صرامة مطلقة في العرضي
+                dyn_ob_req = 1.30 
             elif macro_adx > 40:
-                # [تعديل صانع السوق]: لا تتساهل في الترند القوي لتتجنب الدخول في قمم فارغة السيولة
-                dyn_imbalance_req = 0.08 # تم تشديدها
-                dyn_ob_req = 1.10 # يجب أن يكون الجدار حقيقياً حتى في الترند القوي
+                dyn_imbalance_req = 0.08 
+                dyn_ob_req = 1.10 
 
             # ==========================================
             # 🛡️ الفيتو الإجباري المتكيف (Adaptive Institutional Veto)
             # ==========================================
             
-            # 1. كشف الفومو وجني الأرباح (Late FOMO / Mean Reversion)
             if current_vwap_z > dyn_vwap_z:
                 tags.append("Late_FOMO_Pump_VWAP")
                 print(f"🗑️ {symbol} - مرفوض: السعر انحرف عن VWAP بـ {current_vwap_z:.2f} (عتبة السوق الحالية {dyn_vwap_z:.2f})")
                 return None 
                 
-            # 2. كشف الفراغ السيولي والهشاشة (Liquidity Void)
-                        # 2. كشف الفراغ السيولي والهشاشة (Liquidity Void)
             if is_orderbook_hollow_flag and current_cvd < 0:
                 tags.append("Liquidity_Void_Trap")
                 print(f"🗑️ {symbol} - مرفوض: جدران شراء وهمية والعمق الداعم فارغ تماماً!")
                 return None 
 
-            # 3. فخ الجدران الوهمية (Spoofing Trap) المتكيف:
             if global_ob_pressure > dyn_ob_req and current_cvd < 0:
                 tags.append("Spoofing_Distribution_Trap")
                 return None 
@@ -2043,24 +1822,18 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             avg_vol_usd = avg_vol_20 * price if avg_vol_20 > 0 else 1.0
             is_strong_cvd = current_cvd > (avg_vol_usd * 0.15)
             if is_strong_cvd:
-                # [إصلاح صانع السوق]: السماح بالتجميع المخفي (Spot Stealth)                # نرفض العملة فقط إذا كان هناك شراء سبوت ضخم يقابله انهيار في العقود (تغطية شورت وليس تجميع)
                 if oi_change_pct < -0.015:  
                     tags.append("Short_Cover_Illusion")
                     return None 
 
-                # [إصلاح صانع السوق]: حماية السبرينغ المضغوط
                 price_expansion = (current_high - current_low) / (current_low + 1e-8)
-                # لا نطبق الفيتو إذا كانت العملة في حالة امتصاص شرائي مؤكدة أو VCA
                 if price_expansion < dyn_expansion_threshold and limit_abs_signal != "Limit_Absorption" and "MM_Deep_Absorption_Phase" not in tags: 
                     tags.append("Limit_Absorption_Sell_Trap")
                     return None 
 
-                    
-            # 2. انعدام الشراء الحقيقي (معايير متكيفة):
             if current_cvd <= 0 and current_imbalance <= dyn_imbalance_req and global_ob_pressure < dyn_ob_req:
                 return None 
 
-            # 3. فخ السكاكين الساقطة (Falling Knife Trap):
             ema200_veto = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else df["close"].ewm(span=50).mean().iloc[-1]
             if price < ema200_veto and current_adx < 20.0 and current_z > 2.0:
                 tags.append("Dead_Trend_Pump_Trap")
@@ -2073,22 +1846,13 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
             current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
 
-                        # ==========================================
-            # 🛡️ استرجاع شروط القناص النهائي والمتغيرات المفقودة
-            # ==========================================
-            avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
-            avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
-            current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
-
-            # [تعديل صانع السوق]: بناء محاور الإجماع الفني بشكل غير متضارب
-            # تم تقسيم الإجماع إلى 6 فئات رئيسية. تحقق أي شرط داخل الفئة يعطي نقطة.
             confluence_axes = [
-                any(t in tags for t in ["Smart_Accumulation", "Z_Anom_Silent", "DARK_POOL_COIL"]), # 1. شذوذ الفوليوم المؤسساتي
-                any(t in tags for t in ["Micro_Silent_Accumulation", "High_Liquidity_Absorption", "DEEP_ABSORPTION"]), # 2. امتصاص السيولة والتدفق
-                any(t in tags for t in ["OB_Buy"]), # 3. هيمنة الأوردر بوك الهجومية
-                any(t in tags for t in ["Squeeze"]), # 4. انضغاط التذبذب (استعداد للانفجار)
-                any(t in tags for t in ["Liquidity_Sweep_Absorption", "Bullish_Hammer_Absorption"]), # 5. البنية السعرية واصطياد الوقف
-                any(t in tags for t in ["RSI_Div"]) # 6. انحراف الزخم الإيجابي (دايفرجنس)
+                any(t in tags for t in ["Smart_Accumulation", "Z_Anom_Silent", "DARK_POOL_COIL"]),
+                any(t in tags for t in ["Micro_Silent_Accumulation", "High_Liquidity_Absorption", "DEEP_ABSORPTION"]),
+                any(t in tags for t in ["OB_Buy"]),
+                any(t in tags for t in ["Squeeze"]),
+                any(t in tags for t in ["Liquidity_Sweep_Absorption", "Bullish_Hammer_Absorption"]),
+                any(t in tags for t in ["RSI_Div"])
             ]
             
             confluence_count = sum(1 for axis in confluence_axes if axis)
@@ -2097,39 +1861,24 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             is_macro_downtrend = price < ema200_val
             current_regime_trend = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
 
-                        # 🛡️ رفع معايير القبول لمستوى صناديق التحوط (لن يمر سوى 3 إلى 5 عملات يومياً كحد أقصى)
             required_score = 75.0 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 70.0
             required_confluence = 2 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 2
 
-            # إرجاع النتيجة فقط إذا تحقق السكور + الإجماع الفني + اجتياز الفيتو
             if score >= required_score and confluence_count >= required_confluence:    
-                # 🛑 إضافة الحارس الأخير المتقدم للرادار هنا:
-                # نقوم بفحص الـ WebSocket اللحظي (لمدة ثانيتين) للتأكد من صلابة الجدران
-                # نمرر الفوليوم المعتاد للعملة لمحرك هشاشة السيولة
                 avg_vol_usd_for_depth = avg_vol_20 * price if avg_vol_20 > 0 else 15000.0
                 ws_depth_check = await analyze_orderbook_advanced_manual(symbol, client, price, avg_vol_usd_for_depth)
 
                 if ws_depth_check.get('is_spoofed', False) or ws_depth_check.get('is_hollow', False):
                     print(f"🗑️ {symbol} - تم الإلغاء في اللحظة الأخيرة! الرادار اكتشف جدران وهمية عبر الـ WebSocket.")
-                    return None # نلغي الإشارة حتى لو كان سكورها 99
+                    return None 
                 
-                # 1. جلب بيانات السلسلة (On-Chain)
                 whale_inflow = await get_whale_inflow_score()
-                
                 micro_volatility = df['close'].tail(20).pct_change().std() * 100
-                
-                # 🟢 الإصلاح: حساب انحراف مسار السيولة (CVD Divergence) باستخدام القيمة الحقيقية
-                                # حساب انحراف مسار السيولة (CVD Divergence) - هل السعر يصعد بينما CVD يهبط؟
                 cvd_divergence = 1.0 if (price > ema200_val and current_cvd < 0) else -1.0 if (price < ema200_val and current_cvd > 0) else 0.0
 
-                # جلب معدل التمويل الحالي (Funding Rate) من مصفوفة الـ Futures التي حسبناها مسبقاً
-                # إذا كان التمويل سالباً بقوة، الحيتان تضغط السعر صعوداً لتصفية البائعين
-
-                                # --- تحويل البيانات المطلقة إلى نسب مئوية لتناسب الـ AI ---
                 avg_vol_usd = avg_vol_20 * price if avg_vol_20 > 0 else 1.0
-                cvd_ratio_pct = (current_cvd / avg_vol_usd) * 100 if avg_vol_usd > 0 else 0.0
+                cvd_ratio_pct = (current_cvd / avg_vol_usd) * 100 if avg_vol_usd > 0 else 0.0 # 👈 أصبحت دولار / دولار صحيحة للذكاء الاصطناعي
                 
-                # ترميز حالة السوق للـ AI (0: مجهول، 1: صاعد، 2: هابط، 3: عرضي)
                 regime_map = {"Trending_Bull": 1, "Trending_Bear": 2, "Ranging": 3}
                 regime_code = regime_map.get(current_regime_trend, 0)
 
@@ -2138,7 +1887,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     'sp500_trend': float(MACRO_CACHE.get("sp500_trend", 0.0)),
                     'sentiment_score': float(MACRO_CACHE.get("sentiment_score", 50.0)),
                     'z_score': float(current_z),
-                    'cvd_to_vol_ratio': float(cvd_ratio_pct), # 👈 الأهم: نسبة السيولة لحجم التداول بدلاً من دولار مطلق
+                    'cvd_to_vol_ratio': float(cvd_ratio_pct), 
                     'ofi_imbalance': float(current_imbalance),
                     'ob_skewness': float(depth_data.get('bid_pressure_ratio', 1.0)),
                     'whale_inflow': float(whale_inflow),
@@ -2148,24 +1897,20 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     'cvd_divergence': float(cvd_divergence), 
                     'funding_rate': float(funding_val)
                 }
-                # 3. استشارة الذكاء الاصطناعي (Quant AI Consultation)# 3. استشارة الذكاء الاصطناعي (Quant AI Consultation)
-                ai_confidence = -1.0 # await asyncio.to_thread(predict_signal_sync, ml_features) 
+
+                ai_confidence = -1.0 
                     
                 if ai_confidence != -1.0:
-    # 🛡️ الفلتر المؤسساتي: إذا كان الذكاء الاصطناعي يتوقع جودة أقل من 70%، نرفض الإشارة
-
-                    # 🛡️ الفلتر المؤسساتي: إذا كان الذكاء الاصطناعي يتوقع جودة أقل من 70%، نرفض الإشارة
                     if ai_confidence < 70.0: 
                         print(f"🗑️ {symbol} - Rejected by AI (Confidence: {ai_confidence:.1f}%)")
                         return None
                     
-                    final_score = (score * 0.4) + (ai_confidence * 0.6) # دمج الخبرة البرمجية مع ذكاء الآلة
+                    final_score = (score * 0.4) + (ai_confidence * 0.6) 
                     ai_status = f"Active 🧠 (Conf: {ai_confidence:.1f}%)"
                 else:
                     final_score = score 
                     ai_status = "Training & Learning ⏳"
 
-                                # (في نهاية دالة analyze_radar_coin)
                 return {
                     "symbol": symbol, "price": price, "score": final_score,
                     "rsi": round(last_rsi, 2), "adx": round(current_adx, 2),
@@ -2176,9 +1921,10 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     "confluence": confluence_count,
                     "ml_features": ml_features, 
                     "ai_status": ai_status,
-                    "cvd_usd": float(current_cvd) # 👈 أضفنا هذا السطر هنا لتمرير القيمة الدولارية للرسالة
+                    "cvd_usd": float(current_cvd) # 👈 القيمة الدولارية الحقيقية جاهزة للطباعة بالرسالة
                 }
             return None  
+  
         except Exception as e:
             print(f"Error in analyze_radar_coin: {e}")
             return None  
