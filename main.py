@@ -1854,14 +1854,30 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 tags.append("Dead_Trend_Pump_Trap")
                 return None  
 
+                        # 1. تفعيل التاجات المخفية بناءً على الحسابات الموجودة مسبقاً
+            if depth_data.get('imbalance', 0.0) > 0.15 or global_ob_pressure > 1.2:
+                tags.append("OB_Buy_Pressure")
+            
+            squeeze_ratio_check = current_bb_width / (avg_bb_width + 1e-8) if not pd.isna(avg_bb_width) and avg_bb_width > 0 else 1.0
+            if squeeze_ratio_check < 0.8:
+                tags.append("Volatility_Squeeze")
+                
+            if is_liquidity_sweep:
+                tags.append("Liquidity_Sweep_Absorption")
+                
+            if rs_score > 5.0:
+                tags.append("Relative_Strength_Alpha")
+
+            # 2. مصفوفة الإجماع المؤسساتية المحدثة
             confluence_axes = [
-                any(t in tags for t in ["Smart_Accumulation", "Z_Anom_Silent", "DARK_POOL_COIL", "Incubated_Macro_Coil"]),
-                any(t in tags for t in ["Micro_Silent_Accumulation", "High_Liquidity_Absorption", "DEEP_ABSORPTION"]),
-                any(t in tags for t in ["OB_Buy"]),
-                any(t in tags for t in ["Squeeze"]),
-                any(t in tags for t in ["Liquidity_Sweep_Absorption", "Bullish_Hammer_Absorption"]),
-                any(t in tags for t in ["RSI_Div"])
+                any(t in tags for t in ["DARK_POOL_COIL", "Incubated_Macro_Coil", "Whale_CVD"]), # المحرك الكلي والدارك بول
+                any(t in tags for t in ["High_Liquidity_Absorption", "DEEP_ABSORPTION"]),        # محرك امتصاص السيولة
+                any(t in tags for t in ["OB_Buy_Pressure", "Limit_Absorption"]),                 # محرك الأوردر بوك والطلبات المخفية
+                any(t in tags for t in ["Volatility_Squeeze"]),                                  # محرك الانضغاط السعري
+                any(t in tags for t in ["Liquidity_Sweep_Absorption"]),                          # محرك اختطاف السيولة (صيد القيعان)
+                any(t in tags for t in ["Relative_Strength_Alpha", "OI_Rising"])                 # محرك القوة النسبية والمشتقات
             ]
+
             
             confluence_count = sum(1 for axis in confluence_axes if axis)
 
