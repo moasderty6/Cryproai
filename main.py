@@ -1538,71 +1538,66 @@ def get_dynamic_window(df, base_window=20, min_window=5, max_window=100):
     # حساب النافذة الديناميكية مع حماية الحدود
     dynamic_window = int(base_window * volatility_ratio)
     return max(min_window, min(dynamic_window, max_window))
-def detect_dark_pool_vca(df, current_cvd_usd, oi_change_pct):
+def detect_dark_pool_vca(df, current_cvd_usd, oi_change_pct, funding_rate=0.0):
     """
     [THE APEX ALPHA] Dark Pool Vacuum Coil Algorithm (DP-VCA)
-    خوارزمية حصرية لاصطياد "كثافة الامتصاص" قبل الانفجارات السعرية (God Candles).
-    تدمج بين خنق التذبذب، كثافة الفوليوم للنقطة الواحدة، والتهرب من سوق المشتقات.
+    بنسخة السكور الديناميكي المتغير (Dynamic Scoring)
     """
-    if len(df) < 336: # نحتاج أسبوعين من البيانات على الأقل للمقارنة الإحصائية (فريم 1H)
+    if len(df) < 336: 
         return 0.0, None
 
-    # 1. عدسة الضغط الحالية (آخر 7 أيام) مقابل الخلفية التاريخية (آخر شهر)
     recent_window = df.tail(168)
-    historic_window = df.iloc[-672:-168] # الـ 3 أسابيع التي سبقت الأسبوع الأخير
+    historic_window = df.iloc[-672:-168] 
     
     avg_price = recent_window['close'].mean()
     
-    # 2. حساب "خنق التذبذب" (Volatility Chokehold)
-    # نحسب النطاق السعري الحقيقي كنسبة مئوية
     recent_range_pct = (recent_window['high'].max() - recent_window['low'].min()) / avg_price
     historic_range_pct = (historic_window['high'].max() - historic_window['low'].min()) / historic_window['close'].mean()
     
-    # حماية رياضية من القسمة على صفر أو النطاقات الميتة تماماً
     recent_range_pct = max(recent_range_pct, 0.005) 
     historic_range_pct = max(historic_range_pct, 0.01)
 
-    # 3. محرك "كثافة الامتصاص" (Absorption Density Engine) - [السر الحقيقي]
-    # كم دولاراً تم تداوله لكل 1% من حركة السعر؟
     recent_vol = recent_window['volume'].sum()
-    historic_vol_avg = historic_window['volume'].sum() / 3.0 # متوسط الفوليوم الأسبوعي
+    historic_vol_avg = historic_window['volume'].sum() / 3.0 
     
     recent_density = recent_vol / recent_range_pct
     historic_density = historic_vol_avg / historic_range_pct
     
-    # الشروط المعقدة لانفجار الزنبرك:
-    # أ. التذبذب تم خنقه (النطاق السعري الحالي أقل من نصف النطاق التاريخي)
-    is_volatility_choked = recent_range_pct < (historic_range_pct * 0.5)
-    
-    # ب. كثافة الفوليوم تضاعفت بـ 3 مرات على الأقل (السعر محبوس، لكن الأموال تتدفق بعنف)
-    is_heavy_absorption = recent_density > (historic_density * 3.0)
+    is_volatility_choked = recent_range_pct < (historic_range_pct * 0.6)
+    is_heavy_absorption = recent_density > (historic_density * 1.8)
     
     if not (is_volatility_choked and is_heavy_absorption):
         return 0.0, None
 
-    # 4. شرارة التخفي المؤسساتي (Stealth Ignition & Synthetic Delta)
-    # صانع السوق المحترف يجمع في السبوت (Spot) ولا يرفع العقود المفتوحة (OI) لكي لا يكشف نفسه
-    is_spot_driven = current_cvd_usd > (recent_window['volume'].mean() * avg_price * 0.3)
-    is_stealth_derivatives = oi_change_pct < 0.015 # العقود المفتوحة هادئة وميتة
+    is_spot_driven = current_cvd_usd > (recent_window['volume'].mean() * avg_price * 0.25)
+    is_stealth_derivatives = (oi_change_pct < 0.02) or (oi_change_pct >= 0.02 and funding_rate <= 0.0001)
     
     # ==========================================
-    # 🧠 التقييم السري (The Apex Score)
+    # 🧠 المحرك الديناميكي للسكور (Dynamic Scoring Engine)
     # ==========================================
+    # حساب المضاعفات (كم ضعف زادت الكثافة؟ وكم مرة تم خنق السعر؟)
+    density_multiplier = recent_density / (historic_density + 1e-8)
+    choke_ratio = historic_range_pct / (recent_range_pct + 1e-8)
+    
+    # السكور الأساسي يتفاعل مع قوة الانضغاط الفعلي
+    dynamic_base_score = (density_multiplier * 6.0) + (choke_ratio * 4.0)
+
     vca_score = 0.0
     signal_tag = None
 
     if is_spot_driven and is_stealth_derivatives:
-        # هذه بصمة حتمية لانفجار قادم (God Candle Prep)
-        vca_score = 55.0
-        signal_tag = "Dark_Pool_God_Candle_Prep"
+        # صاعق الانفجار: تجميع سبوت مخفي مع تحوط في العقود
+        # السكور الديناميكي يضرب بـ 1.5 بحد أقصى 45 نقطة إضافية للسكور النهائي
+        vca_score = min(45.0, dynamic_base_score * 1.5)
+        signal_tag = "DARK_POOL_COIL"
         
     elif is_heavy_absorption:
-        # السعر لا يزال في مرحلة الامتصاص العميق (مرحلة التجميع)
-        vca_score = 30.0
-        signal_tag = "MM_Deep_Absorption_Phase"
+        # امتصاص عادي: تجميع واضح لكن بدون تخفي كامل في العقود
+        # السكور الديناميكي بحد أقصى 25 نقطة إضافية
+        vca_score = min(25.0, dynamic_base_score)
+        signal_tag = "DEEP_ABSORPTION"
 
     return round(vca_score, 1), signal_tag
-
 
 async def analyze_radar_coin(c, client, market_regime, sem):
     async with sem:  
@@ -1625,14 +1620,17 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             # ====================================================================
             # أضف هذا السطر أينما كنت تحسب Z-Score للفوليوم
             current_vwap_z, current_vwap_price = calculate_vwap_zscore(df, window=24)
-
-            # 1. حساب نسبة التذبذب للشمعة الحالية (Price Spread Percentage)
+            # 1. حساب نسبة التذبذب للشمعة الحالية ومتوسط آخر 5 شموع
             current_high = df["high"].iloc[-1]
             current_low = df["low"].iloc[-1]
             candle_spread_pct = ((current_high - current_low) / current_low) * 100
             
-            # 2. حساب مؤشر LAR (مع حماية من القسمة على صفر)            # 2. حساب مؤشر LAR (عملية رياضية سريعة جداً محلياً)
-            lar_score = current_z / (candle_spread_pct + 0.001)
+            # [تعديل صانع السوق]: حماية رياضية من الشموع حديثة الولادة لمنع تضخم الـ LAR الوهمي
+            avg_spread = (abs(df["high"] - df["low"]) / df["low"]).tail(5).mean() * 100
+            safe_spread = max(candle_spread_pct, avg_spread, 0.15) # العتبة الأدنى 0.15%
+            
+            lar_score = current_z / safe_spread
+
             # ==========================================================
             # 🛑 المرحلة الأولى: جدار الإعدام الرياضي (Fail-Fast Veto)
             # ==========================================================
@@ -1669,15 +1667,12 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             if spot_lead_score < -3.0:
                 tags.append("Spot_Dumping_Fakeout")
                 return None # تلاعب من صناع السوق
-
-
-            # 1. مصفوفة الأوزان الديناميكية بناءً على بيئة السوق (Market Regime)
-            # المجموع دائماً 1.0 (أي 100%)
+            # [إصلاح صانع السوق]: تقليل وزن OB الكاذب، رفع وزن الأموال الحقيقية (Vol & CVD)
             REGIME_WEIGHTS = {
-                "Trending_Bull": {"vol": 0.30, "cvd": 0.25, "ob": 0.20, "deriv": 0.15, "tech": 0.10},
-                "Trending_Bear": {"vol": 0.10, "cvd": 0.35, "ob": 0.30, "deriv": 0.15, "tech": 0.10},
-                "Ranging":       {"vol": 0.15, "cvd": 0.35, "ob": 0.35, "deriv": 0.05, "tech": 0.10},
-                "Unknown":       {"vol": 0.20, "cvd": 0.20, "ob": 0.20, "deriv": 0.20, "tech": 0.20}
+                "Trending_Bull": {"vol": 0.35, "cvd": 0.30, "ob": 0.10, "deriv": 0.15, "tech": 0.10},
+                "Trending_Bear": {"vol": 0.20, "cvd": 0.35, "ob": 0.10, "deriv": 0.20, "tech": 0.15},
+                "Ranging":       {"vol": 0.25, "cvd": 0.35, "ob": 0.15, "deriv": 0.10, "tech": 0.15},
+                "Unknown":       {"vol": 0.25, "cvd": 0.25, "ob": 0.15, "deriv": 0.20, "tech": 0.15}
             }
 
             current_regime = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
@@ -1909,32 +1904,14 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             tech_raw += quant_sigmoid_score(rs_score, sensitivity=0.5, limit=20.0) - 10.0
                 
             scores["tech"] = max(0.0, min(tech_raw, 100.0))
-                        # 🚀 استدعاء خوارزمية "الزنبرك المفرغ" (The Proprietary Alpha)
-                        # ====================================================================
-            # 🚀 استدعاء خوارزمية الثقب الأسود المؤسساتية (The Dark Pool VCA)
-            # ====================================================================
-            # تمرير البيانات الحالية المطلوبة (df, CVD بالدولار، والتغير في العقود)
+                        # 🚀 استدعاء خوارزمية "الزنبرك المفرغ" (The Proprietary Alpha)# الاستدعاء الصحيح من دالة analyze_radar_coin
             vca_bonus_score, vca_tag = detect_dark_pool_vca(
                 df, 
                 float(locals().get('current_cvd', 0.0)), 
-                float(locals().get('oi_change_pct', 0.0))
+                float(locals().get('oi_change_pct', 0.0)),
+                float(locals().get('funding_val', 0.0)) # <-- إضافة التمويل هنا
             )
-            
-            if vca_tag:
-                tags.append(vca_tag)
-                print(f"☢️ [ALERT] {symbol} أظهر بصمة {vca_tag}! يتم تفعيل تجاوز السكور المتقدم.")
-                
-                # إعطاء أولوية قصوى واختراق التقييم الكلاسيكي
-                scores["tech"] = 100.0 # التحليل الفني مخترق من قبل صانع السوق
-                scores["vol"] = min(100.0, scores["vol"] + vca_bonus_score)
-                scores["cvd"] = min(100.0, scores["cvd"] + (vca_bonus_score * 0.5))
-                
-                # حماية السكور لضمان ظهوره في أعلى القائمة
-                weights["tech"] = 0.40 # نعطي الهيكلة الفنية وزن أعلى لأنها التقطت الـ VCA
-                weights["vol"] = 0.30
-                weights["cvd"] = 0.20
-                weights["ob"] = 0.05
-                weights["deriv"] = 0.05
+    
             # ====================================================================
 
 
@@ -1948,18 +1925,18 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 (scores["deriv"] * weights["deriv"]) +
                 (scores["tech"]  * weights["tech"])
             )
+            
+            # [تعديل صانع السوق]: إضافة السكور الديناميكي للـ VCA بسلاسة
+            if vca_tag:
+                tags.append(vca_tag)
+                final_weighted_score += vca_bonus_score
 
-            # 🚀 محرك التحدب وعدم التكافؤ (Convexity Alpha Override)
-            # يمنع ظاهرة "غسيل الإشارات". إذا كان هناك شذوذ متطرف في قطاع واحد، يفرض نفسه.
+            # [إصلاح صانع السوق]: التحدب يتطلب إجماعاً (Confluence) وليس شذوذاً منفرداً
+            scores_above_80 = sum(1 for s in scores.values() if s > 80.0)
             max_category_score = max(scores["vol"], scores["cvd"], scores["ob"], scores["deriv"])
             
-            # العتبة: إذا تجاوز أي مؤشر 88/100 (شذوذ حاد جداً)
-            if max_category_score > 88.0:
-                # حساب قوة الاختراق للعتبة
+            if max_category_score > 88.0 and scores_above_80 >= 2:
                 override_power = max_category_score - 88.0 
-                
-                # المعادلة: إضافة أُسّية ترفع السكور النهائي بقوة تتناسب مع حجم الشذوذ
-                # الصيغة: $Score_{new} = Score_{old} + (Override \times 1.5)$
                 alpha_boost = override_power * 1.5
                 final_weighted_score += alpha_boost
                 tags.append("Alpha_Override_Triggered")
@@ -1995,10 +1972,10 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             
             if "Fake_Pump" in tags or "Fake_Breakout_Trap" in tags or "Flash_Spoofing_Manipulation" in tags or "Short_Covering" in tags or "Late_FOMO" in tags or "Hidden_Distribution" in tags:
                 return None 
-
             # 👇 إضافة الإشارات المؤسساتية الجديدة للواجهة 👇
-                        # 👇 إضافة الإشارات المؤسساتية الجديدة للواجهة 👇
-            if "OTC_Hedging_Trap" in tags: final_signal = "OTC HEDGING / SYNTHETIC DELTA 🏦"
+            if "DARK_POOL_COIL" in tags: final_signal = "DARK POOL COILED SPRING 🌌" # الزنبرك المضغوط للدارك بول
+            elif "DEEP_ABSORPTION" in tags: final_signal = "DEEP MM ABSORPTION 🧽" # امتصاص عميق لصانع السوق
+            elif "OTC_Hedging_Trap" in tags: final_signal = "OTC HEDGING / SYNTHETIC DELTA 🏦"
             elif "TWAP_Algo_Accumulation" in tags: final_signal = "TWAP ALGO ACCUMULATION 🤖"
             elif "Iceberg_Bid_Absorption" in tags: final_signal = "ICEBERG ABSORPTION (DARK POOL) 🧊"
             elif "Nuclear_Short_Squeeze" in tags: final_signal = "NUCLEAR SHORT SQUEEZE ☢️"
@@ -2037,18 +2014,16 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             # بدلاً من 0.003 ثابتة، نأخذ 35% من متوسط حركة الشموع الـ 14 الأخيرة للعملة نفسها
             recent_candle_spread = (abs(df['high'] - df['low']) / df['low']).tail(14).mean()
             dyn_expansion_threshold = max(0.0015, recent_candle_spread * 0.35) 
-
             # 4. ديناميكية اختلال الأوردر بوك (Imbalance & Pressure)
-            # إذا كان السوق عرضياً (ADX ضعيف)، نطلب سيولة هجومية كاسحة لإقناعنا.
-            # إذا كان الترند قوياً (ADX عالي)، أي خلل بسيط لصالح الترند يكفينا.
             dyn_imbalance_req = 0.1
-            dyn_ob_req = 1.1
+            dyn_ob_req = 1.15 # تم رفع الأساس
             if macro_adx < 25: 
                 dyn_imbalance_req = 0.25 
-                dyn_ob_req = 1.25
+                dyn_ob_req = 1.30 # صرامة مطلقة في العرضي
             elif macro_adx > 40:
-                dyn_imbalance_req = 0.05 
-                dyn_ob_req = 1.05
+                # [تعديل صانع السوق]: لا تتساهل في الترند القوي لتتجنب الدخول في قمم فارغة السيولة
+                dyn_imbalance_req = 0.08 # تم تشديدها
+                dyn_ob_req = 1.10 # يجب أن يكون الجدار حقيقياً حتى في الترند القوي
 
             # ==========================================
             # 🛡️ الفيتو الإجباري المتكيف (Adaptive Institutional Veto)
@@ -2075,20 +2050,20 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             # ==========================================
             avg_vol_usd = avg_vol_20 * price if avg_vol_20 > 0 else 1.0
             is_strong_cvd = current_cvd > (avg_vol_usd * 0.15)
-
             if is_strong_cvd:
-                # أ. كشف إعادة التوازن (MM Hedging)
-                if oi_change_pct <= 0.005:
-                    tags.append("Fake_MM_Hedging")
-                    print(f"🗑️ {symbol} - مرفوض: CVD شراء ضخم ولكن العقود المفتوحة لم ترتفع.")
+                # [إصلاح صانع السوق]: السماح بالتجميع المخفي (Spot Stealth)
+                # نرفض العملة فقط إذا كان هناك شراء سبوت ضخم يقابله انهيار في العقود (تغطية شورت وليس تجميع)
+                if oi_change_pct < -0.015:
+                    tags.append("Short_Cover_Illusion")
                     return None 
 
-                # ب. كشف الإسفنجة (Limit Absorption Traps) المتكيف
+                # [إصلاح صانع السوق]: حماية السبرينغ المضغوط
                 price_expansion = (current_high - current_low) / (current_low + 1e-8)
-                if price_expansion < dyn_expansion_threshold: 
+                # لا نطبق الفيتو إذا كانت العملة في حالة امتصاص شرائي مؤكدة أو VCA
+                if price_expansion < dyn_expansion_threshold and limit_abs_signal != "Limit_Absorption" and "MM_Deep_Absorption_Phase" not in tags: 
                     tags.append("Limit_Absorption_Sell_Trap")
-                    print(f"🗑️ {symbol} - مرفوض: إسفنجة (التوسع {price_expansion:.4f} أقل من المطلوب للعملة {dyn_expansion_threshold:.4f})")
                     return None 
+
                     
             # 2. انعدام الشراء الحقيقي (معايير متكيفة):
             if current_cvd <= 0 and current_imbalance <= dyn_imbalance_req and global_ob_pressure < dyn_ob_req:
@@ -4132,15 +4107,16 @@ async def run_analysis(cb: types.CallbackQuery):
     # 4. الإسقاط الخطي مع كابح الضجيج (Linear Projection with Anti-Spoof Dampener)
     time_progress_pct = elapsed_time / candle_duration
     
+    # استدعاء قيمة الـ CVD الحالية بشكل آمن
+    current_cvd_check = float(locals().get('current_cvd', 0.0))
+
     if time_progress_pct < 0.15: # أول 15% من عمر الشمعة (مرحلة فخاخ الحيتان)
-        # [THE APEX ALPHA] 
-        # إذا كنا في بداية الشمعة، صانع السوق قد ينفذ صفقة وهمية لرفع الفوليوم التنبؤي.
-        # لا نعتمد التنبؤ إلا إذا قام بضخ كمية "مرعبة" فعلياً (أكثر من 30% من متوسط 20 شمعة كاملة!)
-        # في هذه الحالة، هو لا يخدعنا، هو بدأ الانفجار فعلياً ولا يمكنه التراجع.
-        if current_vol > (avg_vol_20 * 0.3):
+        # [تعديل صانع السوق]: لا نقبل الفوليوم العنيف في البداية إلا إذا كان مدعوماً بتدفق شرائي (Taker Buy) حقيقي
+        if current_vol > (avg_vol_20 * 0.3) and current_cvd_check > 0:
             projected_vol = current_velocity * candle_duration
         else:
-            projected_vol = current_vol # تجاهل الإسقاط، اعتبر الفوليوم كما هو لتجنب الفخ
+            projected_vol = current_vol # الفوليوم وهمي أو بيعي، أوقف التنبؤ!
+ # تجاهل الإسقاط، اعتبر الفوليوم كما هو لتجنب الفخ
     else:
         # الإسقاط الطبيعي لما بعد مرحلة الخطر
         projected_vol = current_velocity * candle_duration
