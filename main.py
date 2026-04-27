@@ -3995,8 +3995,13 @@ async def run_analysis(cb: types.CallbackQuery):
     is_orderbook_hollow = False 
     is_spoofed = False
     
+    # [إصلاح صانع السوق]: إعطاء قيم افتراضية للمتغيرات لمنع الكراش في عملات الديكس
+    cvd_trend_val = 0.0
+    limit_abs_signal = None
+    
     # 🟢 الحل: نقل حساب Z-Score هنا ليعمل على CEX و DEX معاً (الفوليوم هو سلاحك الوحيد في الديكس)
     z_score, _, _ = calculate_volume_zscore(df, window=720)
+
     # 2. انزل للأسفل عند قسم (تنفيذ المهام المتزامنة tasks_to_run) وقم بتعديل استدعاء depth_task
     if not is_dex:
         try:
@@ -4069,6 +4074,10 @@ async def run_analysis(cb: types.CallbackQuery):
             print(f"⚠️ Data Fetch Error in Manual Analysis: {e}")
             cvd_sig, buy_v, sell_v, fut_sig, z_score = None, 0, 0, None, 0
             delta_usd, funding_val = 0.0, 0.0
+            # [إصلاح صانع السوق]: حماية إضافية لو تعطل الاتصال
+            cvd_trend_val = 0.0
+            limit_abs_signal = None
+
 
     # 2. كشف الفخاخ وتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه        # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه بطريقة مؤسساتية (Quant Trend Unification)    # 2. كشف الفخاخ والارتدادات لتوحيد الاتجاه بطريقة مؤسساتية (Quant Trend Unification)
     import time
