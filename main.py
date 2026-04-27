@@ -1912,19 +1912,19 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     'funding_rate': float(funding_val)
                 }
 
-                ai_confidence = -1.0 
-                    
+                                # 🧠 [Shadow Mode] استدعاء نموذج الذكاء الاصطناعي لمعرفة رأيه فقط
+                ai_confidence = await asyncio.to_thread(predict_signal_sync, ml_features)
+                
                 if ai_confidence != -1.0:
-                    if ai_confidence < 70.0: 
-                        print(f"🗑️ {symbol} - Rejected by AI (Confidence: {ai_confidence:.1f}%)")
-                        return None
-                    
-                    final_score = (score * 0.4) + (ai_confidence * 0.6) 
-                    ai_status = f"Active 🧠 (Conf: {ai_confidence:.1f}%)"
+                    # طباعة النسبة للأدمن دون أي تدخل في القرار
+                    ai_status = f"Shadow Mode 👁️ (Score: {ai_confidence:.1f}%)"
                 else:
-                    final_score = score 
+                    # في حال لم يتدرب النموذج بعد (أقل من 100 صفقة)
                     ai_status = "Training & Learning ⏳"
-
+                
+                # 🛡️ إجبار البوت على استخدام سكور الرادار الكلاسيكي فقط دون أي تغيير
+                final_score = score 
+                
                 return {
                     "symbol": symbol, "price": price, "score": final_score,
                     "rsi": round(last_rsi, 2), "adx": round(current_adx, 2),
