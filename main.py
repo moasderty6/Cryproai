@@ -4528,6 +4528,7 @@ async def on_startup(app):
     asyncio.create_task(silent_data_harvester_worker(pool))
     asyncio.create_task(macro_data_worker()) # 🌍 تشغيل عامل الماكرو
     #asyncio.create_task(radar_worker_process(pool))
+    asyncio.create_task(institutional_incubator_worker(pool))
     asyncio.create_task(ai_trainer_worker(pool)) # 🧠 تشغيل مدرب الذكاء الاصطناعي
     asyncio.create_task(ml_inspector_worker(pool)) # 🧠 تشغيل محقق الذكاء الاصطناعي
     await bot.set_webhook(f"{WEBHOOK_URL}/")
