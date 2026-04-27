@@ -1772,16 +1772,21 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             else:
                 final_signal = "Active Accumulation ⏳"
 
-
             # ==========================================
             # 🌉 جسر توحيد المتغيرات (Variable Unification Bridge)
             # ==========================================
-            current_cvd = micro_cvd_trend * price  # 👈 الإصلاح الموضعي: CVD أصبح دولاراً حقيقياً هنا وباقي الكود سيقرأه بشكل صحيح
+            current_cvd = micro_cvd_trend * price  
             current_imbalance = depth_data.get('imbalance', 0.0)
-            # 👈 الجلب الصحيح للبيانات
             is_orderbook_hollow_flag = depth_data.get('is_hollow', False)
 
+            # 🟢 [الإصلاح الجذري]: تعريف متوسطات الفوليوم هنا قبل أي استخدام لها في الفلاتر السفلية
+            df["volume"] = pd.to_numeric(df["volume"], errors='coerce')
+            avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
+            avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
+            current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
+
             volatility_state = market_regime['volatility'] if isinstance(market_regime, dict) else "Normal"
+
             macro_adx = market_regime['adx'] if isinstance(market_regime, dict) else 20.0
             
             # 2. ديناميكية الفومو (VWAP Z-Score)
@@ -1841,13 +1846,6 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             if price < ema200_veto and current_adx < 20.0 and current_z > 2.0:
                 tags.append("Dead_Trend_Pump_Trap")
                 return None  
-
-            # ==========================================
-            # 🛡️ استرجاع شروط القناص النهائي والمتغيرات المفقودة
-            # ==========================================
-            avg_vol_20 = df["volume"].rolling(20).mean().iloc[-1]
-            avg_vol_5 = df["volume"].rolling(5).mean().iloc[-1]
-            current_vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
 
             confluence_axes = [
                 any(t in tags for t in ["Smart_Accumulation", "Z_Anom_Silent", "DARK_POOL_COIL"]),
