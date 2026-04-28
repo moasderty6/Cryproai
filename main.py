@@ -42,13 +42,22 @@ def quant_fat_tail_score(z_value, tail_weight=1.5, limit=100.0):
     بدون سحق البيانات مبكراً كما تفعل دالة الخطأ (erf).
     - tail_weight (γ): معامل التحكم في سمك الذيل. 1.5 يعتبر قياسياً لأسواق الكريبتو.
     """
-    # حماية من القيم السالبة جداً أو الصفر لتجنب أي أخطاء رياضية
-    safe_z = max(0.0, float(z_value))
+    import math # لضمان عمل الدالة في حال لم تكن مستدعاة في الأعلى
+    
+    # 🧠 التصحيح الكمي: إزالة قيد التصفير (max 0.0) للسماح باكتشاف "فراغ السيولة"
+    # دالة atan تتعامل مع الأرقام السالبة بأمان رياضي تام دون أي أخطاء (Errors)
+    # حماية إضافية من الـ NaN في حال تمرير بيانات فاسدة
+    try:
+        safe_z = float(z_value)
+        if math.isnan(safe_z): safe_z = 0.0
+    except (ValueError, TypeError):
+        safe_z = 0.0
     
     # استخدام arctan لاستيعاب الأرقام المتطرفة جداً بمرونة
     probability = 0.5 + (math.atan(safe_z / tail_weight) / math.pi)
     
     return probability * limit
+
 from aiohttp import web
 from dotenv import load_dotenv
 
@@ -680,8 +689,8 @@ async def get_institutional_orderflow(symbol, client, minutes=15):
     sym_bybit = f"{clean_sym}USDT"
     sym_okx = f"{clean_sym}-USDT"
 
-    # 🚀 فلتر الحيتان: تجاهل أي صفقة تقل عن 1000 دولار
-    MIN_WHALE_TRADE_USD = 1000.0 
+    # 🧠 التصحيح المؤسساتي (Microstructure Fix):
+    MIN_WHALE_TRADE_USD = 50.0 
     
     # --- دالة فرعية 1: بايننس ---
     async def fetch_binance():
@@ -823,18 +832,20 @@ async def detect_spot_perp_divergence(symbol: str, client: httpx.AsyncClient):
         fapi_df['tbv'] = pd.to_numeric(fapi_df['tbv'])
         fapi_df['delta'] = fapi_df['tbv'] - (fapi_df['v'] - fapi_df['tbv'])
         fapi_cvd = fapi_df['delta'].cumsum()
-
         # 🛡️ الحماية المؤسساتية (Zero Variance Protection):
-        # يمنع انهيار Numpy (RuntimeWarning) في العملات الميتة التي لا تتحرك
-        if spot_cvd.std() == 0 or fapi_cvd.std() == 0:
+        # يجب فحص الانحراف المعياري للتدفق اللحظي (Delta) وليس التراكمي
+        if spot_df['delta'].std() == 0 or fapi_df['delta'].std() == 0:
             return 0.0
 
-        # حساب الارتباط (Correlation) بين المسارين بأمان
-        correlation = spot_cvd.corr(fapi_cvd)
+        # 🧠 التصحيح الكمّي: حساب الارتباط (Correlation) على التغير اللحظي (Deltas) 
+        # لمنع الارتباط الزائف للسلاسل الزمنية غير المستقرة (Non-Stationary)
+        correlation = spot_df['delta'].corr(fapi_df['delta'])
+        
+        # نحتفظ بحساب الإجمالي لمعرفة اتجاه السيولة العام في التقييم السفلي
         spot_total_delta = spot_cvd.iloc[-1] - spot_cvd.iloc[0]
 
-
         if pd.isna(correlation): return 0.0
+
 
         # التقييم المستنبط رياضياً:
         # إذا كان الارتباط سلبياً (أقل من -0.5) والسبوت يشتري بقوة = تجميع مخفي وتحوط في العقود
@@ -1126,36 +1137,53 @@ async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_
     pair = f"{symbol}USDT"
 
     try:
+        # 1. جلب التغير اللحظي للـ OI
         oi_url = f"{fapi_base}/futures/data/openInterestHist?symbol={pair}&period=15m&limit=2"
-        funding_url = f"{fapi_base}/fapi/v1/premiumIndex?symbol={pair}"
+        # 2. جلب التمويل اللحظي المتوقع (للتفاعل السريع)
+        live_fund_url = f"{fapi_base}/fapi/v1/premiumIndex?symbol={pair}"
+        # 3. جلب تاريخ التمويل لآخر 7 أيام (21 فترة ذات 8 ساعات) لبناء الـ Baseline
+        hist_fund_url = f"{fapi_base}/fapi/v1/fundingRate?symbol={pair}&limit=21"
 
-        # 🛑 حارس حماية الـ API (قبل إرسال الطلبات المزدوجة)
+        # 🛑 حارس حماية الـ API (قبل إرسال الطلبات المتزامنة)
         await binance_rate_limit_event.wait()
 
-        oi_res, fund_res = await asyncio.gather(
+        oi_res, live_fund_res, hist_fund_res = await asyncio.gather(
             client.get(oi_url, timeout=3.0),
-            client.get(funding_url, timeout=3.0)
+            client.get(live_fund_url, timeout=3.0),
+            client.get(hist_fund_url, timeout=3.0)
         )
-# ... يكمل باقي الكود كما هو ...
 
-        if oi_res.status_code == 200 and fund_res.status_code == 200:
+        if oi_res.status_code == 200 and live_fund_res.status_code == 200 and hist_fund_res.status_code == 200:
             oi_data = oi_res.json()
-            fund_data = fund_res.json()
+            live_fund_data = live_fund_res.json()
+            hist_fund_data = hist_fund_res.json()
 
-            if len(oi_data) < 2: return 0.0, None, 0.0, 0.0
-
-
+            if len(oi_data) < 2 or not hist_fund_data: return 0.0, None, 0.0, 0.0
 
             old_oi = float(oi_data[0]["sumOpenInterest"])
             current_oi = float(oi_data[-1]["sumOpenInterest"])
             oi_change_pct = (current_oi - old_oi) / old_oi
             price_change_pct = (float(current_price) - float(old_price)) / float(old_price)
-            funding_rate = float(fund_data.get("lastFundingRate", 0.0))
+            
+            # 🧠 التصحيح الكمّي: حساب Funding Z-Score اللحظي
+            current_funding_rate = float(live_fund_data.get("lastFundingRate", 0.0))
+            
+            hist_rates = [float(item["fundingRate"]) for item in hist_fund_data]
+            mean_funding = sum(hist_rates) / len(hist_rates)
+            
+            # حساب الانحراف المعياري للتمويل
+            variance = sum((x - mean_funding) ** 2 for x in hist_rates) / len(hist_rates)
+            std_funding = variance ** 0.5
+            
+            # حماية رياضية من القسمة على صفر (إذا كانت العملة مستقرة جداً ولا تتغير)
+            if std_funding == 0: std_funding = 1e-8
+            
+            # كم انحرافاً معيارياً يبتعد التمويل اللحظي عن متوسط أسبوع كامل؟
+            funding_z_score = (current_funding_rate - mean_funding) / std_funding
 
             score_modifier = 0.0
             futures_signal = None
 
-            # 🟢 تم تخفيض السكور وضبط الـ Tags
             if price_change_pct > 0.01 and oi_change_pct > 0.02: 
                 score_modifier += 15.0
                 futures_signal = "OI_Rising"
@@ -1163,52 +1191,60 @@ async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_
                 score_modifier -= 25.0
                 futures_signal = "Short_Covering"
             
-                        # ... كودك الحالي
-                        # ... (كودك الحالي) ...
-            if funding_rate < -0.0005: 
+            # 🎯 التقييم المؤسساتي: استخدام Z-Score لمعرفة الشذوذ الحقيقي بدلاً من الأرقام الثابتة
+            # Z-Score < -1.5 يعني التمويل سلبي ومضغوط بشكل غير طبيعي مقارنة بسلوك العملة (Short Squeeze)
+            if funding_z_score < -1.5: 
                 score_modifier += 12.0
                 if not futures_signal: futures_signal = "Short_Squeeze"
-            elif funding_rate > 0.0005:
+            # Z-Score > 1.5 يعني التمويل إيجابي مبالغ فيه (خطر تصفية Long Squeeze)
+            elif funding_z_score > 1.5:
                 score_modifier -= 10.0
 
-            # 🚀 التعديل: إرجاع oi_change_pct للمحرك الراداري
-            return score_modifier, futures_signal, funding_rate, oi_change_pct 
+            # نرجع current_funding_rate الخامة للـ AI لتدريبه، ونعتمد على الـ Z-Score في التقييم الداخلي
+            return score_modifier, futures_signal, current_funding_rate, oi_change_pct 
             
     except Exception: pass
-    # 🚀 التعديل: إرجاع 4 قيم أصفار في حال الخطأ
+    
+    # إرجاع 4 قيم أصفار في حال الخطأ
     return 0.0, None, 0.0, 0.0 
+
 
 def calculate_volume_zscore(df, window=720):
     """
-    محرك شذوذ الفوليوم المؤسساتي (Robust Z-Score) باستخدام MAD
-    مضاد للتشوه: يتجاهل الشموع العملاقة السابقة تماماً.
+    محرك شذوذ الفوليوم المؤسساتي (Robust Z-Score) باستخدام Winsorized Std
+    سريع جداً (Vectorized) ومضاد للتشوه: يحجم الشموع العملاقة السابقة لسرعة المعالجة.
     """
     df["volume"] = pd.to_numeric(df["volume"], errors='coerce')
     
-    # 1. حساب الوسيط المتحرك (Median) بدلاً من المتوسط
+    # 1. حساب الوسيط المتحرك (Median) وهو مدعوم ومُحسّن بـ C-level
     rolling_median = df["volume"].rolling(window=window, min_periods=100).median()
     
-    # 2. دالة حساب الانحراف المطلق السريعة
-    def calculate_mad(x):
-        return np.median(np.abs(x - np.median(x)))
+    # 2 & 3. التصحيح الكمي: Winsorization (تقليم الأطراف) بدلاً من حلقة MAD البطيئة
+    # نكبح القيم المتطرفة للفوليوم عند 4 أضعاف الوسيط لحماية الانحراف المعياري.
+    # هذا يمنع شمعة انفجارية واحدة من تدمير الانحراف لـ 720 شمعة قادمة.
+    clipped_volume = df["volume"].clip(upper=rolling_median * 4)
     
-    # 3. تطبيق MAD على النافذة الزمنية (نستخدم raw=True لتسريع المعالجة)
-    rolling_mad = df["volume"].rolling(window=window, min_periods=100).apply(calculate_mad, raw=True)
+    # حساب الانحراف المعياري السريع جداً على الفوليوم المكبّح
+    rolling_std = clipped_volume.rolling(window=window, min_periods=100).std(ddof=0)
     
-    # 4. تطبيق معادلة Robust Z-Score مع حماية من القسمة على صفر
-    # المعامل 1.4826 لمعايرة النتيجة لتصبح مطابقة للـ Standard Deviation
-    df["z_score"] = (df["volume"] - rolling_median) / ((rolling_mad * 1.4826) + 1e-8)
+    # 4. حساب Z-Score اللحظي
+    # البسط: الفوليوم الحقيقي الحالي (غير المكبوت) لكي نلتقط الانفجار الحالي بقوة!
+    # المقام: الانحراف المعياري المحمي (لا نحتاج لضرب بـ 1.4826 لأنه Std فعلي)
+    df["z_score"] = (df["volume"] - rolling_median) / (rolling_std + 1e-8)
     
     current_z = df["z_score"].iloc[-1]
     last_median = rolling_median.iloc[-1]
-    last_mad = rolling_mad.iloc[-1]
+    
+    # نحتفظ باسم المتغير last_mad لتوافق مخرجات الدالة مع باقي الكود دون أي كسر
+    last_mad = rolling_std.iloc[-1] 
     
     # حماية من القسمة على صفر في العملات الميتة جداً
     if pd.isna(current_z) or current_z == float('inf'):
         current_z = 0.0
 
-    # إرجاع 3 قيم تماماً كما يتوقع باقي الكود (Z-Score, Median كبديل لـ Mean, و MAD كبديل لـ Std)
+    # إرجاع 3 قيم تماماً كما يتوقع باقي الكود
     return float(current_z), float(last_median), float(last_mad)
+
 async def silent_data_harvester_worker(pool):
     """
     عامل الحصاد الصامت: يعمل في الخلفية بهدوء، يحلل عملة واحدة كل دقيقة 
