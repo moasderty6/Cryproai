@@ -4453,21 +4453,36 @@ async def run_analysis(cb: types.CallbackQuery):
 
     justification_ar, justification_en = [], []
     
-    # 1. إصلاح منطق التوافق (يجب أن يتطابق الاتجاه اللحظي مع اتجاه الماكرو)
-    if final_trend_dir == "Bullish" and mtfa_context['exec_4h'] == "Bullish" and mtfa_context['swing_1d'] == "Bullish":
-        justification_ar.append("توافق صاعد كلي"); justification_en.append("Bullish Macro Alignment")
-    elif final_trend_dir == "Bearish" and mtfa_context['exec_4h'] == "Bearish" and mtfa_context['swing_1d'] == "Bearish":
-        justification_ar.append("توافق هابط كلي"); justification_en.append("Bearish Macro Alignment")
-    elif final_trend_dir == "Bullish" and mtfa_context['swing_1d'] == "Bearish":
-        justification_ar.append("ارتداد عكس الاتجاه"); justification_en.append("Counter-Trend Bounce")
-    elif final_trend_dir == "Bearish" and mtfa_context['swing_1d'] == "Bullish":
-        justification_ar.append("تصحيح هبوطي"); justification_en.append("Bearish Correction")
+    # 1. المزامنة المطلقة مع محرك MTFA (فحص الفريمات الثلاثة بدقة)
+    is_4h_bull = mtfa_context['exec_4h'] == "Bullish"
+    is_1d_bull = mtfa_context['swing_1d'] == "Bullish"
+    is_1w_bull = mtfa_context['macro_1w'] == "Bullish"
+    
+    is_4h_bear = mtfa_context['exec_4h'] == "Bearish"
+    is_1d_bear = mtfa_context['swing_1d'] == "Bearish"
+    is_1w_bear = mtfa_context['macro_1w'] == "Bearish"
+
+    if final_trend_dir == "Bullish":
+        if is_4h_bull and is_1d_bull and is_1w_bull:
+            justification_ar.append("توافق صاعد كلي"); justification_en.append("Bullish Macro Alignment")
+        elif is_1d_bear:
+            justification_ar.append("ارتداد عكس الاتجاه"); justification_en.append("Counter-Trend Bounce")
+        else:
+            justification_ar.append("تذبذب هيكلي"); justification_en.append("Mixed Flow")
+    else: # Bearish
+        if is_4h_bear and is_1d_bear and is_1w_bear:
+            justification_ar.append("توافق هابط كلي"); justification_en.append("Bearish Macro Alignment")
+        elif is_1d_bull:
+            justification_ar.append("تصحيح هبوطي"); justification_en.append("Bearish Correction")
+        else:
+            justification_ar.append("تذبذب هيكلي"); justification_en.append("Mixed Flow")
 
     # 2. إصلاح التناقض بين التدفق (CVD) والنص
     if delta_usd > 0 and final_trend_dir == "Bullish" and flow_edge > 50.0: 
-        justification_ar.append("تدفق سيولة إيجابي"); justification_en.append("Positive Flow")
+        justification_ar.append("تدفق إيجابي"); justification_en.append("Positive Flow")
     elif delta_usd < 0 and final_trend_dir == "Bearish" and flow_edge < 50.0: 
-        justification_ar.append("تفريغ سيولة حقيقي"); justification_en.append("Genuine Drain")
+        justification_ar.append("تفريغ حقيقي"); justification_en.append("Genuine Drain")
+
 
 
     just_text_ar = " و ".join(justification_ar) if justification_ar else "زخم هيكلي"
