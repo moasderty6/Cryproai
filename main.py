@@ -4386,20 +4386,32 @@ async def run_analysis(cb: types.CallbackQuery):
     )
     if conf_sl is not None:
         calc_sl, calc_tp1, calc_tp2, calc_tp3 = conf_sl, conf_tp1, conf_tp2, conf_tp3
-
     # ====================================================================
     # 🎯 محرك كبح المخاطر المؤسساتي (TP & SL Dynamic Risk Modifier)
     # ====================================================================
     dist_tp1, dist_tp2, dist_tp3 = calc_tp1 - price, calc_tp2 - price, calc_tp3 - price
     dist_sl = calc_sl - price
     
-    # تعديل الأهداف حسب الماكرو
-    calc_tp1 = price + (dist_tp1 * mtfa_context['tp_modifier'])
-    calc_tp2 = price + (dist_tp2 * mtfa_context['tp_modifier'])
-    calc_tp3 = price + (dist_tp3 * mtfa_context['tp_modifier'])
+    # 🧠 التعديل الجراحي: ربط كابح المخاطر بالاتجاه النهائي الفعلي (Final Trend)
+    dynamic_tp_mod = 1.0
+    if final_trend_dir == "Bullish":
+        if mtfa_context['swing_1d'] == "Bearish": 
+            dynamic_tp_mod = 0.5 # 🛡️ ارتداد صعودي عكس انهيار = خنق الأهداف للهروب
+        elif mtfa_context['exec_4h'] == "Bullish" and mtfa_context['swing_1d'] == "Bullish" and mtfa_context['macro_1w'] == "Bullish": 
+            dynamic_tp_mod = 1.3 # 🚀 توافق صاعد كلي = توسيع الأهداف
+    else: # Bearish
+        if mtfa_context['swing_1d'] == "Bullish": 
+            dynamic_tp_mod = 0.5 # 🛡️ تصحيح هبوطي عكس ترند صاعد = خنق الأهداف
+        elif mtfa_context['exec_4h'] == "Bearish" and mtfa_context['swing_1d'] == "Bearish" and mtfa_context['macro_1w'] == "Bearish": 
+            dynamic_tp_mod = 1.3 # 🚀 توافق هابط كلي (Death Spiral) = توسيع أهداف الشورت
+
+    # تعديل الأهداف حسب الماكرو الجديد
+    calc_tp1 = price + (dist_tp1 * dynamic_tp_mod)
+    calc_tp2 = price + (dist_tp2 * dynamic_tp_mod)
+    calc_tp3 = price + (dist_tp3 * dynamic_tp_mod)
     
-    # 🛡️ الإضافة الجوهرية: تضييق الوقف (SL) إذا كانت الأهداف ضيقة للحفاظ على R:R
-    sl_modifier = mtfa_context['tp_modifier'] if mtfa_context['tp_modifier'] < 1.0 else 1.0
+    # 🛡️ تضييق الوقف (SL) إذا كانت الأهداف ضيقة للحفاظ على R:R
+    sl_modifier = dynamic_tp_mod if dynamic_tp_mod < 1.0 else 1.0
     calc_sl = price + (dist_sl * sl_modifier)
 
     # ====================================================================
