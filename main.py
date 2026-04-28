@@ -3726,28 +3726,28 @@ async def analyze_macro_derivatives_divergence(symbol: str, client: httpx.AsyncC
         # ==========================================================
         if price_change_pct < -0.05 and oi_change_pct > 0.15 and cvd_change < 0:
             return {
-                "ar": " <b>بناء عنيف لمراكز البيع (Aggressive Shorts):</b> السعر ينزف والـ OI يرتفع بشدة. خطر انفجار سعري (Short Squeeze) مرتفع جداً لتصفيتهم!",
-                "en": " <b>Aggressive Shorts Build-up:</b> Price is bleeding while Open Interest spikes. Extremely high risk of a Short Squeeze!"
+                "ar": "<b>بناء عنيف لمراكز البيع (Aggressive Shorts):</b> السعر ينزف والـ OI يرتفع بشدة. خطر انفجار سعري (Short Squeeze) مرتفع جداً لتصفيتهم!",
+                "en": "<b>Aggressive Shorts Build-up:</b> Price is bleeding while Open Interest spikes. Extremely high risk of a Short Squeeze!"
             }
         elif price_change_pct > 0.05 and oi_change_pct > 0.15 and cvd_change > 0:
             return {
-                "ar": " <b>تضخم مراكز الشراء (Overleveraged Longs):</b> صعود مدعوم بالمشتقات أكثر من السبوت. تصحيح قاسي محتمل لتصفيتهم.",
-                "en": " <b>Overleveraged Longs:</b> Rally driven by derivatives rather than Spot. High risk of a long squeeze/flush."
+                "ar": "<b>تضخم مراكز الشراء (Overleveraged Longs):</b> صعود مدعوم بالمشتقات أكثر من السبوت. تصحيح قاسي محتمل لتصفيتهم.",
+                "en": "<b>Overleveraged Longs:</b> Rally driven by derivatives rather than Spot. High risk of a long squeeze/flush."
             }
         elif price_change_pct > -0.05 and price_change_pct < 0.05 and oi_change_pct < -0.10 and cvd_change > 0:
             return {
-                "ar": " <b>تجميع سبوت صامت (Spot Accumulation):</b> إغلاق لمراكز الفيوتشرز وشراء حقيقي وامتصاص من السوق.",
-                "en": " <b>Silent Spot Accumulation:</b> Futures OI is dropping while Spot CVD shows real buying absorption."
+                "ar": "<b>تجميع سبوت صامت (Spot Accumulation):</b> إغلاق لمراكز الفيوتشرز وشراء حقيقي وامتصاص من السوق.",
+                "en": "<b>Silent Spot Accumulation:</b> Futures OI is dropping while Spot CVD shows real buying absorption."
             }
         elif price_change_pct < 0 and oi_change_pct < -0.10:
             return {
-                "ar": " <b>استسلام كلي (Capitulation):</b> تصفية قسرية للمراكز وخروج تدريجي للسيولة من الأصل.",
-                "en": " <b>Capitulation:</b> Forced liquidations and gradual liquidity exit from the asset."
+                "ar": "<b>استسلام كلي (Capitulation):</b> تصفية قسرية للمراكز وخروج تدريجي للسيولة من الأصل.",
+                "en": "<b>Capitulation:</b> Forced liquidations and gradual liquidity exit from the asset."
             }
         else:
             return {
-                "ar": " <b>تمركز اعتيادي (Neutral Positioning):</b> لا توجد انحرافات خطيرة في سوق المشتقات الكلي.",
-                "en": " <b>Neutral Positioning:</b> No severe deviations detected in macro derivatives."
+                "ar": "<b>تمركز اعتيادي (Neutral Positioning):</b> لا توجد انحرافات خطيرة في سوق المشتقات الكلي.",
+                "en": "<b>Neutral Positioning:</b> No severe deviations detected in macro derivatives."
             }
 
     except Exception as e:
@@ -3906,32 +3906,32 @@ def calculate_mtfa_context_sync(candles_4h, candles_1d, candles_1w):
     if trend_4h == "Bullish" and trend_1d == "Bullish" and trend_1w == "Bullish":
         alignment_status = "Golden_Bullish"
         tp_modifier = 1.30 # نوسع الأهداف لأن الترند الكلي يدعمنا 100%
-        status_ar = " <b>توافق زمني كامل (Golden Alignment):</b> سيولة الفريمات الثلاثة تضخ للأعلى. فرصة استثمارية ممتازة (Let Winners Run)."
+        status_ar = "<b>توافق زمني كامل (Golden Alignment):</b> سيولة الفريمات الثلاثة تضخ للأعلى. فرصة استثمارية ممتازة (Let Winners Run)."
         status_en = "<b>Golden Alignment:</b> Macro, Swing, and Execution timeframes are fully bullish. High conviction setup."
 
     elif trend_4h == "Bearish" and trend_1d == "Bearish" and trend_1w == "Bearish":
         alignment_status = "Golden_Bearish"
         tp_modifier = 1.30
-        status_ar = " <b>انهيار متزامن (Death Spiral):</b> توافق هبوطي على كل الفريمات. السوق في مرحلة تصريف كلي."
-        status_en = " <b>Death Spiral Alignment:</b> All timeframes are heavily bearish. Macro distribution phase."
+        status_ar = "<b>انهيار متزامن (Death Spiral):</b> توافق هبوطي على كل الفريمات. السوق في مرحلة تصريف كلي."
+        status_en = "<b>Death Spiral Alignment:</b> All timeframes are heavily bearish. Macro distribution phase."
 
     # 2. ارتداد عكس الاتجاه (السكالبينج الخطير)
     elif trend_4h == "Bullish" and trend_1d == "Bearish":
         alignment_status = "Counter_Trend_Scalp"
         tp_modifier = 0.50 # 🛡️ خنق الأهداف لـ 50% فقط للهروب السريع!
-        status_ar = " <b>سكالبينج عكس الاتجاه (Counter-Trend):</b> الفريم اليومي هابط بقوة والـ 4H يرتد. <b>تم تقريب الأهداف للهروب السريع (Hit & Run).</b>"
-        status_en = " <b>Counter-Trend Scalp:</b> Daily is Bearish while 4H is bouncing. <b>Targets tightened for a Hit & Run.</b>"
+        status_ar = "<b>سكالبينج عكس الاتجاه (Counter-Trend):</b> الفريم اليومي هابط بقوة والـ 4H يرتد. <b>تم تقريب الأهداف للهروب السريع (Hit & Run).</b>"
+        status_en = "<b>Counter-Trend Scalp:</b> Daily is Bearish while 4H is bouncing. <b>Targets tightened for a Hit & Run.</b>"
 
     # 3. صيد التراجعات (اصطياد القيعان في ترند صاعد)
     elif trend_4h == "Bearish" and trend_1d == "Bullish":
         alignment_status = "Bullish_Pullback"
         tp_modifier = 1.0 # أهداف طبيعية
-        status_ar = " <b>تراجع صحي (Pullback):</b> الفريم اليومي صاعد لكن الـ 4H يمر بتصحيح. مناطق ممتازة للتجميع (Dip Buying)."
-        status_en = " <b>Healthy Pullback:</b> Macro is Bullish, execution timeframe is retracing. Prime Dip Buying zone."
+        status_ar = "<b>تراجع صحي (Pullback):</b> الفريم اليومي صاعد لكن الـ 4H يمر بتصحيح. مناطق ممتازة للتجميع (Dip Buying)."
+        status_en = "<b>Healthy Pullback:</b> Macro is Bullish, execution timeframe is retracing. Prime Dip Buying zone."
 
     else:
-        status_ar = " <b>تذبذب هيكلي (Mixed Flow):</b> لا يوجد إجماع واضح بين الفريمات الكبيرة والصغيرة."
-        status_en = " <b>Mixed Flow:</b> Timeframes lack structural consensus."
+        status_ar = "<b>تذبذب هيكلي (Mixed Flow):</b> لا يوجد إجماع واضح بين الفريمات الكبيرة والصغيرة."
+        status_en = "<b>Mixed Flow:</b> Timeframes lack structural consensus."
 
     return {
         "macro_1w": trend_1w, "swing_1d": trend_1d, "exec_4h": trend_4h,
@@ -4455,8 +4455,8 @@ async def run_analysis(cb: types.CallbackQuery):
     just_text_ar = " و ".join(justification_ar) if justification_ar else "زخم هيكلي"
     just_text_en = " & ".join(justification_en) if justification_en else "Structural Momentum"
     
-    trend_strength_ar = f"<b>{final_conviction_score:.1f}%</b> [{ai_badge}] (مدعوم بـ: {just_text_ar})"
-    trend_strength_en = f"<b>{final_conviction_score:.1f}%</b> [{ai_badge}] (Backed by: {just_text_en})"
+    trend_strength_ar = f"<b>{final_conviction_score:.1f}%</b> (مدعوم بـ: {just_text_ar})"
+    trend_strength_en = f"<b>{final_conviction_score:.1f}%</b> (Backed by: {just_text_en})"
 
     # ====================================================================
     # 💬 المولد النصي المؤسساتي (Quant Text Generator)
@@ -4543,7 +4543,8 @@ Stop Loss: <code>{format_price(calc_sl)}</code>
 • <b>حالة الماكرو:</b> {macro_state}
 • <b>التوافق الزمني:</b> {mtfa_txt}
 • <b>التدفق:</b> {market_action}
-• <b>المؤشرات الفنية:</b> RSI: {safe_rsi:.1f} | MACD: {macd_fmt} | ADX: {adx_val:.1f}
+• <b>المؤشرات الفنية:</b>
+RSI: {safe_rsi:.1f} | MACD: {macd_fmt} | ADX: {adx_val:.1f}
 {dex_alert_str}"""
     else:
         final_report = f"""
@@ -4567,7 +4568,8 @@ Stop Loss: <code>{format_price(calc_sl)}</code>
 • <b>Macro State:</b> {macro_state}
 • <b>Timeframe Alignment:</b> {mtfa_txt}
 • <b>Flow:</b> {market_action}
-• <b>Quant Indicators:</b> RSI: {safe_rsi:.1f} | MACD: {macd_fmt} | ADX: {adx_val:.1f}
+• <b>Quant Indicators:</b>
+RSI: {safe_rsi:.1f} | MACD: {macd_fmt} | ADX: {adx_val:.1f}
 {dex_alert_str}"""
 
     # 3. إرسال النتيجة فوراً للمستخدم
