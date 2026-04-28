@@ -1685,7 +1685,9 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             # ----------------------------------------------------
             # 🧬 1. فحص الانتماء لغرفة الاحتضان (The Incubation Synergy)
             is_incubated = f"{symbol}USDT" in INCUBATION_MATRIX
-            incubation_bonus = 20.0 if is_incubated else 0.0
+            # 🛡️ حاجز الأمان: لا نمنح علاوة الاحتضان والماكرو إلا إذا كانت السيولة اللحظية (CVD) للعملة نفسها إيجابية
+            incubation_bonus = 20.0 if (is_incubated and micro_cvd_trend > 0) else 0.0
+
             
             if is_incubated:
                 tags.append("Incubated_Macro_Coil")
@@ -1997,26 +1999,34 @@ async def institutional_incubator_worker(pool):
                         if not candles: continue
 
                         df, last_rsi, current_adx, current_z, vol_mean, vol_std = await asyncio.to_thread(process_dataframe_sync, candles)
-                        
-                        # 🧠 شروط الاحتضان (Macro Compression):
-                        # 1. السعر محصور في نطاق ضيق جداً (البولينجر ضيق)
-                        # 2. الفوليوم هادئ لكن هناك انحراف بسيط في الـ Z-Score
-                        # 3. الـ ADX منخفض (دليل على غياب الترند واستعداد للانفجار)
-                        
                         dyn_window = get_dynamic_window(df, base_window=20)
                         sma = df["close"].rolling(dyn_window).mean()
                         std = df["close"].rolling(dyn_window).std(ddof=0)
                         bb_width = (4 * std) / sma
                         current_bb_width = bb_width.iloc[-1]
                         
-                        if current_bb_width < 0.08 and current_adx < 25.0 and current_z > 1.0:
+                        # 🧠 شروط الاحتضان (Macro Compression & On-Chain Synergy):
+                        # إذا كان هناك طباعة قوية للعملات المستقرة على البلوكتشين،
+                        # نتساهل في شروط الاحتضان (نوسع البولينجر المسموح به) لنصطاد عملات أكثر
+                        
+                        onchain_boost = MACRO_CACHE.get("onchain_liquidity_score", 0.0)
+                        
+                        # عتبة البولينجر الديناميكية
+                        dynamic_bb_threshold = 0.08
+                        if onchain_boost > 15.0:
+                            dynamic_bb_threshold = 0.12 # توسيع العتبة لأن الماكرو إيجابي جداً
+                        elif onchain_boost < -10.0:
+                            dynamic_bb_threshold = 0.05 # تضييق العتبة لأن الماكرو سلبي
+                            
+                        if current_bb_width < dynamic_bb_threshold and current_adx < 25.0 and current_z > 1.0:
                             if sym not in INCUBATION_MATRIX:
                                 INCUBATION_MATRIX[sym] = {
                                     "incubation_start": time.time(),
                                     "macro_z": current_z,
-                                    "bb_width": current_bb_width
+                                    "bb_width": current_bb_width,
+                                    "onchain_fueled": True if onchain_boost > 15.0 else False # 👈 بصمة البلوكتشين
                                 }
-                                print(f"🧬 [Incubator] Added {sym} to Incubation Matrix. Waiting for trigger...")
+                                print(f"🧬 [Incubator] Added {sym}. On-Chain Fueled: {INCUBATION_MATRIX[sym]['onchain_fueled']}")
                         
                         await asyncio.sleep(2) # راحة لبايننس
 
@@ -2196,15 +2206,55 @@ async def ml_inspector_worker(pool):
         await asyncio.sleep(600) # فحص كل 10 دقائق
 
 # --- الذاكرة المؤسساتية للماكرو والاحتضان ---
+# --- الذاكرة المؤسساتية للماكرو والاحتضان ---
 MACRO_CACHE = {
     "sp500_trend": 0.0,
     "sentiment_score": 50.0, # سيتم تحويله لـ Institutional Risk Score
     "global_funding_health": 0.0, # صحة التمويل الكلي (هل السوق Short/Long مكشوف؟)
-    "btc_liquidity_health": 0.0 # هل يتم سحب السيولة من البيتكوين للألتكوين؟
+    "btc_liquidity_health": 0.0, # هل يتم سحب السيولة من البيتكوين للألتكوين؟
+    "onchain_liquidity_score": 0.0, # 👈 الحقن هنا (قياس طباعة العملات المستقرة)
+    "onchain_net_flow_usd": 0.0     # 👈 حجم الأموال المطبوعة بدقة بالدولار
 }
 
 # غرفة الاحتضان (الزنبرك): { "BTCUSDT": {"incubation_start": 1712000000, "score": 85} }
 INCUBATION_MATRIX = {} 
+async def get_onchain_stablecoin_flow(client: httpx.AsyncClient):
+    """
+    [On-Chain Macro Engine] 🐋
+    يراقب طباعة العملات المستقرة (USDT, USDC) على البلوكتشين كبديل مجاني لبيانات On-Chain.
+    دخول مليارات الدولارات للنظام البيئي يسبق الانفجارات السعرية بـ 24-48 ساعة.
+    """
+    try:
+        # استخدام واجهة DefiLlama المجانية (لا تحتاج API Key)
+        res = await client.get("https://stablecoins.llama.fi/stablecoincharts/all", timeout=10.0)
+        
+        if res.status_code == 200:
+            data = res.json()
+            # نحتاج بيانات آخر 3 أيام للمقارنة
+            if len(data) >= 3:
+                today_mcap = float(data[-1]['totalCirculatingUSD']['peggedUSD'])
+                two_days_ago_mcap = float(data[-3]['totalCirculatingUSD']['peggedUSD'])
+
+                # حساب التغير في السيولة (الدولارات المطبوعة حديثاً)
+                net_flow_usd = today_mcap - two_days_ago_mcap
+                flow_pct = (net_flow_usd / two_days_ago_mcap) * 100
+
+                # تحويل النسبة إلى سكور مؤسساتي (Risk Premium Score) بين -25 و +50
+                # طباعة 0.3% فقط تعني دخول مليارات للسوق
+                if flow_pct > 0.05:
+                    # أموال جديدة تدخل (Bullish)
+                    score = min(50.0, (flow_pct / 0.5) * 50.0)
+                elif flow_pct < -0.05:
+                    # سحب وحرق للأموال (Bearish)
+                    score = max(-25.0, (flow_pct / 0.5) * 25.0)
+                else:
+                    score = 0.0
+
+                return net_flow_usd, round(score, 2)
+    except Exception as e:
+        print(f"⚠️ [On-Chain] DefiLlama API Error: {e}")
+        
+    return 0.0, 0.0
 
 async def macro_data_worker():
     """
@@ -2247,23 +2297,33 @@ async def macro_data_worker():
                 except Exception as e:
                     print(f"⚠️ [Macro] Funding API Error: {e}")
 
-                # 3. دمج الماكرو النهائي كـ "علاوة مخاطرة" (Risk Premium)
-                # نستخدمه كبديل لـ sentiment_score لتدريب الـ AI بشكل أذكى
-                base_score = 50.0
-                if MACRO_CACHE["sp500_trend"] > 0.5: base_score += 15
-                elif MACRO_CACHE["sp500_trend"] < -0.5: base_score -= 15
+                # --- الحقن هنا ---
+                # 3. محرك البلوكتشين (On-Chain Liquidity) للتنبؤ قبل 48 ساعة
+                net_usd, onchain_score = await get_onchain_stablecoin_flow(client)
+                MACRO_CACHE["onchain_net_flow_usd"] = net_usd
+                MACRO_CACHE["onchain_liquidity_score"] = onchain_score
+                # ----------------
                 
-                # إضافة تأثير التمويل الكلي
-                final_macro_score = (base_score * 0.4) + (MACRO_CACHE["global_funding_health"] * 0.6)
+                # 4. دمج الماكرو النهائي كـ "علاوة مخاطرة" (Risk Premium)
+                base_score = 50.0
+                if MACRO_CACHE["sp500_trend"] > 0.5: base_score += 10
+                elif MACRO_CACHE["sp500_trend"] < -0.5: base_score -= 10
+                
+                # إضافة تأثير التمويل الكلي (30%) وتأثير البلوكتشين (30%)
+                final_macro_score = (base_score * 0.4) + (MACRO_CACHE["global_funding_health"] * 0.3) + (MACRO_CACHE["onchain_liquidity_score"] * 0.3)
+                
+                # إضافة علاوة (Bonus) قوية جداً إذا تم طباعة أموال ضخمة
+                if MACRO_CACHE["onchain_liquidity_score"] > 20.0:
+                    final_macro_score += 15.0 
+
                 MACRO_CACHE["sentiment_score"] = round(max(0.0, min(100.0, final_macro_score)), 1)
 
-                print(f"🔄 [Macro Updated] Inst_Risk_Score: {MACRO_CACHE['sentiment_score']} | S&P500: {MACRO_CACHE['sp500_trend']}% | Funding Health: {MACRO_CACHE['global_funding_health']:.1f}")
+                print(f"🔄 [Macro Updated] Inst_Risk: {MACRO_CACHE['sentiment_score']} | S&P500: {MACRO_CACHE['sp500_trend']}% | On-Chain Flow: ${net_usd:,.0f} | Funding: {MACRO_CACHE['global_funding_health']:.1f}")
                 
         except Exception as e:
             print(f"⚠️ [Macro Engine] Critical Background Error: {e}")
             
         await asyncio.sleep(1800) # التحديث كل نصف ساعة
- # التحديث كل نصف ساعة
 
 async def check_btc_gravity_veto(client: httpx.AsyncClient):
     """
