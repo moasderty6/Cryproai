@@ -4102,7 +4102,7 @@ async def run_analysis(cb: types.CallbackQuery):
         else:
             print(f"Edit msg error in analysis: {e}")
 
-     clean_sym = sym.replace("USDT", "").strip().upper()
+    clean_sym = sym.replace("USDT", "").strip().upper()
     
     # ====================================================================
     # 🧠 حقن الذاكرة المؤسساتية (Incubation & Macro Check)
