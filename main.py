@@ -3726,28 +3726,28 @@ async def analyze_macro_derivatives_divergence(symbol: str, client: httpx.AsyncC
         # ==========================================================
         if price_change_pct < -0.05 and oi_change_pct > 0.15 and cvd_change < 0:
             return {
-                "ar": "🔥 <b>بناء عنيف لمراكز البيع (Aggressive Shorts):</b> السعر ينزف والـ OI يرتفع بشدة. خطر انفجار سعري (Short Squeeze) مرتفع جداً لتصفيتهم!",
-                "en": "🔥 <b>Aggressive Shorts Build-up:</b> Price is bleeding while Open Interest spikes. Extremely high risk of a Short Squeeze!"
+                "ar": " <b>بناء عنيف لمراكز البيع (Aggressive Shorts):</b> السعر ينزف والـ OI يرتفع بشدة. خطر انفجار سعري (Short Squeeze) مرتفع جداً لتصفيتهم!",
+                "en": " <b>Aggressive Shorts Build-up:</b> Price is bleeding while Open Interest spikes. Extremely high risk of a Short Squeeze!"
             }
         elif price_change_pct > 0.05 and oi_change_pct > 0.15 and cvd_change > 0:
             return {
-                "ar": "⚠️ <b>تضخم مراكز الشراء (Overleveraged Longs):</b> صعود مدعوم بالمشتقات أكثر من السبوت. تصحيح قاسي محتمل لتصفيتهم.",
-                "en": "⚠️ <b>Overleveraged Longs:</b> Rally driven by derivatives rather than Spot. High risk of a long squeeze/flush."
+                "ar": " <b>تضخم مراكز الشراء (Overleveraged Longs):</b> صعود مدعوم بالمشتقات أكثر من السبوت. تصحيح قاسي محتمل لتصفيتهم.",
+                "en": " <b>Overleveraged Longs:</b> Rally driven by derivatives rather than Spot. High risk of a long squeeze/flush."
             }
         elif price_change_pct > -0.05 and price_change_pct < 0.05 and oi_change_pct < -0.10 and cvd_change > 0:
             return {
-                "ar": "🦈 <b>تجميع سبوت صامت (Spot Accumulation):</b> إغلاق لمراكز الفيوتشرز وشراء حقيقي وامتصاص من السوق.",
-                "en": "🦈 <b>Silent Spot Accumulation:</b> Futures OI is dropping while Spot CVD shows real buying absorption."
+                "ar": " <b>تجميع سبوت صامت (Spot Accumulation):</b> إغلاق لمراكز الفيوتشرز وشراء حقيقي وامتصاص من السوق.",
+                "en": " <b>Silent Spot Accumulation:</b> Futures OI is dropping while Spot CVD shows real buying absorption."
             }
         elif price_change_pct < 0 and oi_change_pct < -0.10:
             return {
-                "ar": "🩸 <b>استسلام كلي (Capitulation):</b> تصفية قسرية للمراكز وخروج تدريجي للسيولة من الأصل.",
-                "en": "🩸 <b>Capitulation:</b> Forced liquidations and gradual liquidity exit from the asset."
+                "ar": " <b>استسلام كلي (Capitulation):</b> تصفية قسرية للمراكز وخروج تدريجي للسيولة من الأصل.",
+                "en": " <b>Capitulation:</b> Forced liquidations and gradual liquidity exit from the asset."
             }
         else:
             return {
-                "ar": "⚖️ <b>تمركز اعتيادي (Neutral Positioning):</b> لا توجد انحرافات خطيرة في سوق المشتقات الكلي.",
-                "en": "⚖️ <b>Neutral Positioning:</b> No severe deviations detected in macro derivatives."
+                "ar": " <b>تمركز اعتيادي (Neutral Positioning):</b> لا توجد انحرافات خطيرة في سوق المشتقات الكلي.",
+                "en": " <b>Neutral Positioning:</b> No severe deviations detected in macro derivatives."
             }
 
     except Exception as e:
@@ -3860,19 +3860,19 @@ async def evaluate_dex_risk(liquidity_usd: float, vol_24h: float):
     
     # 1. فحص فقر السيولة (Liquidity Void)
     if liquidity_usd < 50000:
-        risk_warnings_ar.append("🚨 خطر عالي: سيولة المجمع (LP) أقل من 50 ألف دولار! (سهلة التلاعب/السحب).")
-        risk_warnings_en.append("🚨 HIGH RISK: Liquidity Pool < $50k! (Rug-pull/Manipulation risk).")
+        risk_warnings_ar.append(" خطر عالي: سيولة المجمع (LP) أقل من 50 ألف دولار! (سهلة التلاعب/السحب).")
+        risk_warnings_en.append(" HIGH RISK: Liquidity Pool < $50k! (Rug-pull/Manipulation risk).")
         risk_score -= 5
     elif liquidity_usd < 200000:
-        risk_warnings_ar.append("⚠️ تنبيه: سيولة المجمع ضعيفة، توقع انزلاق سعري (Slippage) عالي.")
-        risk_warnings_en.append("⚠️ WARNING: Low Liquidity, expect high slippage.")
+        risk_warnings_ar.append(" تنبيه: سيولة المجمع ضعيفة، توقع انزلاق سعري (Slippage) عالي.")
+        risk_warnings_en.append(" WARNING: Low Liquidity, expect high slippage.")
         risk_score -= 2
         
     # 2. فحص نسبة الفوليوم للسيولة (Volume/Liquidity Ratio)
     # إذا كان الفوليوم اليومي أعلى من السيولة بـ 10 أضعاف، هذا تدوير وهمي (Wash Trading)
     if liquidity_usd > 0 and (vol_24h / liquidity_usd) > 10:
-         risk_warnings_ar.append("🤖 تحذير: الفوليوم أعلى من السيولة بشكل غير منطقي (احتمال Wash Trading).")
-         risk_warnings_en.append("🤖 WARNING: Abnormal Vol/Liq ratio (Possible Wash Trading).")
+         risk_warnings_ar.append(" تحذير: الفوليوم أعلى من السيولة بشكل غير منطقي (احتمال Wash Trading).")
+         risk_warnings_en.append(" WARNING: Abnormal Vol/Liq ratio (Possible Wash Trading).")
          risk_score -= 3
 
     return risk_warnings_ar, risk_warnings_en, risk_score
@@ -3906,32 +3906,32 @@ def calculate_mtfa_context_sync(candles_4h, candles_1d, candles_1w):
     if trend_4h == "Bullish" and trend_1d == "Bullish" and trend_1w == "Bullish":
         alignment_status = "Golden_Bullish"
         tp_modifier = 1.30 # نوسع الأهداف لأن الترند الكلي يدعمنا 100%
-        status_ar = "🟢 <b>توافق زمني كامل (Golden Alignment):</b> سيولة الفريمات الثلاثة تضخ للأعلى. فرصة استثمارية ممتازة (Let Winners Run)."
-        status_en = "🟢 <b>Golden Alignment:</b> Macro, Swing, and Execution timeframes are fully bullish. High conviction setup."
+        status_ar = " <b>توافق زمني كامل (Golden Alignment):</b> سيولة الفريمات الثلاثة تضخ للأعلى. فرصة استثمارية ممتازة (Let Winners Run)."
+        status_en = "<b>Golden Alignment:</b> Macro, Swing, and Execution timeframes are fully bullish. High conviction setup."
 
     elif trend_4h == "Bearish" and trend_1d == "Bearish" and trend_1w == "Bearish":
         alignment_status = "Golden_Bearish"
         tp_modifier = 1.30
-        status_ar = "🔴 <b>انهيار متزامن (Death Spiral):</b> توافق هبوطي على كل الفريمات. السوق في مرحلة تصريف كلي."
-        status_en = "🔴 <b>Death Spiral Alignment:</b> All timeframes are heavily bearish. Macro distribution phase."
+        status_ar = " <b>انهيار متزامن (Death Spiral):</b> توافق هبوطي على كل الفريمات. السوق في مرحلة تصريف كلي."
+        status_en = " <b>Death Spiral Alignment:</b> All timeframes are heavily bearish. Macro distribution phase."
 
     # 2. ارتداد عكس الاتجاه (السكالبينج الخطير)
     elif trend_4h == "Bullish" and trend_1d == "Bearish":
         alignment_status = "Counter_Trend_Scalp"
         tp_modifier = 0.50 # 🛡️ خنق الأهداف لـ 50% فقط للهروب السريع!
-        status_ar = "⚠️ <b>سكالبينج عكس الاتجاه (Counter-Trend):</b> الفريم اليومي هابط بقوة والـ 4H يرتد. <b>تم تقريب الأهداف للهروب السريع (Hit & Run).</b>"
-        status_en = "⚠️ <b>Counter-Trend Scalp:</b> Daily is Bearish while 4H is bouncing. <b>Targets tightened for a Hit & Run.</b>"
+        status_ar = " <b>سكالبينج عكس الاتجاه (Counter-Trend):</b> الفريم اليومي هابط بقوة والـ 4H يرتد. <b>تم تقريب الأهداف للهروب السريع (Hit & Run).</b>"
+        status_en = " <b>Counter-Trend Scalp:</b> Daily is Bearish while 4H is bouncing. <b>Targets tightened for a Hit & Run.</b>"
 
     # 3. صيد التراجعات (اصطياد القيعان في ترند صاعد)
     elif trend_4h == "Bearish" and trend_1d == "Bullish":
         alignment_status = "Bullish_Pullback"
         tp_modifier = 1.0 # أهداف طبيعية
-        status_ar = "⏳ <b>تراجع صحي (Pullback):</b> الفريم اليومي صاعد لكن الـ 4H يمر بتصحيح. مناطق ممتازة للتجميع (Dip Buying)."
-        status_en = "⏳ <b>Healthy Pullback:</b> Macro is Bullish, execution timeframe is retracing. Prime Dip Buying zone."
+        status_ar = " <b>تراجع صحي (Pullback):</b> الفريم اليومي صاعد لكن الـ 4H يمر بتصحيح. مناطق ممتازة للتجميع (Dip Buying)."
+        status_en = " <b>Healthy Pullback:</b> Macro is Bullish, execution timeframe is retracing. Prime Dip Buying zone."
 
     else:
-        status_ar = "🔄 <b>تذبذب هيكلي (Mixed Flow):</b> لا يوجد إجماع واضح بين الفريمات الكبيرة والصغيرة."
-        status_en = "🔄 <b>Mixed Flow:</b> Timeframes lack structural consensus."
+        status_ar = " <b>تذبذب هيكلي (Mixed Flow):</b> لا يوجد إجماع واضح بين الفريمات الكبيرة والصغيرة."
+        status_en = " <b>Mixed Flow:</b> Timeframes lack structural consensus."
 
     return {
         "macro_1w": trend_1w, "swing_1d": trend_1d, "exec_4h": trend_4h,
@@ -3965,15 +3965,15 @@ def extract_institutional_memory(symbol: str):
         days_str_en = f"{days_in_matrix:.1f} days" if days_in_matrix >= 0.1 else "less than a day"
         
         # 🧠 صياغة تنبيه الألفا (Alpha Alert) بناءً على قوة السيولة
-        alert_ar += f"\n🚨 <b>تنبيه ألفا (Alpha Alert):</b>\n"
-        alert_ar += f"👁️‍🗨️ هذه العملة تخضع حالياً للتجميع المخفي وموجودة في <b>غرفة الاحتضان المؤسساتية</b> منذ {days_str}.\n"
+        alert_ar += f"\n <b>تنبيه ألفا (Alpha Alert):</b>\n"
+        alert_ar += f" هذه العملة تخضع حالياً للتجميع المخفي وموجودة في <b>غرفة الاحتضان المؤسساتية</b> منذ {days_str}.\n"
         
-        alert_en += f"\n🚨 <b>ALPHA ALERT:</b>\n"
-        alert_en += f"👁️‍🗨️ This asset is undergoing stealth accumulation and has been in the <b>Incubation Matrix</b> for {days_str_en}.\n"
+        alert_en += f"\n <b>ALPHA ALERT:</b>\n"
+        alert_en += f" This asset is undergoing stealth accumulation and has been in the <b>Incubation Matrix</b> for {days_str_en}.\n"
         
         if inc_data.get('onchain_fueled') or onchain_fueled_macro:
-            alert_ar += "🔥 <b>عامل محفز (Catalyst):</b> العملة تتلقى دعماً هائلاً من سيولة الـ On-Chain اللحظية!\n"
-            alert_en += "🔥 <b>Macro Catalyst:</b> Asset is experiencing massive On-Chain liquidity inflows!\n"
+            alert_ar += " <b>عامل محفز (Catalyst):</b> العملة تتلقى دعماً هائلاً من سيولة الـ On-Chain اللحظية!\n"
+            alert_en += " <b>Macro Catalyst:</b> Asset is experiencing massive On-Chain liquidity inflows!\n"
             
     # 3. صياغة تقييم الماكرو الكلي لربطه مع التحليل
     macro_state_ar = "إيجابية" if macro_score > 60 else "سلبية" if macro_score < 40 else "حيادية"
@@ -4468,7 +4468,7 @@ async def run_analysis(cb: types.CallbackQuery):
 
     if lang == "ar":
         trend_strength_display = trend_strength_ar
-        real_trend = "صاعد 🟢" if final_trend_dir == "Bullish" else "هابط 🔴"
+        real_trend = "صاعد" if final_trend_dir == "Bullish" else "هابط"
         
         if final_trend_dir == "Bullish":
             if is_fomo_trap: market_action = f"فخ تحيز تأكيدي (FOMO Trap)! صعود بلا تدفق مالي {vol_state}."
@@ -4490,7 +4490,7 @@ async def run_analysis(cb: types.CallbackQuery):
 
     else:
         trend_strength_display = trend_strength_en
-        real_trend = "Bullish 🟢" if final_trend_dir == "Bullish" else "Bearish 🔴"
+        real_trend = "Bullish" if final_trend_dir == "Bullish" else "Bearish"
         
         if final_trend_dir == "Bullish":
             if is_fomo_trap: market_action = f"FOMO TRAP! Price rallied but Orderflow is disconnected {vol_state}."
