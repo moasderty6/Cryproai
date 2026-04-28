@@ -3677,6 +3677,81 @@ def calculate_vpvr_levels(df, current_price, trend_direction, num_bins=50):
         print(f"VPVR Error: {e}")
         # أهداف احتياطية محمية في حال فشل الحساب
         return current_price*0.95, current_price*1.02, current_price*1.04, current_price*1.06
+async def analyze_macro_derivatives_divergence(symbol: str, client: httpx.AsyncClient, spot_df: pd.DataFrame, tf: str):
+    """
+    [Macro Derivatives Engine] - محرك المشتقات الكلي للفريمات الكبيرة
+    يستبدل الأوردر بوك اللحظي بقراءة بناء المراكز (Short/Long) على المدى الطويل.
+    """
+    clean_sym = symbol.replace("USDT", "") + "USDT"
+    
+    # تحديد نطاق جلب البيانات بناءً على الفريم
+    period = "1d" if tf in ["1w", "weekly", "1d", "daily"] else "4h"
+    limit = 30 if tf in ["1w", "weekly"] else 14 # 30 يوم للأسبوعي، 14 يوماً لليومي
+    
+    fapi_base = "https://fapi.binance.com"
+    oi_url = f"{fapi_base}/futures/data/openInterestHist?symbol={clean_sym}&period={period}&limit={limit}"
+    
+    try:
+        res = await client.get(oi_url, timeout=5.0)
+        if res.status_code != 200:
+            return None
+            
+        oi_data = res.json()
+        if len(oi_data) < 5:
+            return None
+            
+        oi_df = pd.DataFrame(oi_data)
+        oi_df['sumOpenInterestValue'] = pd.to_numeric(oi_df['sumOpenInterestValue'])
+        
+        # 1. التغير الكلي في العقود المفتوحة (OI)
+        old_oi = oi_df['sumOpenInterestValue'].iloc[0]
+        current_oi = oi_df['sumOpenInterestValue'].iloc[-1]
+        oi_change_pct = (current_oi - old_oi) / (old_oi + 1e-8)
+        
+        # 2. التغير في السعر لنفس الفترة
+        recent_spot = spot_df.tail(len(oi_df))
+        old_price = recent_spot['close'].iloc[0]
+        current_price = recent_spot['close'].iloc[-1]
+        price_change_pct = (current_price - old_price) / (old_price + 1e-8)
+        
+        # 3. ميل السيولة الكلية (CVD Flow)
+        if 'cvd' in spot_df.columns:
+            old_cvd = recent_spot['cvd'].iloc[0]
+            current_cvd = recent_spot['cvd'].iloc[-1]
+            cvd_change = current_cvd - old_cvd
+        else:
+            cvd_change = 0.0
+         # ==========================================================
+        # 🧠 المنطق المؤسساتي: اكتشاف فخاخ السيولة والانحرافات
+        # ==========================================================
+        if price_change_pct < -0.05 and oi_change_pct > 0.15 and cvd_change < 0:
+            return {
+                "ar": "🔥 <b>بناء عنيف لمراكز البيع (Aggressive Shorts):</b> السعر ينزف والـ OI يرتفع بشدة. خطر انفجار سعري (Short Squeeze) مرتفع جداً لتصفيتهم!",
+                "en": "🔥 <b>Aggressive Shorts Build-up:</b> Price is bleeding while Open Interest spikes. Extremely high risk of a Short Squeeze!"
+            }
+        elif price_change_pct > 0.05 and oi_change_pct > 0.15 and cvd_change > 0:
+            return {
+                "ar": "⚠️ <b>تضخم مراكز الشراء (Overleveraged Longs):</b> صعود مدعوم بالمشتقات أكثر من السبوت. تصحيح قاسي محتمل لتصفيتهم.",
+                "en": "⚠️ <b>Overleveraged Longs:</b> Rally driven by derivatives rather than Spot. High risk of a long squeeze/flush."
+            }
+        elif price_change_pct > -0.05 and price_change_pct < 0.05 and oi_change_pct < -0.10 and cvd_change > 0:
+            return {
+                "ar": "🦈 <b>تجميع سبوت صامت (Spot Accumulation):</b> إغلاق لمراكز الفيوتشرز وشراء حقيقي وامتصاص من السوق.",
+                "en": "🦈 <b>Silent Spot Accumulation:</b> Futures OI is dropping while Spot CVD shows real buying absorption."
+            }
+        elif price_change_pct < 0 and oi_change_pct < -0.10:
+            return {
+                "ar": "🩸 <b>استسلام كلي (Capitulation):</b> تصفية قسرية للمراكز وخروج تدريجي للسيولة من الأصل.",
+                "en": "🩸 <b>Capitulation:</b> Forced liquidations and gradual liquidity exit from the asset."
+            }
+        else:
+            return {
+                "ar": "⚖️ <b>تمركز اعتيادي (Neutral Positioning):</b> لا توجد انحرافات خطيرة في سوق المشتقات الكلي.",
+                "en": "⚖️ <b>Neutral Positioning:</b> No severe deviations detected in macro derivatives."
+            }
+
+    except Exception as e:
+        return None
 
 # --- دالة التحليل المعدلة ---
 async def analyze_orderbook_advanced_manual(symbol: str, client: httpx.AsyncClient, current_price: float, recent_vol_usd: float = 15000.0):
@@ -3801,6 +3876,203 @@ async def evaluate_dex_risk(liquidity_usd: float, vol_24h: float):
          risk_score -= 3
 
     return risk_warnings_ar, risk_warnings_en, risk_score
+def calculate_mtfa_context_sync(candles_4h, candles_1d, candles_1w):
+    """
+    [Institutional MTFA Engine] - محرك التوافق الزمني الثلاثي
+    معزول تماماً عن الرادار. يحلل السياق الكلي ويُخرج معامل خطورة لتعديل الأهداف.
+    """
+    def get_trend(candles):
+        if not candles or isinstance(candles, Exception) or len(candles) < 50:
+            return "Unknown"
+        df = pd.DataFrame(candles).iloc[:, :6]
+        df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+        df["close"] = pd.to_numeric(df["close"], errors='coerce')
+        
+        ema20 = df["close"].ewm(span=20, adjust=False).mean().iloc[-1]
+        ema50 = df["close"].ewm(span=50, adjust=False).mean().iloc[-1]
+        return "Bullish" if ema20 > ema50 else "Bearish"
+
+    trend_4h = get_trend(candles_4h)
+    trend_1d = get_trend(candles_1d)
+    trend_1w = get_trend(candles_1w)
+
+    # 🧠 المنطق المؤسساتي لتحديد نوع الإشارة وحجم الأهداف
+    alignment_status = "Neutral"
+    tp_modifier = 1.0 # 1.0 يعني الأهداف كما هي، 0.6 يعني أهداف قريبة (خطف)
+    status_ar = ""
+    status_en = ""
+
+    # 1. التوافق الذهبي (القطار السريع)
+    if trend_4h == "Bullish" and trend_1d == "Bullish" and trend_1w == "Bullish":
+        alignment_status = "Golden_Bullish"
+        tp_modifier = 1.30 # نوسع الأهداف لأن الترند الكلي يدعمنا 100%
+        status_ar = "🟢 <b>توافق زمني كامل (Golden Alignment):</b> سيولة الفريمات الثلاثة تضخ للأعلى. فرصة استثمارية ممتازة (Let Winners Run)."
+        status_en = "🟢 <b>Golden Alignment:</b> Macro, Swing, and Execution timeframes are fully bullish. High conviction setup."
+
+    elif trend_4h == "Bearish" and trend_1d == "Bearish" and trend_1w == "Bearish":
+        alignment_status = "Golden_Bearish"
+        tp_modifier = 1.30
+        status_ar = "🔴 <b>انهيار متزامن (Death Spiral):</b> توافق هبوطي على كل الفريمات. السوق في مرحلة تصريف كلي."
+        status_en = "🔴 <b>Death Spiral Alignment:</b> All timeframes are heavily bearish. Macro distribution phase."
+
+    # 2. ارتداد عكس الاتجاه (السكالبينج الخطير)
+    elif trend_4h == "Bullish" and trend_1d == "Bearish":
+        alignment_status = "Counter_Trend_Scalp"
+        tp_modifier = 0.50 # 🛡️ خنق الأهداف لـ 50% فقط للهروب السريع!
+        status_ar = "⚠️ <b>سكالبينج عكس الاتجاه (Counter-Trend):</b> الفريم اليومي هابط بقوة والـ 4H يرتد. <b>تم تقريب الأهداف للهروب السريع (Hit & Run).</b>"
+        status_en = "⚠️ <b>Counter-Trend Scalp:</b> Daily is Bearish while 4H is bouncing. <b>Targets tightened for a Hit & Run.</b>"
+
+    # 3. صيد التراجعات (اصطياد القيعان في ترند صاعد)
+    elif trend_4h == "Bearish" and trend_1d == "Bullish":
+        alignment_status = "Bullish_Pullback"
+        tp_modifier = 1.0 # أهداف طبيعية
+        status_ar = "⏳ <b>تراجع صحي (Pullback):</b> الفريم اليومي صاعد لكن الـ 4H يمر بتصحيح. مناطق ممتازة للتجميع (Dip Buying)."
+        status_en = "⏳ <b>Healthy Pullback:</b> Macro is Bullish, execution timeframe is retracing. Prime Dip Buying zone."
+
+    else:
+        status_ar = "🔄 <b>تذبذب هيكلي (Mixed Flow):</b> لا يوجد إجماع واضح بين الفريمات الكبيرة والصغيرة."
+        status_en = "🔄 <b>Mixed Flow:</b> Timeframes lack structural consensus."
+
+    return {
+        "macro_1w": trend_1w, "swing_1d": trend_1d, "exec_4h": trend_4h,
+        "tp_modifier": tp_modifier, "ar_text": status_ar, "en_text": status_en
+    }
+import time
+
+def extract_institutional_memory(symbol: str):
+    """
+    [Institutional Memory Bridge] - جسر الذاكرة المؤسساتية
+    يقرأ بصمت من غرفة الاحتضان والماكرو دون أي تداخل مع مهام الرادار اللحظية.
+    """
+    # الرادار يخزن العملات مع USDT، لذا نجهز الرمز ليتطابق مع المصفوفة
+    pair = f"{symbol}USDT" if not symbol.endswith("USDT") else symbol
+    
+    # 1. قراءة الماكرو (Macro Context)
+    macro_score = MACRO_CACHE.get("sentiment_score", 50.0)
+    onchain_fueled_macro = MACRO_CACHE.get("onchain_liquidity_score", 0.0) > 15.0
+    
+    # 2. فحص غرفة الاحتضان (Incubation Check)
+    is_incubated = pair in INCUBATION_MATRIX
+    
+    alert_ar = ""
+    alert_en = ""
+    
+    if is_incubated:
+        inc_data = INCUBATION_MATRIX[pair]
+        # حساب كم يوم مضى على طبخ هذه العملة في غرفة الاحتضان
+        days_in_matrix = (time.time() - inc_data.get('incubation_start', time.time())) / 86400
+        days_str = f"{days_in_matrix:.1f}" if days_in_matrix >= 0.1 else "أقل من يوم"
+        days_str_en = f"{days_in_matrix:.1f} days" if days_in_matrix >= 0.1 else "less than a day"
+        
+        # 🧠 صياغة تنبيه الألفا (Alpha Alert) بناءً على قوة السيولة
+        alert_ar += f"\n🚨 <b>تنبيه ألفا (Alpha Alert):</b>\n"
+        alert_ar += f"👁️‍🗨️ هذه العملة تخضع حالياً للتجميع المخفي وموجودة في <b>غرفة الاحتضان المؤسساتية</b> منذ {days_str}.\n"
+        
+        alert_en += f"\n🚨 <b>ALPHA ALERT:</b>\n"
+        alert_en += f"👁️‍🗨️ This asset is undergoing stealth accumulation and has been in the <b>Incubation Matrix</b> for {days_str_en}.\n"
+        
+        if inc_data.get('onchain_fueled') or onchain_fueled_macro:
+            alert_ar += "🔥 <b>عامل محفز (Catalyst):</b> العملة تتلقى دعماً هائلاً من سيولة الـ On-Chain اللحظية!\n"
+            alert_en += "🔥 <b>Macro Catalyst:</b> Asset is experiencing massive On-Chain liquidity inflows!\n"
+            
+    # 3. صياغة تقييم الماكرو الكلي لربطه مع التحليل
+    macro_state_ar = "إيجابية" if macro_score > 60 else "سلبية" if macro_score < 40 else "حيادية"
+    macro_state_en = "Bullish" if macro_score > 60 else "Bearish" if macro_score < 40 else "Neutral"
+            
+    return {
+        "is_incubated": is_incubated,
+        "text_ar": alert_ar,
+        "text_en": alert_en,
+        "macro_state_ar": macro_state_ar,
+        "macro_state_en": macro_state_en
+    }
+import numpy as np
+import pandas as pd
+
+def calculate_institutional_vpvr_confluence(candles_4h, candles_1d, current_price, trend_direction):
+    """
+    [VPVR Confluence Engine] - محرك التقاء السيولة المؤسساتي
+    يقارن الفوليوم التراكمي لـ 4 ساعات مع اليومي لاستخراج (نواة السيولة / المغناطيس)
+    """
+    # 🛡️ حماية: التأكد من سلامة البيانات
+    if not candles_4h or not candles_1d or isinstance(candles_4h, Exception) or isinstance(candles_1d, Exception):
+        return None, None, None, None
+
+    def get_hvn_profile(candles, num_bins=60):
+        df = pd.DataFrame(candles).iloc[:, :6]
+        df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+        df[["high", "low", "close", "volume"]] = df[["high", "low", "close", "volume"]].apply(pd.to_numeric)
+        
+        # نأخذ آخر 300 شمعة لرسم دورة السوق الحالية
+        recent_df = df.tail(300).copy()
+        min_p, max_p = recent_df['low'].min(), recent_df['high'].max()
+        if min_p == max_p: return pd.DataFrame()
+        
+        bins = np.linspace(min_p, max_p, num_bins)
+        recent_df['typical_price'] = (recent_df['high'] + recent_df['low'] + recent_df['close']) / 3
+        recent_df['bin'] = np.digitize(recent_df['typical_price'], bins) - 1
+        
+        profile = recent_df.groupby('bin')['volume'].sum().reset_index()
+        profile['price'] = profile['bin'].apply(lambda x: bins[x] if x < len(bins) else bins[-1])
+        
+        # تحويل الفوليوم لنسبة مئوية (Normalize) لاكتشاف الذروة
+        profile['vol_norm'] = profile['volume'] / (profile['volume'].max() + 1e-8)
+        return profile
+
+    prof_4h = get_hvn_profile(candles_4h)
+    prof_1d = get_hvn_profile(candles_1d)
+    
+    if prof_4h.empty or prof_1d.empty:
+        return None, None, None, None
+
+    # استخراج العقد ذات السيولة العالية (High Volume Nodes - HVN)
+    hvns_4h = prof_4h[prof_4h['vol_norm'] > 0.6].copy()
+    hvns_1d = prof_1d[prof_1d['vol_norm'] > 0.6].copy()
+    
+    magnets = []
+    tolerance = current_price * 0.015 # 1.5% نسبة تفاوت مقبولة بين الفريمين (Overlap Zone)
+    
+    # 🧠 البحث عن "التقاء السيولة" (Confluence)
+    for _, r4 in hvns_4h.iterrows():
+        p4 = r4['price']
+        # هل توجد عقدة سيولة يومية في نفس هذه المنطقة؟
+        nearby_1d = hvns_1d[(hvns_1d['price'] >= p4 - tolerance) & (hvns_1d['price'] <= p4 + tolerance)]
+        
+        if not nearby_1d.empty:
+            # تم العثور على مغناطيس مؤسساتي! (تقاطع الـ 4H مع اليومي)
+            score = r4['vol_norm'] + nearby_1d['vol_norm'].max()
+            magnets.append({'price': p4, 'score': score, 'is_macro': True})
+        else:
+            # عقدة سيولة لحظية (4H فقط)
+            magnets.append({'price': p4, 'score': r4['vol_norm'], 'is_macro': False})
+            
+    magnets_df = pd.DataFrame(magnets)
+    if magnets_df.empty: return None, None, None, None
+        
+    # فصل مناطق السيولة العلوية (مقاومات/أهداف) والسفلية (دعوم/وقف)
+    above = magnets_df[magnets_df['price'] > current_price * 1.005].sort_values('price')
+    below = magnets_df[magnets_df['price'] < current_price * 0.995].sort_values('price', ascending=False)
+    
+    MAX_SL_PCT = 0.08 # أقصى وقف خسارة 8%
+    
+    if trend_direction == "Bullish":
+        targets = above.nlargest(3, 'score').sort_values('price')['price'].tolist()
+        sl_nodes = below.nlargest(2, 'score')
+        sl = sl_nodes['price'].iloc[0] if not sl_nodes.empty else current_price * 0.95
+        sl = max(sl, current_price * (1 - MAX_SL_PCT))
+    else: # Bearish
+        targets = below.nlargest(3, 'score').sort_values('price', ascending=False)['price'].tolist()
+        sl_nodes = above.nlargest(2, 'score')
+        sl = sl_nodes['price'].iloc[0] if not sl_nodes.empty else current_price * 1.05
+        sl = min(sl, current_price * (1 + MAX_SL_PCT))
+
+    # تعويض الأهداف الناقصة إن وجدت
+    while len(targets) < 3:
+        last_t = targets[-1] if targets else current_price
+        multiplier = 1.03 if trend_direction == "Bullish" else 0.97
+        targets.append(last_t * multiplier)
+        
+    return sl, targets[0], targets[1], targets[2]
 
 @dp.callback_query(F.data.startswith("tf_"))
 async def run_analysis(cb: types.CallbackQuery):
@@ -3830,7 +4102,13 @@ async def run_analysis(cb: types.CallbackQuery):
         else:
             print(f"Edit msg error in analysis: {e}")
 
-    clean_sym = sym.replace("USDT", "").strip().upper()
+     clean_sym = sym.replace("USDT", "").strip().upper()
+    
+    # ====================================================================
+    # 🧠 حقن الذاكرة المؤسساتية (Incubation & Macro Check)
+    # ====================================================================
+    inst_memory = extract_institutional_memory(clean_sym)
+
     
     # --- التعديل الجديد: جلب السيولة وفحص الأمان للـ DEX ---
     is_dex = data.get('is_dex', False)
@@ -3839,22 +4117,30 @@ async def run_analysis(cb: types.CallbackQuery):
     
     dex_warnings_ar, dex_warnings_en = [], []
     
+        # ====================================================================
+    # 🌐 1. جلب الفريمات الثلاثة المتزامنة (3D MTFA Fetching)
+    # نستخدم asyncio.gather لجلب الثلاثة معاً في نفس الوقت بدون تأخير
+    # ====================================================================
     if is_dex:
-        # تقييم المخاطر أولاً
-        dex_warnings_ar, dex_warnings_en, dex_risk = await evaluate_dex_risk(dex_liquidity, dex_vol)
-        
-        network = data.get('network')
-        pool_address = data.get('pool_address')
-        gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
-        candles = await get_candles_dex(network, pool_address, gate_interval, limit=500)
+        tasks = [
+            get_candles_dex(network, pool_address, "4h", limit=500),
+            get_candles_dex(network, pool_address, "1d", limit=200),
+            get_candles_dex(network, pool_address, "1w", limit=100)
+        ]
+        candles_4h, candles_1d, candles_1w = await asyncio.gather(*tasks, return_exceptions=True)
     else:
+        tasks = [
+            get_candles_binance(f"{clean_sym}USDT", "4h", limit=500),
+            get_candles_binance(f"{clean_sym}USDT", "1d", limit=200),
+            get_candles_binance(f"{clean_sym}USDT", "1w", limit=100)
+        ]
+        candles_4h, candles_1d, candles_1w = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # بايننس تستخدم نفس مسميات الفريمات تقريباً
-        gate_interval = {"4h":"4h", "daily":"1d", "weekly":"1w"}.get(tf, "4h")
-        candles = await get_candles_binance(f"{clean_sym}USDT", gate_interval, limit=500)
+    # 🛡️ تحديد الفريم الأساسي الذي طلبه المستخدم لتشغيل باقي الدوال (لكي لا يتعطل الكود القديم)
+    target_tf_index = {"4h": 0, "daily": 1, "weekly": 2}.get(tf, 0)
+    candles = [candles_4h, candles_1d, candles_1w][target_tf_index]
 
-    # 🛑 التغيير الموضعي: جدار حماية يوقف الدالة فوراً إذا مافي شموع كافية
-    if not candles or len(candles) < 3:
+    if isinstance(candles, Exception) or not candles or len(candles) < 3:
         if lang == "ar":
             error_msg = f"⚠️ <b>عذراً، بيانات الإطار الزمني غير كافية لعملة {clean_sym} حالياً.</b>\n🔄 يرجى اختيار إطار زمني أقل (مثل 4 ساعات)."
         else:
@@ -3864,6 +4150,11 @@ async def run_analysis(cb: types.CallbackQuery):
             return await cb.message.edit_text(error_msg, parse_mode=ParseMode.HTML)
         except Exception:
             return await cb.message.answer(error_msg, parse_mode=ParseMode.HTML)
+
+    # 🧠 تشغيل محرك التوافق الزمني في الخلفية
+    mtfa_context = await asyncio.to_thread(calculate_mtfa_context_sync, candles_4h, candles_1d, candles_1w)
+    # ====================================================================
+
 
     # 🟢 لاحظ هنا: شلنا (if candles:) وكل الأسطر اللي تحتها رجعناها لورا مسافة عشان تصير أساسية بالدالة
     # 🟢 التعديل الأول: نقل حساب المؤشرات إلى الخلفية لمنع تعليق البوت
@@ -3909,6 +4200,8 @@ async def run_analysis(cb: types.CallbackQuery):
     buy_v, sell_v, z_score = 0, 0, 0
     is_orderbook_hollow = False 
     is_spoofed = False
+    macro_deriv_action = None # 👈 السطر الجديد
+
     
     # [إصلاح صانع السوق]: إعطاء قيم افتراضية للمتغيرات لمنع الكراش في عملات الديكس
     cvd_trend_val = 0.0
@@ -3927,15 +4220,18 @@ async def run_analysis(cb: types.CallbackQuery):
                 # 🟢 التعديل الجذري: لا تطلب الأوردر بوك إذا كان الفريم كبير!
                                 # 🟢 التعديل الجذري: لا تطلب الأوردر بوك إذا كان الفريم كبير!
                 if current_tf["use_ob"]:
-                    # نحسب الفوليوم اللحظي لآخر 5 شموع ليكون معياراً لقوة الأوردر بوك
+                    # نحسب الفوليوم اللحظي لآخر 5 شموع ليكون معياراً لقوة الأوردر بوك (للـ 4 ساعات فقط)
                     recent_vol_usd = df["volume"].tail(5).mean() * safe_price if len(df) >= 5 else 15000.0
                     depth_task = analyze_orderbook_advanced_manual(clean_sym, client, safe_price, recent_vol_usd)
-
                 else:
-                    # إرجاع بيانات محايدة للفريمات الكبيرة لمنع تلوث التحليل
+                    # 🚀 إذا كنا في فريم يومي أو أسبوعي، نشغل محرك المشتقات الكلي بدل الأوردر بوك
+                    macro_deriv_action = await analyze_macro_derivatives_divergence(clean_sym, client, df, tf)
+                    
+                    # إرجاع بيانات محايدة للأوردر بوك لمنع تلوث التحليل اللحظي
                     async def mock_depth():
                         return {"is_hollow": False, "imbalance": 0.0, "is_spoofed": False, "bid_pressure_ratio": 1.0}
                     depth_task = mock_depth()
+
                 
                 # ... (باقي الكود cvd_task و flow_task و futures_task يبقى كما هو) ...
                 # 2. توافق فريم السيولة الصامتة
@@ -4072,211 +4368,164 @@ async def run_analysis(cb: types.CallbackQuery):
     trend_dir, trend_str, market_action, adx_val, calc_sl, calc_tp1, calc_tp2, calc_tp3, calc_sup, calc_res = await asyncio.to_thread(
         calculate_smart_trend_and_targets, df, price, db_vol_float, lang, final_trend_dir
     )
-
-    # --- تعريف متغيرات التدفق (Fixing NameError) ---
-    try:
-        # 💡 1. المؤسساتي: حساب الـ CVD عبر ميل متسارع (Slope) لتجنب ضوضاء الشمعة الواحدة
-        if 'cvd' in df.columns and len(df) >= 10:
-            cvd_slope = df['cvd'].diff(5).iloc[-1] # قياس ميل تدفق السيولة في آخر 5 شموع
-            cvd_ma = df['cvd'].rolling(10).mean().iloc[-1] # المتوسط المتحرك للسيولة
-            current_cvd = df['cvd'].iloc[-1]
-            
-            # السيولة الحقيقية إيجابية فقط إذا كان الاتجاه صاعد والسعر فوق متوسط السيولة
-            bullish_flow = (cvd_slope > 0) and (current_cvd > cvd_ma)
-            bearish_flow = (cvd_slope < 0) and (current_cvd < cvd_ma)
-        else:
-            # خط دفاعي في حال عدم توفر بيانات كافية
-            cvd_diff = df['cvd'].diff().iloc[-1] if 'cvd' in df.columns else 0
-            bullish_flow = cvd_diff > 0
-            bearish_flow = cvd_diff < 0
-    except:
-        bullish_flow = False
-        bearish_flow = False
-
-    # 💡 2. المؤسساتي: حساب الحدود الديناميكية للـ RSI (Dynamic Thresholds)
-    try:
-        if 'rsi' in df.columns and len(df) >= 14:
-            rsi_ma = df['rsi'].rolling(14).mean().iloc[-1]
-        else:
-            rsi_ma = 50.0
-        
-        # النطاق يتسع ويضيق حسب حالة السوق (بدل 70 و 30 الثابتة)
-        rsi_upper = rsi_ma + 15  
-        rsi_lower = rsi_ma - 15  
-    except:
-        rsi_ma, rsi_upper, rsi_lower = 50.0, 65.0, 35.0
-
-    # ==========================================
-    # 🤖 المولد النصي الكمي المؤسساتي (Quant Text Generator)
-    # ==========================================
-    
-            # ==========================================
-    # 🤖 المولد النصي الكمي المؤسساتي (Quant Text Generator)
-    # ==========================================
-    
-    # 💡 التعديل الأول: تقريب الـ MACD والـ RSI لمرتبتين عشريتين من الجذور (Formatting Fix)
-            # إرجاع القيم لدقتها الأصلية لحماية العملات ذات الكسور العميقة
-    safe_rsi = float(last_rsi) if not pd.isna(last_rsi) else 50.0
-    safe_macd = float(last_macd) if not pd.isna(last_macd) else 0.0
-            # 💡 التعديل: إخفاء Z-Score تماماً لعملات الـ DEX
-    vol_state = "" if is_dex else f"(Z-Score: {z_score:.1f})"
+    # ====================================================================
+    # 🧲 محرك خريطة السيولة المؤسساتية (VPVR Confluence Overwrite)
+    # ====================================================================
+    conf_sl, conf_tp1, conf_tp2, conf_tp3 = await asyncio.to_thread(
+        calculate_institutional_vpvr_confluence, candles_4h, candles_1d, price, final_trend_dir
+    )
+    if conf_sl is not None:
+        calc_sl, calc_tp1, calc_tp2, calc_tp3 = conf_sl, conf_tp1, conf_tp2, conf_tp3
 
     # ====================================================================
-    # 🧠 المحرك الكمي المطور (Institutional Conviction & Mean Reversion Engine)
-    # يقضي على التحيز التأكيدي (Confirmation Bias) للفريمات الكبيرة والصغيرة
+    # 🎯 محرك كبح المخاطر المؤسساتي (TP & SL Dynamic Risk Modifier)
     # ====================================================================
+    dist_tp1, dist_tp2, dist_tp3 = calc_tp1 - price, calc_tp2 - price, calc_tp3 - price
+    dist_sl = calc_sl - price
     
-    # 1. حساب الانحراف المعياري لحركة السعر (Price Z-Score / Mean Reversion Risk)
-    # هل المستخدم يسأل عن عملة طارت بالفعل وصارت خطرة؟ أم عملة في القاع؟
+    # تعديل الأهداف حسب الماكرو
+    calc_tp1 = price + (dist_tp1 * mtfa_context['tp_modifier'])
+    calc_tp2 = price + (dist_tp2 * mtfa_context['tp_modifier'])
+    calc_tp3 = price + (dist_tp3 * mtfa_context['tp_modifier'])
+    
+    # 🛡️ الإضافة الجوهرية: تضييق الوقف (SL) إذا كانت الأهداف ضيقة للحفاظ على R:R
+    sl_modifier = mtfa_context['tp_modifier'] if mtfa_context['tp_modifier'] < 1.0 else 1.0
+    calc_sl = price + (dist_sl * sl_modifier)
+
+    # ====================================================================
+    # 🧠 المحرك الكمي المطور (العمليات الحسابية يجب أن تسبق الـ AI)
+    # ====================================================================
     recent_returns = df['close'].pct_change().dropna().tail(20)
     price_z_score = (recent_returns.iloc[-1] - recent_returns.mean()) / (recent_returns.std() + 1e-8)
     
-    # 2. حساب حافة الفوليوم (Volume Edge) باستخدام CDF (احتمالية من 0 إلى 100)
     vol_edge = quant_cdf_score(z_score, limit=100.0)
-    
-    # 3. حساب حافة التدفق (Orderflow Edge) للتغلب على نقص الأوردر بوك في الفريمات الكبيرة
-    # نستخدم delta_usd مقارنة بمتوسط السيولة
-    avg_vol_usd = df["volume"].tail(20).mean() * price
-    flow_ratio = (delta_usd / avg_vol_usd) if avg_vol_usd > 0 else 0.0
-    
-    # إذا كانت DEX، التدفق اللحظي غير متاح، فنعتمد على ميل السيولة الكلية
+    avg_vol_usd_recent = df["volume"].tail(20).mean() * price
+    flow_ratio = (delta_usd / avg_vol_usd_recent) if avg_vol_usd_recent > 0 else 0.0
     if is_dex and 'cvd' in df.columns and len(df) >= 10:
-        cvd_slope = df['cvd'].diff(5).iloc[-1]
-        flow_ratio = (cvd_slope / avg_vol_usd) if avg_vol_usd > 0 else 0.0
+        flow_ratio = (df['cvd'].diff(5).iloc[-1] / avg_vol_usd_recent) if avg_vol_usd_recent > 0 else 0.0
         
     flow_edge = quant_sigmoid_score(flow_ratio, sensitivity=5.0, limit=100.0)
-    # 4. بناء السكور المؤسساتي النهائي (Absolute Confidence Score)
-    # نحول التدفق والمؤشرات لتكون إيجابية دائماً "باتجاه الترند" لحساب نسبة الثقة
-    if final_trend_dir == "Bullish":
-        directional_flow = flow_edge
-        directional_rsi = safe_rsi
-    else:
-        directional_flow = 100.0 - flow_edge # في الهبوط، التدفق الصفر يعني 100% ثقة بالهبوط
-        directional_rsi = 100.0 - safe_rsi   # في الهبوط، الـ RSI المنخفض يعني زخم بيعي قوي
+    safe_rsi = float(last_rsi) if not pd.isna(last_rsi) else 50.0
+    safe_macd = float(last_macd) if not pd.isna(last_macd) else 0.0
 
-    # دمج الفوليوم مع التدفق الاتجاهي (نسبة الثقة النهائية)
-    conviction_score = (vol_edge * 0.30) + (directional_flow * 0.50) + (directional_rsi * 0.20)
+    if final_trend_dir == "Bullish":
+        conviction_score = (vol_edge * 0.30) + (flow_edge * 0.50) + (safe_rsi * 0.20)
+        if price_z_score > 2.0 and flow_edge < 50.0: conviction_score *= math.exp(-0.5 * price_z_score) 
+    else:
+        conviction_score = (vol_edge * 0.30) + ((100.0 - flow_edge) * 0.50) + ((100.0 - safe_rsi) * 0.20)
+        if price_z_score < -2.0 and flow_edge > 50.0: conviction_score *= math.exp(0.5 * price_z_score) 
+
+    # ====================================================================
+    # 🤖 محرك تقييم الثقة التنبؤي (AI Call & Justification)
+    # ====================================================================
+    try:
+        micro_vol = float(df['close'].tail(20).pct_change().std() * 100) if len(df) > 20 else 0.0
+        ml_features = {
+            'market_regime': 0,
+            'sp500_trend': float(MACRO_CACHE.get("sp500_trend", 0.0)),
+            'sentiment_score': float(MACRO_CACHE.get("sentiment_score", 50.0)),
+            'z_score': float(z_score),
+            'cvd_to_vol_ratio': float((delta_usd / (avg_vol_usd_recent + 1e-8)) * 100),
+            'ofi_imbalance': float(depth_data.get('imbalance', 0.0)) if not is_dex else 0.0,
+            'ob_skewness': float(depth_data.get('bid_pressure_ratio', 1.0)) if not is_dex else 1.0,
+            'whale_inflow': float(MACRO_CACHE.get("global_funding_health", 50.0) / 50.0),
+            'adx': float(adx_val),
+            'rsi': float(safe_rsi),
+            'micro_volatility': micro_vol,
+            'cvd_divergence': 1.0 if (price > df['close'].ewm(span=200).mean().iloc[-1] and delta_usd < 0) else 0.0,
+            'funding_rate': float(funding_val)
+        }
+        ai_conviction = await asyncio.to_thread(predict_signal_sync, ml_features)
+    except: ai_conviction = -1.0
+
+    final_conviction_score = ai_conviction if ai_conviction != -1.0 else conviction_score
+    ai_badge = "🤖 ML Model" if ai_conviction != -1.0 else "📐 Quant Algo"
+
+    justification_ar, justification_en = [], []
+    if mtfa_context['tp_modifier'] > 1.0: 
+        justification_ar.append("توافق كلي"); justification_en.append("Macro Alignment")
+    elif mtfa_context['tp_modifier'] < 1.0: 
+        justification_ar.append("ارتداد عكسي"); justification_en.append("Counter-Trend")
+        
+    if delta_usd > 0 and final_trend_dir == "Bullish": 
+        justification_ar.append("تدفق إيجابي"); justification_en.append("Positive Flow")
+    elif delta_usd < 0 and final_trend_dir == "Bearish": 
+        justification_ar.append("تفريغ حقيقي"); justification_en.append("Genuine Drain")
+
+    just_text_ar = " و ".join(justification_ar) if justification_ar else "زخم هيكلي"
+    just_text_en = " & ".join(justification_en) if justification_en else "Structural Momentum"
     
-    # عقاب الفومو (Late FOMO Penalty): للسوق الصاعد
-    if final_trend_dir == "Bullish" and price_z_score > 2.0 and flow_edge < 50.0:
-        conviction_score *= math.exp(-0.5 * price_z_score) 
-        
-    # عقاب الانهيار الكاذب (Fake Dump Penalty): للسوق الهابط
-    elif final_trend_dir == "Bearish" and price_z_score < -2.0 and flow_edge > 50.0:
-        conviction_score *= math.exp(0.5 * price_z_score) 
-        
-    # 5. تحليل التباين الهيكلي (Macro Divergence)
+    trend_strength_ar = f"<b>{final_conviction_score:.1f}%</b> [{ai_badge}] (مدعوم بـ: {just_text_ar})"
+    trend_strength_en = f"<b>{final_conviction_score:.1f}%</b> [{ai_badge}] (Backed by: {just_text_en})"
+
+    # ====================================================================
+    # 💬 المولد النصي المؤسساتي (Quant Text Generator)
+    # ====================================================================
     is_fomo_trap = price_z_score > 2.0 and flow_edge < 40.0 and vol_edge < 60.0
     is_capitulation_absorption = price_z_score < -2.0 and flow_edge > 60.0 and vol_edge > 70.0
     is_trend_backed_by_flow = (final_trend_dir == "Bullish" and flow_edge > 60.0) or (final_trend_dir == "Bearish" and flow_edge < 40.0)
-
-
-    # إرجاع القيم لدقتها الأصلية
-    safe_rsi = float(last_rsi) if not pd.isna(last_rsi) else 50.0
-    safe_macd = float(last_macd) if not pd.isna(last_macd) else 0.0
     vol_state = "" if is_dex else f"(Z-Score: {z_score:.1f})"
 
-    # ==========================================
-    # 🤖 المولد النصي الكمي المؤسساتي (Quant Text Generator)
-    # ==========================================
     if lang == "ar":
-        # 1. نصوص المؤشرات المبنية على الانحرافات الإحصائية
-        if safe_rsi >= rsi_upper: rsi_txt = f"انحراف شرائي حاد. السعر خارج اعلى من قيمته العادلة، خطر الانعكاس (Mean Reversion) مرتفع."
-        elif safe_rsi <= rsi_lower: rsi_txt = f"تشبع بيعي. السعر يتداول دون قيمته العادلة (Undervalued)، احتمالية تكوين قاع."
-        else: rsi_txt = f"زخم متوازن. السعر يتمركز بثبات حول مناطق القيمة العادلة (Fair Value)."
-        
-        if adx_val >= 25: adx_txt = "ترند صريح وقوي. المؤسسات تدعم هذا المسار بزخم واضح."
-        else: adx_txt = "انخفاض حاد في التقلبات. تذبذب عرضي وانتظار لضخ سيولة جديدة."
-        
-        if safe_macd > 0: macd_txt = "تمركز سيولة إيجابي على المدى القصير (سيطرة مشترين)."
-        else: macd_txt = "ضغوط تسييل بيعية على المدى القصير (سيطرة بائعين)."
-        
-        # 2. توليد حالة السوق (Market Action) بناءً على قناعة الذكاء الاصطناعي
-        if final_trend_dir == "Bullish":
-            real_trend = "صاعد"
-            if is_fomo_trap:
-                market_action = f"فخ تحيز تأكيدي (FOMO Trap)! السعر صعد بقوة لكن التدفق المالي ضعيف جداً {vol_state}. احذر من تصريف مفاجئ."
-                trend_strength = "مخادع (احتمال انعكاس قاسي)"
-            elif is_trend_backed_by_flow:
-                market_action = f"ترند صحي ومدعوم بتدفق أموال مؤسساتي (Orderflow Backed) {vol_state}. المشترون يمتصون العروض."
-                trend_strength = f"قوي (درجة الثقة {conviction_score:.0f}%)"
-            else:
-                market_action = f"صعود باهت بسبب ضعف السيولة (Low Vol Markup) {vol_state}. الحركة تفتقر للزخم المؤسساتي."
-                trend_strength = "ضعيف (سيولة هشة)"
-                
-        else: # Bearish
-            real_trend = "هابط"
-            if is_capitulation_absorption:
-                market_action = f"استسلام بيعي (Capitulation) يقابله امتصاص شرائي ضخم {vol_state}! الحيتان تشتري الذعر اللحظي لبناء قاع."
-                trend_strength = "ارتداد محتمل (بناء قاع)"
-            elif is_trend_backed_by_flow:
-                market_action = f"سيطرة بيعية حقيقية وتفريغ مستمر للسيولة (Liquidity Drain) {vol_state}. الهبوط مدعوم بتدفق سلبي."
-                trend_strength = f"قوي (درجة الثقة {conviction_score:.0f}%)"
-            else:
-                market_action = f"هبوط بطيء بلا زخم حقيقي (Low Vol Markdown) {vol_state}. غياب للمشترين أكثر من كونه قوة بيعية."
-                trend_strength = "متذبذب (هبوط صامت)"
-
-        if is_spoofed: market_action += " [رصدنا خوارزميات تضع جدران وهمية للتلاعب بالسعر]"
-        if is_orderbook_hollow: market_action += " [رصدنا فراغ سيولي، السعر قد ينزلق بعنف]"
-        if funding_val < -0.001 and not is_dex: market_action += " [تمويل سالب بشدة: خطر تصفية البائعين Short Squeeze]"
-
-    else: # English Version (Institutional Grade)
-        if safe_rsi >= rsi_upper: rsi_txt = f"Statistical deviation ({safe_rsi:.1f}). Overextended beyond Fair Value, extreme Mean Reversion risk."
-        elif safe_rsi <= rsi_lower: rsi_txt = f"Deep Oversold ({safe_rsi:.1f}). Trading at a severe discount, bottom formation probable."
-        else: rsi_txt = f"Balanced Momentum ({safe_rsi:.1f}). Price respecting Fair Value boundaries."
-        
-        if adx_val >= 25: adx_txt = "Strong Directional Conviction. Trend backed by institutional momentum."
-        else: adx_txt = "Volatility Contraction. Range-bound chop, awaiting liquidity injection."
-        
-        if safe_macd > 0: macd_txt = "Positive short-term capital deployment."
-        else: macd_txt = "Negative short-term capital extraction."
+        trend_strength_display = trend_strength_ar
+        real_trend = "صاعد 🟢" if final_trend_dir == "Bullish" else "هابط 🔴"
         
         if final_trend_dir == "Bullish":
-            real_trend = "Bullish"
-            if is_fomo_trap:
-                market_action = f"FOMO TRAP! Price rallied but Orderflow is severely disconnected {vol_state}. High risk of sudden distribution."
-                trend_strength = "Fake (High Reversion Risk)"
-            elif is_trend_backed_by_flow:
-                market_action = f"Healthy trend fully backed by positive Institutional Orderflow {vol_state}. Bids absorbing ask liquidity."
-                trend_strength = f"Strong ({conviction_score:.0f}% Quant Conviction)"
-            else:
-                market_action = f"Low Volume Markup {vol_state}. Uptrend lacks genuine institutional footprint."
-                trend_strength = "Weak (Fragile Liquidity)"
-                
-        else: # Bearish
-            real_trend = "Bearish"
-            if is_capitulation_absorption:
-                market_action = f"Capitulation Event! Massive panic selling met with hidden limit buy absorption {vol_state}. Bottom forming."
-                trend_strength = "Reversal (Bottoming)"
-            elif is_trend_backed_by_flow:
-                market_action = f"Genuine distribution and continuous liquidity drain {vol_state}. Sellers in full control."
-                trend_strength = f"Strong ({conviction_score:.0f}% Quant Conviction)"
-            else:
-                market_action = f"Low Volume Markdown {vol_state}. Dropping due to lack of bids rather than aggressive selling."
-                trend_strength = "Choppy (Silent Drop)"
-
-        if is_spoofed: market_action += " [Algorithmic Spoofing Detected in Orderbook]"
-        if is_orderbook_hollow: market_action += " [Liquidity Void: High slippage risk]"
-        if funding_val < -0.001 and not is_dex: market_action += " [Deep Negative Funding: Short Squeeze Imminent]"
-
-    # بناء التقرير النهائي
-    macd_fmt = format_price(safe_macd)
-    if is_dex:
-        market_action = f"(تحليل شبكة DEX) | {market_action}" if lang == "ar" else f"(DEX Network) | {market_action}"
-
-    # 👇👇 السطور الجديدة التي ستضيفها هنا 👇👇
-    dex_alert_str = ""
-    if is_dex and dex_warnings_ar:
-        if lang == "ar":
-            dex_alert_str = "\n🛡️ <b>تدقيق أمان اللامركزية (DEX Audit):</b>\n" + "\n".join(dex_warnings_ar) + "\n"
+            if is_fomo_trap: market_action = f"فخ تحيز تأكيدي (FOMO Trap)! صعود بلا تدفق مالي {vol_state}."
+            elif is_trend_backed_by_flow: market_action = f"ترند صحي ومدعوم بتدفق أموال مؤسساتي {vol_state}."
+            else: market_action = f"صعود باهت بسبب ضعف السيولة {vol_state}."
         else:
-            dex_alert_str = "\n🛡️ <b>DEX Security Audit:</b>\n" + "\n".join(dex_warnings_en) + "\n"
-    # 👆👆 نهاية السطور الجديدة 👆👆
+            if is_capitulation_absorption: market_action = f"استسلام بيعي يقابله امتصاص شرائي ضخم {vol_state}! الحيتان تبني قاعاً."
+            elif is_trend_backed_by_flow: market_action = f"سيطرة بيعية وتفريغ مستمر للسيولة {vol_state}."
+            else: market_action = f"هبوط بطيء بلا زخم حقيقي {vol_state}."
 
+        if current_tf["use_ob"]: 
+            if is_spoofed: market_action += " [رصدنا جدران وهمية للتلاعب]"
+            if is_orderbook_hollow: market_action += " [فراغ سيولي، السعر قد ينزلق]"
+            if funding_val < -0.001 and not is_dex: market_action += " [خطر تصفية Short Squeeze]"
+        elif macro_deriv_action and not is_dex:
+            market_action += f" | {macro_deriv_action['ar']}"
+            
+        dex_alert_str = ("\n🛡️ <b>تدقيق أمان DEX:</b>\n" + "\n".join(dex_warnings_ar) + "\n") if (is_dex and dex_warnings_ar) else ""
+
+    else:
+        trend_strength_display = trend_strength_en
+        real_trend = "Bullish 🟢" if final_trend_dir == "Bullish" else "Bearish 🔴"
+        
+        if final_trend_dir == "Bullish":
+            if is_fomo_trap: market_action = f"FOMO TRAP! Price rallied but Orderflow is disconnected {vol_state}."
+            elif is_trend_backed_by_flow: market_action = f"Healthy trend backed by Institutional Orderflow {vol_state}."
+            else: market_action = f"Low Volume Markup {vol_state}."
+        else:
+            if is_capitulation_absorption: market_action = f"Capitulation Event! Panic selling met with absorption {vol_state}."
+            elif is_trend_backed_by_flow: market_action = f"Genuine distribution and liquidity drain {vol_state}."
+            else: market_action = f"Low Volume Markdown {vol_state}."
+
+        if current_tf["use_ob"]: 
+            if is_spoofed: market_action += " [Algorithmic Spoofing Detected]"
+            if is_orderbook_hollow: market_action += " [Liquidity Void: High slippage risk]"
+            if funding_val < -0.001 and not is_dex: market_action += " [Deep Negative Funding: Short Squeeze]"
+        elif macro_deriv_action and not is_dex:
+            market_action += f" | {macro_deriv_action['en']}"
+
+        dex_alert_str = ("\n🛡️ <b>DEX Security Audit:</b>\n" + "\n".join(dex_warnings_en) + "\n") if (is_dex and dex_warnings_en) else ""
+
+    if is_dex:
+        market_action = f"(شبكة DEX) | {market_action}" if lang == "ar" else f"(DEX Network) | {market_action}"
+
+    # ====================================================================
+    # 📊 التقرير النهائي (The Final Output)
+    # ====================================================================
+    macd_fmt = format_price(safe_macd)
+    inst_txt = inst_memory['text_ar'] if lang == "ar" else inst_memory['text_en']
+    macro_state = inst_memory['macro_state_ar'] if lang == "ar" else inst_memory['macro_state_en']
+    mtfa_txt = mtfa_context['ar_text'] if lang == "ar" else mtfa_context['en_text']
+    
     if lang == "ar":
         final_report = f"""
-📊 <b>التحليل لـ {clean_sym}</b> | {tf} | <code>{format_price(price)}$</code>
-الاتجاه: {real_trend} ({trend_strength})
+📊 <b>التحليل لـ {clean_sym}</b> | {tf} | <code>{format_price(price)}$</code>{inst_txt}
+الاتجاه: <b>{real_trend}</b>
+درجة الثقة: {trend_strength_display}
 
 📉 <b>الدعم والمقاومة</b>
 الدعم الأقرب: <code>{format_price(calc_sup)}$</code>
@@ -4290,17 +4539,17 @@ TP3: <code>{format_price(calc_tp3)}</code>
 🛑 <b>وقف الخسارة (SL)</b>
 Stop Loss: <code>{format_price(calc_sl)}</code>
 
-📈 <b>تحليل المؤشرات والسيولة</b>
+📈 <b>تحليل التدفق والسيولة</b>
+• <b>حالة الماكرو:</b> {macro_state}
+• <b>التوافق الزمني:</b> {mtfa_txt}
 • <b>التدفق:</b> {market_action}
-• <b>مؤشر (RSI) ({safe_rsi:.1f}):</b> {rsi_txt}
-• <b>مؤشر (MACD) ({macd_fmt}):</b> {macd_txt}
-• <b>مؤشر (ADX) ({adx_val:.1f}):</b> {adx_txt}
-{dex_alert_str}
-"""
+• <b>المؤشرات الفنية:</b> RSI: {safe_rsi:.1f} | MACD: {macd_fmt} | ADX: {adx_val:.1f}
+{dex_alert_str}"""
     else:
         final_report = f"""
-📊 <b>Analysis: {clean_sym}</b> | {tf} | <code>{format_price(price)}$</code>
-Trend: {real_trend} ({trend_strength})
+📊 <b>Analysis: {clean_sym}</b> | {tf} | <code>{format_price(price)}$</code>{inst_txt}
+Trend: <b>{real_trend}</b>
+Quant Conviction: {trend_strength_display}
 
 📉 <b>Support & Resistance</b>
 Nearest Support: <code>{format_price(calc_sup)}$</code>
@@ -4314,19 +4563,20 @@ TP3: <code>{format_price(calc_tp3)}</code>
 🛑 <b>Stop Loss (SL)</b>
 Stop Loss: <code>{format_price(calc_sl)}</code>
 
-📈 <b>Liquidity & Indicators</b>
+📈 <b>Flow & Liquidity</b>
+• <b>Macro State:</b> {macro_state}
+• <b>Timeframe Alignment:</b> {mtfa_txt}
 • <b>Flow:</b> {market_action}
-• <b>RSI ({safe_rsi:.1f}):</b> {rsi_txt}
-• <b>MACD ({macd_fmt}):</b> {macd_txt}
-• <b>ADX ({adx_val:.1f}):</b> {adx_txt}
-{dex_alert_str}
-"""
-    # 3. إرسال النتيجة فوراً للمستخدم (بدون انتظار أي سيرفر خارجي)
+• <b>Quant Indicators:</b> RSI: {safe_rsi:.1f} | MACD: {macd_fmt} | ADX: {adx_val:.1f}
+{dex_alert_str}"""
+
+    # 3. إرسال النتيجة فوراً للمستخدم
     try:
         await cb.message.edit_text(final_report, parse_mode=ParseMode.HTML)
     except Exception as e:
         if "message is not modified" not in str(e):
             await cb.message.answer(final_report, parse_mode=ParseMode.HTML)
+
 
 
     
