@@ -4115,8 +4115,12 @@ async def run_analysis(cb: types.CallbackQuery):
     dex_liquidity = data.get('liquidity_usd', 0.0) 
     dex_vol = data.get('volume_24h', 0.0)
     
-    depth_data = {} # 🛡️ الجدار الآمن: تعريف المتغير فارغاً لمنع كراش الديكس في محرك الـ AI
+    # 🚨 السطران المفقودان: استخراج الشبكة وعنوان المجمع من ذاكرة المستخدم!
+    network = data.get('network', '')
+    pool_address = data.get('pool_address', '')
     
+    depth_data = {} # 🛡️ الجدار الآمن: تعريف المتغير فارغاً لمنع كراش الديكس في محرك الـ AI
+
     if is_dex:
         # 🚨 تفعيل محرك فحص أمان الديكس (الذي كان صامتاً في الكود القديم)
         dex_warnings_ar, dex_warnings_en, _ = await evaluate_dex_risk(dex_liquidity, dex_vol)
