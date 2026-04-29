@@ -1815,7 +1815,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 elif dominant_pillar == "tech" and scores["tech"] >= 85.0: final_signal = "Pre-Breakout Squeeze ⚡"
                 else: final_signal = "High Probability Setup 🎯"
             else:
-                final_signal = "Active Accumulation ⏳"
+                final_signal = "Active Accumulation 🧲"
 
             # ==========================================
             # 🌉 جسر توحيد المتغيرات (Variable Unification Bridge)
