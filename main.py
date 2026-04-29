@@ -4208,21 +4208,24 @@ async def run_analysis(cb: types.CallbackQuery):
         
     import pandas as pd 
     df = pd.DataFrame(candles)
-    
-    # 🟢 الحل الجذري لمنع التعليق: التمييز بين شكل شموع بايننس وشموع الـ DEX
     if len(df.columns) >= 7:
-        # مسار بايننس (يوجد 7 أعمدة فأكثر)
         df = df.iloc[:, :7]
         df.columns = ["timestamp", "volume", "close", "high", "low", "open", "taker_buy_vol"]
+        for col in ["close", "high", "low", "open", "volume", "taker_buy_vol"]:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
     else:
-        # مسار الـ DEX (الشموع تأتي بـ 6 أعمدة فقط)
         df = df.iloc[:, :6]
         df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
-        # إضافة عمود وهمي بأصفار للـ DEX حتى لا تنهار الحسابات السفلية التي تطلبه
-        df["taker_buy_vol"] = 0.0
+        for col in ["close", "high", "low", "open", "volume"]:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+        # 🧠 الحل الكمّي لسد ثغرة الديكس (Tick Volume Proxy)
+        # استنتاج التدفق الشرائي رياضياً من ضغط الإغلاق لتغذية الـ AI والـ CVD ببيانات منطقية
+        price_range = df["high"] - df["low"]
+        price_range = price_range.replace(0, 1e-8) # حماية من القسمة على صفر
+        buy_pressure = (df["close"] - df["low"]) / price_range
+        df["taker_buy_vol"] = df["volume"] * buy_pressure
 
-    for col in ["close", "high", "low", "open", "volume", "taker_buy_vol"]:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
 
         
     db_vol_float = 0.0
@@ -4390,24 +4393,28 @@ async def run_analysis(cb: types.CallbackQuery):
     # الانفجار يتحقق إذا كان الفوليوم الفعلي ضخم (شمعة أغلقت)، أو الفوليوم التنبؤي مرعب، أو سرعة التدفق أضعاف المعتاد
     vol_surge = (current_vol > (avg_vol_20 * 1.5)) or (projected_vol > (avg_vol_20 * 1.8)) or (current_velocity > (avg_velocity * 2.2))
     # ====================================================================
-
     # أ. شروط انعكاس الاتجاه من هابط إلى صاعد (اصطياد القاع الاستباقي)
     if classic_trend == "Bearish":
-        # 🛡️ الفلتر المؤسساتي القاتل: هل السيولة حقيقية أم مجرد إغلاق شورت؟
         is_short_covering = (fut_sig == "Short_Covering")
-
         if not is_short_covering:
             if (cvd_sig == "Micro_Silent_Accumulation" or buy_v > (sell_v * 1.5)) or (last_rsi < 35 and last_macd > 0 and vol_surge):
                 final_trend_dir = "Bullish"
 
     # ب. شروط انعكاس الاتجاه من صاعد إلى هابط (الهروب المبكر من القمة)
     elif classic_trend == "Bullish":
-        # 🛡️ حماية عكسية: هل هو تصريف أم تصفية مراكز شراء مفرطة الرافعة (Long Squeeze)؟
         is_long_squeeze = (fut_sig == "OI_Rising" and delta_usd < 0 and funding_val > 0.001)
-
         if not is_long_squeeze:
             if (cvd_sig == "Hidden_Distribution" or sell_v > (buy_v * 1.5)) or (last_rsi > 75 and last_macd < 0 and vol_surge):
                 final_trend_dir = "Bearish"
+
+    # 🛡️ حق النقض المؤسساتي (Macro Veto) لمنع انفصام الاتجاه
+    is_1w_bear, is_1d_bear, is_4h_bear = mtfa_context['macro_1w'] == "Bearish", mtfa_context['swing_1d'] == "Bearish", mtfa_context['exec_4h'] == "Bearish"
+    is_1w_bull, is_1d_bull, is_4h_bull = mtfa_context['macro_1w'] == "Bullish", mtfa_context['swing_1d'] == "Bullish", mtfa_context['exec_4h'] == "Bullish"
+    
+    if is_1w_bear and is_1d_bear and is_4h_bear:
+        final_trend_dir = "Bearish" # إجبار الاتجاه ليكون هابطاً في حالة Death Spiral
+    elif is_1w_bull and is_1d_bull and is_4h_bull:
+        final_trend_dir = "Bullish" # إجبار الاتجاه ليكون صاعداً في التوافق الذهبي
  
     # 3. حساب الدعم والمقاومة والأهداف بناءً على الاتجاه "المُوحّد" لمنع التضارب
             # 3. حساب الدعم والمقاومة والأهداف في الخلفية لمنع التضارب والتعليق
@@ -4445,10 +4452,19 @@ async def run_analysis(cb: types.CallbackQuery):
     calc_tp1 = price + (dist_tp1 * dynamic_tp_mod)
     calc_tp2 = price + (dist_tp2 * dynamic_tp_mod)
     calc_tp3 = price + (dist_tp3 * dynamic_tp_mod)
-    
-    # 🛡️ تضييق الوقف (SL) إذا كانت الأهداف ضيقة للحفاظ على R:R
+    # 🛡️ تضييق الوقف (SL) مع حماية مؤسساتية (Hard Floor)
     sl_modifier = dynamic_tp_mod if dynamic_tp_mod < 1.0 else 1.0
-    calc_sl = price + (dist_sl * sl_modifier)
+    raw_sl = price + (dist_sl * sl_modifier)
+    
+    min_sl_distance_pct = 0.015 # حد أدنى 1.5% لمسافة وقف الخسارة
+    
+    if final_trend_dir == "Bullish":
+        max_allowed_sl = price * (1.0 - min_sl_distance_pct)
+        # نأخذ الرقم الأبعد عن السعر الحالي لحماية الوقف من ذيول الشموع
+        calc_sl = min(raw_sl, max_allowed_sl) 
+    else: # Bearish
+        min_allowed_sl = price * (1.0 + min_sl_distance_pct)
+        calc_sl = max(raw_sl, min_allowed_sl)
 
     # ====================================================================
     # 🧠 المحرك الكمي المطور (العمليات الحسابية يجب أن تسبق الـ AI)
@@ -4538,13 +4554,13 @@ async def run_analysis(cb: types.CallbackQuery):
     
     trend_strength_ar = f"<b>{final_conviction_score:.1f}%</b> (مدعوم بـ: {just_text_ar})"
     trend_strength_en = f"<b>{final_conviction_score:.1f}%</b> (Backed by: {just_text_en})"
-
     # ====================================================================
     # 💬 المولد النصي المؤسساتي (Quant Text Generator)
     # ====================================================================
     is_fomo_trap = price_z_score > 2.0 and flow_edge < 40.0 and vol_edge < 60.0
     is_capitulation_absorption = price_z_score < -2.0 and flow_edge > 60.0 and vol_edge > 70.0
-    is_trend_backed_by_flow = (final_trend_dir == "Bullish" and flow_edge > 60.0) or (final_trend_dir == "Bearish" and flow_edge < 40.0)
+    # 🛡️ إضافة شرط z_score > 1.0 لضمان عدم مدح سيولة وهمية في أسواق ميتة
+    is_trend_backed_by_flow = (final_trend_dir == "Bullish" and flow_edge > 60.0 and z_score > 1.0) or (final_trend_dir == "Bearish" and flow_edge < 40.0 and z_score > 1.0)
     vol_state = "" if is_dex else f"(Z-Score: {z_score:.1f})"
 
     if lang == "ar":
