@@ -1923,14 +1923,14 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             is_macro_downtrend = price < ema200_val
             current_regime_trend = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
 
-            required_score = 75.0 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 70.0
+            required_score = 65.0 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 60.0
             
             # 🌟 تخفيض سكور القبول 5 نقاط كاملة إذا كانت العملة تُطبخ في غرفة الاحتضان!
             if is_incubated: 
                 required_score -= 5.0
                 print(f"🎯 [Incubator Bypass] {symbol} threshold lowered to {required_score} due to Macro Coiling!")
 
-            required_confluence = 2 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 2
+            required_confluence = 1 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 1
 
             if score >= required_score and confluence_count >= required_confluence:    
                 avg_vol_usd_for_depth = avg_vol_20 * price if avg_vol_20 > 0 else 15000.0
