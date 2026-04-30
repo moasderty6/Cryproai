@@ -3992,7 +3992,9 @@ def calculate_mtfa_context_sync(candles_4h, candles_1d, candles_1w):
             return "Unknown"
         df = pd.DataFrame(candles).iloc[:, :6]
         df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
-        df["close"] = pd.to_numeric(df["close"], errors='coerce')
+        
+        # 🔴 الإصلاح هنا: تحويل جميع الأعمدة المطلوبة إلى أرقام (Floats) قبل أي عملية حسابية
+        df[["high", "low", "close", "volume"]] = df[["high", "low", "close", "volume"]].apply(pd.to_numeric, errors='coerce')
         
         # 🧠 [Institutional Edge]: 1D Kalman Filter (Zero-Lag) + Volume Weighting
         df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3.0
@@ -4002,7 +4004,9 @@ def calculate_mtfa_context_sync(candles_4h, candles_1d, candles_1w):
         
         # 2. مرشح كالمان (Kalman Filter) للضجيج السعري السريع
         import numpy as np
-        prices = df['close'].values
+        prices = df['close'].dropna().values # dropna للحماية الإضافية
+        if len(prices) == 0: return "Unknown"
+        
         n = len(prices)
         xhat = np.zeros(n) # التوقع
         p = np.zeros(n)    # خطأ التوقع
@@ -4020,6 +4024,7 @@ def calculate_mtfa_context_sync(candles_4h, candles_1d, candles_1w):
         
         # الاتجاه صاعد فقط إذا كان التوقع الرياضي (Kalman) والسعر فوق الـ VWAP التراكمي
         return "Bullish" if (current_kalman > current_vwap and prices[-1] > current_vwap) else "Bearish"
+
 
 
     trend_4h = get_trend(candles_4h)
