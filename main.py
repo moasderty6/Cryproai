@@ -1755,6 +1755,9 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             
             tags.extend(phantom_tags)
             if limit_abs_signal == "Limit_Absorption": tags.append("Limit_Absorption")
+            if micro_cvd_signal == "Micro_Silent_Accumulation": tags.append("Whale_CVD")
+            if futures_signal: tags.append(futures_signal)
+            # 🚀 استدعاء خوارزمية الدارك بول (VCA) وغرفة الاحتضان
             # 🚀 استدعاء خوارزمية الدارك بول (VCA) وغرفة الاحتضان
             # ----------------------------------------------------
             # 🧬 1. فحص الانتماء لغرفة الاحتضان (The Incubation Synergy)
