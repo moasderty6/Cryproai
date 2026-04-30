@@ -692,7 +692,7 @@ async def get_institutional_orderflow(symbol, client, minutes=15):
     # 🧠 التصحيح المؤسساتي (Microstructure Fix):
     MIN_WHALE_TRADE_USD = 50.0 
     
-    # --- دالة فرعية 1: بايننس ---
+    # --- دالة فرعية 1: بايننس ---    # --- دالة فرعية 1: بايننس (محدثة كمياً - Smart Money & Algo Detection) ---
     async def fetch_binance():
         try:
             base_url = get_random_binance_base()
@@ -702,15 +702,53 @@ async def get_institutional_orderflow(symbol, client, minutes=15):
             
             if res.status_code == 200:
                 trades = res.json()
+                if not trades: return 0.0, 0.0, []
+                
+                import numpy as np
+                trade_values = np.array([float(t['p']) * float(t['q']) for t in trades])
+                
+                # 🧠 1. عزل السيولة (Volume Stratification):
+                # حساب العتبة الديناميكية لـ "الحيتان" (أعلى 15% من حجم الصفقات في هذه العينة)
+                dynamic_whale_threshold = np.percentile(trade_values, 85)
+                # نضع حداً أدنى 2000 دولار لكي لا نلتقط الأفراد في العملات الميتة
+                min_smart_money = max(2000.0, dynamic_whale_threshold)
+
                 b_vol, s_vol = 0.0, 0.0
                 prices = []
+                
+                # 🧠 2. اكتشاف روبوتات التقسيم (Iceberg/TWAP Variance Detection):
+                # التجميع بناءً على الزمن (الثانية) لاكتشاف أوامر الـ HFT المقطعة
+                time_clusters = {}
+                for t in trades:
+                    sec = t['T'] // 1000
+                    vol = float(t['p']) * float(t['q'])
+                    is_sell = t['m']
+                    time_clusters.setdefault(sec, []).append((vol, is_sell))
+                
+                algo_multiplier_buy = 1.0
+                algo_multiplier_sell = 1.0
+                
+                # تحليل التباين (Variance) للثواني التي تحتوي أكثر من 5 صفقات
+                for sec, cluster in time_clusters.items():
+                    if len(cluster) >= 5:
+                        vols = [x[0] for x in cluster]
+                        cv = np.std(vols) / (np.mean(vols) + 1e-8)
+                        if cv < 0.2: # تجانس رياضي عالي جداً = Algo (روبوت يقسم الأوامر بالتساوي)
+                            if cluster[0][1]: algo_multiplier_sell = 1.5
+                            else: algo_multiplier_buy = 1.5
+
                 for t in trades:
                     price = float(t['p'])
                     amount = float(t['q']) * price
-                    if amount < MIN_WHALE_TRADE_USD: continue # 👈 (Trade Stratification)
+                    
+                    # فلترة صغار المتداولين
+                    if amount < min_smart_money: continue 
+                    
                     prices.append(price)
-                    if t['m']: s_vol += amount  
-                    else: b_vol += amount       
+                    # ضرب الحجم بمعامل الخوارزمية (الروبوتات أثقل وزناً من التداول العادي)
+                    if t['m']: s_vol += (amount * algo_multiplier_sell)
+                    else: b_vol += (amount * algo_multiplier_buy)
+                    
                 return b_vol, s_vol, prices
         except: pass
         return 0.0, 0.0, []
@@ -3508,9 +3546,19 @@ def calculate_smart_trend_and_targets(df, current_price, current_z, lang="ar", o
     if override_trend:
         trend_direction = override_trend
     else:
-        ema20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
-        ema50 = df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
-        trend_direction = "Bullish" if ema20 > ema50 else "Bearish"
+        # 🧠 توحيد الاتجاه باستخدام (Anchored VWAP + Price Acceleration)
+        vwap_val = df['anchored_vwap'].iloc[-1]
+        
+        # حساب التسارع السعري (Momentum) لآخر 3 شموع لضمان عدم وجود فخ
+        price_momentum = df['close'].diff(3).iloc[-1]
+        
+        if current_price > vwap_val and price_momentum >= 0:
+            trend_direction = "Bullish"
+        elif current_price < vwap_val and price_momentum <= 0:
+            trend_direction = "Bearish"
+        else:
+            # عند التذبذب، السيولة (VWAP) هي الحكم القاطع للذكاء الاصطناعي
+            trend_direction = "Bullish" if current_price > vwap_val else "Bearish"
 
     # 🌟 2. حساب الأهداف الأساسية بالـ VPVR
     sl, tp1, tp2, tp3 = calculate_vpvr_levels(df, current_price, trend_direction)
@@ -3843,9 +3891,22 @@ async def analyze_orderbook_advanced_manual(symbol: str, client: httpx.AsyncClie
     bid_cv = np.std(bid_vols) / (np.mean(bid_vols) + 1e-8)
     ask_cv = np.std(ask_vols) / (np.mean(ask_vols) + 1e-8)
 
-    # شروط التلاعب المؤسساتي (الجدران تظهر وتختفي بتذبذب عالي)    # شروط التلاعب المؤسساتي (الجدران تظهر وتختفي بتذبذب عالي)
+    # شروط التلاعب المؤسساتي (الجدران تظهر وتختفي بتذبذب عالي)    # شروط التلاعب المؤسساتي (الجدران تظهر وتختفي بتذبذب عالي)    # 🧠 شروط التلاعب المؤسساتي (Algorithmic Spoofing & Replenishment)
     is_spoofed = (bid_cv > 0.6 or ask_cv > 0.6)
     
+    # محرك إعادة التعبئة (Iceberg Replenishment Rate):
+    # إذا تم سحب/تنفيذ أكثر من 10% من سيولة البيع (Asks)، وعادت للارتفاع في الإطار التالي (خلال 100 ملي ثانية) فهذا جدار مخفي
+    is_ask_replenished = False
+    is_bid_replenished = False
+    for i in range(1, len(ask_vols)-1):
+        if ask_vols[i] < ask_vols[i-1] * 0.9 and ask_vols[i+1] > ask_vols[i] * 1.05:
+            is_ask_replenished = True
+        if bid_vols[i] < bid_vols[i-1] * 0.9 and bid_vols[i+1] > bid_vols[i] * 1.05:
+            is_bid_replenished = True
+
+    # دمج Spoofing مع Replenishment
+    is_spoofed = is_spoofed or is_ask_replenished or is_bid_replenished
+  
     # ====================================================================
     # 🧠 محرك "هشاشة السيولة" (Orderbook Slippage Vulnerability - OSV)
     # نختبر قدرة الأوردر بوك على تحمل ضربة "ماركت" بناءً على السيولة الفعلية للعملة
@@ -3880,12 +3941,21 @@ async def analyze_orderbook_advanced_manual(symbol: str, client: httpx.AsyncClie
     # تطبيع الخلل ليكون قيمة بين -1 و 1
     imbalance = avg_ofi / total_vol_mean
 
+    # 🧠 نظام انحراف الأوردر بوك (Orderbook Skewness Regime):
+    # حساب الضغط الحقيقي لأقرب 1% (النسبة بين متوسط الطلبات الحية والعروض)
+    bid_pressure = float(np.mean(bid_vols) / (np.mean(ask_vols) + 1e-8))
+    
+    # النظام الصاعد يتطلب أن تكون الطلبات أثقل بـ 1.5 مرة من العروض
+    is_bull_regime = bid_pressure > 1.5
+
     return {
         "is_hollow": bool(is_hollow),
         "imbalance": round(float(max(-1.0, min(1.0, imbalance))), 2),
         "is_spoofed": bool(is_spoofed),
-        "bid_pressure_ratio": float(np.mean(bid_vols) / (np.mean(ask_vols) + 1e-8))
+        "bid_pressure_ratio": bid_pressure,
+        "is_bull_regime": is_bull_regime  # إضافة للإشارات الداخلية دون تدمير قاموس ML
     }
+
 
 # --- دالة التحليل المعدلة ---
 async def evaluate_dex_risk(liquidity_usd: float, vol_24h: float):
@@ -3924,9 +3994,33 @@ def calculate_mtfa_context_sync(candles_4h, candles_1d, candles_1w):
         df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
         df["close"] = pd.to_numeric(df["close"], errors='coerce')
         
-        ema20 = df["close"].ewm(span=20, adjust=False).mean().iloc[-1]
-        ema50 = df["close"].ewm(span=50, adjust=False).mean().iloc[-1]
-        return "Bullish" if ema20 > ema50 else "Bearish"
+        # 🧠 [Institutional Edge]: 1D Kalman Filter (Zero-Lag) + Volume Weighting
+        df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3.0
+        
+        # 1. حساب VWAP اللحظي 
+        df['vwap'] = (df['typical_price'] * df['volume']).cumsum() / (df['volume'].cumsum() + 1e-8)
+        
+        # 2. مرشح كالمان (Kalman Filter) للضجيج السعري السريع
+        import numpy as np
+        prices = df['close'].values
+        n = len(prices)
+        xhat = np.zeros(n) # التوقع
+        p = np.zeros(n)    # خطأ التوقع
+        xhat[0], p[0] = prices[0], 1.0
+        q, r = 1e-5, 1e-4  # Q: سرعة التفاعل, R: حساسية الضجيج
+        
+        for k in range(1, n):
+            # تحديث الزمن والمستشعر (Predict & Update)
+            k_gain = (p[k-1] + q) / (p[k-1] + q + r)
+            xhat[k] = xhat[k-1] + k_gain * (prices[k] - xhat[k-1])
+            p[k] = (1 - k_gain) * (p[k-1] + q)
+            
+        current_kalman = xhat[-1]
+        current_vwap = df['vwap'].iloc[-1]
+        
+        # الاتجاه صاعد فقط إذا كان التوقع الرياضي (Kalman) والسعر فوق الـ VWAP التراكمي
+        return "Bullish" if (current_kalman > current_vwap and prices[-1] > current_vwap) else "Bearish"
+
 
     trend_4h = get_trend(candles_4h)
     trend_1d = get_trend(candles_1d)
