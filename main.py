@@ -1285,11 +1285,12 @@ def calculate_volume_zscore(df, window=720):
 
 async def silent_data_harvester_worker(pool):
     """
-    عامل الحصاد الصامت: يعمل في الخلفية بهدوء، يحلل عملة واحدة كل دقيقة 
-    لجمع البيانات اللحظية (بما فيها الأوردر بوك والتدفق) دون التأثير على البوت.
+    عامل الحصاد الصامت (The Apex Sniper): 
+    يعمل في الخلفية بهدوء، يحلل عملة واحدة كل دقيقة لجمع البيانات اللحظية.
+    إذا وجد فرصة بتقييم ذكاء اصطناعي (AI) أعلى من 80%، يكسر الصمت ويرسل إشعار طوارئ.
     """
     await asyncio.sleep(120) # ننتظر دقيقتين بعد تشغيل البوت ليستقر
-    print("🌾 [Data Harvester] Engine is Online. Collecting ML Data silently...")
+    print("🌾 [Data Harvester & Apex Sniper] Engine is Online. Hunting silently...")
 
     while True:
         try:
@@ -1327,7 +1328,7 @@ async def silent_data_harvester_worker(pool):
                 # ترتيب العملات حسب السيولة وأخذ أعلى 350
                 coins = sorted(coins, key=lambda x: x["volume"], reverse=True)[:350]
                 
-                print(f"🔄 [Harvester] Starting new cycle for {len(coins)} coins...")
+                print(f"🔄 [Apex Sniper] Starting new silent cycle for {len(coins)} coins...")
 
                 # ⏳ التقطير الصامت: معالجة عملة واحدة فقط كل 50 ثانية
                 for c in coins:
@@ -1348,7 +1349,6 @@ async def silent_data_harvester_worker(pool):
                         global_ob_pressure = await get_aggregated_orderbook(client, sym)
                         depth_data = await analyze_orderbook_spoofing_instant(sym, client, price)
                         tick_delta, tick_buy, tick_sell, limit_abs = await get_institutional_orderflow(pair, client)
-                                                # 🚀 أضفنا الـ _ (الرابع) لاستقبال قيمة الـ OI وتجاهلها هنا
                         _, fut_sig, funding_val, _ = await get_futures_liquidity(sym, client, price, float(df["close"].iloc[-3]))
                         
                         avg_vol_20 = df["volume"].tail(20).mean()
@@ -1363,7 +1363,7 @@ async def silent_data_harvester_worker(pool):
                         current_regime_trend = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
                         regime_map = {"Trending_Bull": 1, "Trending_Bear": 2, "Ranging": 3}
                         
-                        # تجهيز الميزات (Features) وتسجيلها بصمت
+                        # تجهيز الميزات (Features) وتسجيلها
                         ml_features = {
                             'market_regime': regime_map.get(current_regime_trend, 0),
                             'sp500_trend': float(MACRO_CACHE.get("sp500_trend", 0.0)),
@@ -1380,8 +1380,107 @@ async def silent_data_harvester_worker(pool):
                             'funding_rate': float(funding_val)
                         }
                         
-                        # تسجيل البيانات (بدون فلتر، نريد الجيد والسيء)
+                        # تسجيل البيانات بصمت
                         await log_signal_for_ml(pool, sym, price, ml_features)
+
+                        # ==========================================
+                        # 🎯 The Apex Trigger: فحص تقييم الذكاء الاصطناعي
+                        # ==========================================
+                        ai_confidence = await asyncio.to_thread(predict_signal_sync, ml_features)
+                        
+                        if ai_confidence >= 80.0:
+                            # التحقق مما إذا تم إرسال هذه العملة مؤخراً لتجنب الإزعاج
+                            async with pool.acquire() as conn:
+                                is_signaled = await conn.fetchval("""
+                                    SELECT 1 FROM radar_history 
+                                    WHERE symbol = $1 AND last_signaled > CURRENT_TIMESTAMP - INTERVAL '24 hours'
+                                """, sym)
+                                
+                            if not is_signaled:
+                                # تسجيل العملة كمرسلة
+                                async with pool.acquire() as conn:
+                                    await conn.execute("""
+                                        INSERT INTO radar_history (symbol, last_signaled)
+                                        VALUES ($1, CURRENT_TIMESTAMP)
+                                        ON CONFLICT (symbol) DO UPDATE SET last_signaled = CURRENT_TIMESTAMP
+                                    """, sym)
+
+                                # تجهيز البيانات للعرض
+                                z_val = float(current_z)
+                                avg_vol_5 = df["volume"].tail(5).mean()
+                                vol_ratio = (avg_vol_5 / avg_vol_20) if avg_vol_20 > 0 else 1.0
+                                cvd_val = float(cvd_trend * price)
+                                ob_val = float(depth_data.get('bid_pressure_ratio', 1.0))
+                                funding = float(funding_val)
+                                adx = float(current_adx)
+                                rsi = float(last_rsi)
+
+                                # صياغة التحليل (باستخدام مصطلحات السيولة والتدفق)
+                                vol_ar = f"شذوذ فوليوم مؤسساتي (Z-Score: {z_val:.2f}) مع ضخ سيولة حاد ({vol_ratio:.2f}x)." if z_val > 2 else f"انضغاط سيولة صامت (Z-Score: {z_val:.2f})."
+                                cvd_ar = f"امتصاص شرائي خفي (CVD: +${cvd_val:,.0f})" if cvd_val > 0 else f"ضغط بيعي وتصريف (CVD: ${cvd_val:,.0f})"
+                                ob_ar = f"مع تكدس طلبات هجومي (OB: {ob_val:.2f}x)." if ob_val > 1 else f"مع سيطرة وتكدس لعروض البيع (OB: {ob_val:.2f}x)."
+                                
+                                if funding < -0.0005:
+                                    fund_ar = "تمركز بيعي قوي مع احتمالية لتصفية البائعين (Short Squeeze)."
+                                elif funding > 0.0005:
+                                    fund_ar = "طمع شرائي ومعدل تمويل إيجابي ينذر بخطر تصفية المشترين (Long Squeeze)."
+                                else:
+                                    fund_ar = "استقرار وتوازن في معدلات تمويل عقود المشتقات."
+                                
+                                tech_ar = f"ADX: {adx:.1f} | RSI: {rsi:.1f}"
+
+                                insight_ar = (
+                                    f"• <b>السيولة:</b> {vol_ar}\n"
+                                    f"• <b>التدفق:</b> {cvd_ar} {ob_ar}\n"
+                                    f"• <b>المشتقات:</b> {fund_ar}\n"
+                                    f"• <b>الهيكلة:</b> {tech_ar}"
+                                )
+
+                                vol_en = f"Institutional volume anomaly (Z-Score: {z_val:.2f}) with aggressive inflow ({vol_ratio:.2f}x)." if z_val > 2 else f"Silent liquidity compression (Z-Score: {z_val:.2f})."
+                                cvd_en = f"Hidden buy absorption (CVD: +${cvd_val:,.0f})" if cvd_val > 0 else f"Selling pressure & distribution (CVD: ${cvd_val:,.0f})"
+                                ob_en = f"with aggressive bid stacking (OB: {ob_val:.2f}x)." if ob_val > 1 else f"with heavy ask supply dominance (OB: {ob_val:.2f}x)."
+                                
+                                if funding < -0.0005:
+                                    fund_en = "Heavy short positioning with high (Short Squeeze) probability."
+                                elif funding > 0.0005:
+                                    fund_en = "Overleveraged longs with high (Long Squeeze/Correction) risk."
+                                else:
+                                    fund_en = "Stable futures open interest and neutral funding rates."
+                                    
+                                tech_en = f"ADX: {adx:.1f} | RSI: {rsi:.1f}"
+
+                                insight_en = (
+                                    f"• <b>Liquidity:</b> {vol_en}\n"
+                                    f"• <b>Orderflow:</b> {cvd_en} {ob_en}\n"
+                                    f"• <b>Derivatives:</b> {fund_en}\n"
+                                    f"• <b>Structure:</b> {tech_en}"
+                                )
+
+                                signal_id = str(uuid.uuid4())[:8] 
+                                signal_type = f"🤖 AI APEX Pick"
+                                
+                                radar_pending_approvals[signal_id] = {
+                                    "symbol": sym, "price": price, "signal": signal_type, "score": ai_confidence,
+                                    "insight_ar": insight_ar, "insight_en": insight_en
+                                }
+
+                                admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+                                    [InlineKeyboardButton(text="✅ موافقة ونشر للمشتركين", callback_data=f"rad_app_{signal_id}")],
+                                    [InlineKeyboardButton(text="❌ إلغاء وتجاهل", callback_data=f"rad_rej_{signal_id}")]
+                                ])
+
+                                admin_text = (
+                                    f"🦅 <b>تنبيه طوارئ: قناص الذكاء الاصطناعي (Apex) التقط جوهرة!</b>\n"
+                                    f"🏆 <b>العملة:</b> #{sym}\n"
+                                    f"💵 السعر: ${format_price(price)}\n"
+                                    f"⚡ نوع التجميع: {signal_type}\n"
+                                    f"🤖 تقييم الذكاء الاصطناعي: <b>{ai_confidence:.1f}%</b>\n\n"
+                                    f"📝 <b>التحليل:</b>\n{insight_ar}\n\n"
+                                    f"هل تريد الموافقة على نشرها؟"
+                                )
+
+                                await bot.send_message(ADMIN_USER_ID, admin_text, reply_markup=admin_kb, parse_mode=ParseMode.HTML)
+                                print(f"🎯 [Apex Sniper] {sym} fired with AI score {ai_confidence:.1f}%!")
 
                     except Exception as e:
                         pass # صمت تام عند الأخطاء لتستمر الحلقة
@@ -1392,6 +1491,7 @@ async def silent_data_harvester_worker(pool):
         except Exception as e:
             print(f"⚠️ Harvester Error: {e}")
             await asyncio.sleep(300)
+
 
 def process_dataframe_sync(candles_data):
     """دالة خارجية لمعالجة البيانات بدون تجميد البوت"""
@@ -2510,7 +2610,7 @@ async def ai_opportunity_radar(pool):
 
                 if not valid_signals:
                     print("😴 لم يتم العثور على فرص حالياً... إعادة البحث التلقائي بعد 15 دقائق.")
-                    await asyncio.sleep(250)
+                    await asyncio.sleep(60)
                     continue
 
                 # تجهيز الرسالة للأدمن لأقوى عملة
@@ -2629,7 +2729,7 @@ async def ai_opportunity_radar(pool):
                 
                 # 🟢 التعديل هنا: حذفنا break ووضعنا استراحة 5 دقائق (300 ثانية)
                 print("⏱️ الرادار يدخل في استراحة لمدة 5 دقائق قبل بدء البحث التالي...")
-                await asyncio.sleep(300) 
+                await asyncio.sleep(120) 
 
 
         except Exception as e:
