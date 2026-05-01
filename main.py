@@ -434,48 +434,111 @@ async def smart_radar_watchdog(pool):
 
 async def radar_worker_process(pool):
     """
-    العامل الصامت (Consumer): يأخذ العملات من الطابور واحدة تلو الأخرى ويحللها بعمق
-    هذا يمنع حظر منصات التداول لك بسبب كثرة الطلبات اللحظية.
+    عامل القنص اللحظي (Live AI Executioner):
+    يستلم العملات من الرادار اللحظي فور دخول سيولة الحيتان، ويقيّمها بالـ AI في نفس الثانية.
     """
-    sem = asyncio.Semaphore(5) # السماح بـ 5 تحليلات متزامنة فقط
-    
-    # ننتظر قليلاً حتى يعمل البوت
+    sem = asyncio.Semaphore(5) 
     await asyncio.sleep(10)
-    print("👷‍♂️ عامل التحليل العميق (Worker) جاهز لمعالجة الإشارات...")
+    print("👷‍♂️ [Live AI Sniper] جاهز لاصطياد السيولة اللحظية والانفجارات...")
     
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
-            try: # 🟢 إضافة حاجز الحماية لمنع انهيار الحلقة وإغلاق الـ Client
-                # اسحب عملة من الطابور
+            try:
+                # 1. المستشعر التقط سيولة حية ورماها هنا
                 coin_mock_data = await radar_processing_queue.get()
-                symbol = f"{coin_mock_data['symbol']}USDT"
+                clean_sym = coin_mock_data['symbol']
                 
                 async with pool.acquire() as conn:
-                    # فحص هل أرسلنا العملة في آخر 7 أيام؟
+                    # نمنع تكرار الإرسال المزعج لنفس العملة خلال 24 ساعة
                     is_signaled = await conn.fetchval("""
                         SELECT 1 FROM radar_history 
-                        WHERE symbol = $1 AND last_signaled > CURRENT_TIMESTAMP - INTERVAL '7 days'
-                    """, symbol)
+                        WHERE symbol = $1 AND last_signaled > CURRENT_TIMESTAMP - INTERVAL '24 hours'
+                    """, clean_sym)
 
-                    if not is_signaled:
-                        print(f"🚨 [تحليل عميق] جاري تشريح {symbol}...")
+                if not is_signaled:
+                    await binance_rate_limit_event.wait()
+                    market_regime = await detect_market_regime(client)
+
+                    # 2. تشغيل التحليل العميق فوراً
+                    meta = await analyze_radar_coin(coin_mock_data, client, market_regime, sem)
+                    
+                    if meta:
+                        ai_confidence = meta.get('ai_raw_score', -1.0)
                         
-                        await conn.execute("""
-                            INSERT INTO radar_history (symbol, last_signaled)
-                            VALUES ($1, CURRENT_TIMESTAMP)
-                            ON CONFLICT (symbol) DO UPDATE SET last_signaled = CURRENT_TIMESTAMP
-                        """, symbol)
+                        # 🎯 The Apex Trigger اللحظي: إذا كان تقييم الـ AI الخفي 80% فما فوق
+                        if ai_confidence >= 80.0:
+                            
+                            # تسجيل العملة لمنع التكرار
+                            async with pool.acquire() as conn:
+                                await conn.execute("""
+                                    INSERT INTO radar_history (symbol, last_signaled)
+                                    VALUES ($1, CURRENT_TIMESTAMP)
+                                    ON CONFLICT (symbol) DO UPDATE SET last_signaled = CURRENT_TIMESTAMP
+                                """, clean_sym)
 
-                        # جلب الماكرو وإرسالها للتحليل
-                        market_regime = await detect_market_regime(client)
-                        asyncio.create_task(analyze_radar_coin(coin_mock_data, client, market_regime, sem))
-                
-                # إخبار الطابور أن المهمة انتهت
+                            price = meta['price']
+                            z_val = float(meta.get('macd', 0.0))
+                            vol_ratio = float(meta.get('vol_ratio', 1.0))
+                            cvd_val = float(meta.get('cvd_usd', 0.0))
+                            ob_val = float(meta.get('ob_pressure', 1.0))
+                            adx = float(meta.get('adx', 0.0))
+                            rsi = float(meta.get('rsi', 0.0))
+
+                            ml = meta.get('ml_features', {})
+                            funding = float(ml.get('funding_rate', 0.0))
+                            confluence = int(meta.get('confluence', 0))
+
+                            # صياغة التحليل
+                            vol_ar = f"شذوذ فوليوم (Z-Score: {z_val:.2f}) مع ضخ سيولة حاد ({vol_ratio:.2f}x)."
+                            cvd_ar = f"امتصاص شرائي خفي (CVD: +${cvd_val:,.0f})" if cvd_val > 0 else f"ضغط بيعي وتصريف (CVD: ${cvd_val:,.0f})"
+                            ob_ar = f"مع تكدس طلبات هجومي (OB: {ob_val:.2f}x)." if ob_val > 1 else f"سيطرة عروض بيع (OB: {ob_val:.2f}x)."
+                            fund_ar = "تمركز بيعي (خطر Short Squeeze)." if funding < -0.0005 else "استقرار معدلات التمويل."
+                            tech_ar = f"إجماع فني ({confluence}/6) | ADX: {adx:.1f} | RSI: {rsi:.1f}"
+
+                            insight_ar = (
+                                f"• <b>السيولة:</b> {vol_ar}\n"
+                                f"• <b>التدفق:</b> {cvd_ar} {ob_ar}\n"
+                                f"• <b>المشتقات:</b> {fund_ar}\n"
+                                f"• <b>الهيكلة:</b> {tech_ar}"
+                            )
+
+                            # صياغة الإنجليزي للحفاظ على التوافق مع المستخدمين الأجانب
+                            insight_en = (
+                                f"• <b>Liquidity:</b> Volume Anomaly (Z-Score: {z_val:.2f}), Inflow ({vol_ratio:.2f}x).\n"
+                                f"• <b>Flow:</b> Buy Absorption (CVD: +${cvd_val:,.0f}), Orderbook Bid Pressure ({ob_val:.2f}x).\n"
+                                f"• <b>Derivatives:</b> {fund_ar.replace('تمركز بيعي', 'Short bias').replace('استقرار', 'Stable')}\n"
+                                f"• <b>Structure:</b> Confluence ({confluence}/6) | ADX: {adx:.1f} | RSI: {rsi:.1f}"
+                            )
+
+                            signal_id = str(uuid.uuid4())[:8]
+                            radar_pending_approvals[signal_id] = {
+                                "symbol": clean_sym, "price": price, "signal": "⚡ LIVE AI APEX Pick", "score": ai_confidence,
+                                "insight_ar": insight_ar, "insight_en": insight_en
+                            }
+
+                            admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(text="✅ موافقة ونشر لحظي", callback_data=f"rad_app_{signal_id}")],
+                                [InlineKeyboardButton(text="❌ تجاهل", callback_data=f"rad_rej_{signal_id}")]
+                            ])
+
+                            admin_text = (
+                                f"⚡ <b>انفجار لحظي: قناص الذكاء الاصطناعي التقط سيولة حية للتو!</b>\n"
+                                f"🏆 <b>العملة:</b> #{clean_sym}\n"
+                                f"💵 السعر: ${format_price(price)}\n"
+                                f"🤖 تقييم الذكاء الاصطناعي: <b>{ai_confidence:.1f}%</b>\n\n"
+                                f"📝 <b>التحليل:</b>\n{insight_ar}\n\n"
+                                f"هل تريد الموافقة؟"
+                            )
+                            
+                            await bot.send_message(ADMIN_USER_ID, admin_text, reply_markup=admin_kb, parse_mode=ParseMode.HTML)
+                            print(f"🚀 [Live Sniper] Caught {clean_sym} exactly as the whale entered with AI Score {ai_confidence:.1f}%!")
+
+                # إخبار الطابور بانتهاء المهمة
                 radar_processing_queue.task_done()
-                await asyncio.sleep(1) # استراحة ثانية بين كل تحليل لحماية الـ API
+                await asyncio.sleep(1) # استراحة ثانية لحماية الـ API
                 
             except Exception as e:
-                print(f"⚠️ خطأ عابر في Worker الرادار، الاتصال مستمر: {e}")
+                print(f"⚠️ خطأ عابر في Live Sniper Worker: {e}")
                 await asyncio.sleep(2)
 
 # دالة وسيطة لتجهيز البيانات قبل التحليل العميق
@@ -1343,7 +1406,9 @@ async def silent_data_harvester_worker(pool):
                         if not candles: continue
                         
                         df, last_rsi, current_adx, current_z, vol_mean, vol_std = await asyncio.to_thread(process_dataframe_sync, candles)
-                        
+                                                # 🎯 التحديث اللحظي للسعر لحل مشكلة السعر القديم والأوردر بوك المجنون
+                        price = float(df["close"].iloc[-1])
+
                         # 2. جلب البيانات اللحظية (التي لا تحفظها بايننس تاريخياً)
                         cvd_boost, cvd_sig, cvd_trend = await get_micro_cvd_absorption(pair, client, "15m")
                         global_ob_pressure = await get_aggregated_orderbook(client, sym)
@@ -1382,11 +1447,12 @@ async def silent_data_harvester_worker(pool):
                         
                         # تسجيل البيانات بصمت
                         await log_signal_for_ml(pool, sym, price, ml_features)
-
                         # ==========================================
                         # 🎯 The Apex Trigger: فحص تقييم الذكاء الاصطناعي
                         # ==========================================
                         ai_confidence = await asyncio.to_thread(predict_signal_sync, ml_features)
+                        ai_confidence = round(ai_confidence, 1) # 👈 هذا السطر سيجبر السكور على أن يكون برقم عشري واحد فقط (مثال: 84.2)
+
                         
                         if ai_confidence >= 80.0:
                             # التحقق مما إذا تم إرسال هذه العملة مؤخراً لتجنب الإزعاج
@@ -5151,10 +5217,10 @@ async def on_startup(app):
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
 
-    #asyncio.create_task(smart_radar_watchdog(pool))
+    asyncio.create_task(smart_radar_watchdog(pool))
     asyncio.create_task(silent_data_harvester_worker(pool))
     asyncio.create_task(macro_data_worker()) # 🌍 تشغيل عامل الماكرو
-    #asyncio.create_task(radar_worker_process(pool))
+    asyncio.create_task(radar_worker_process(pool))
     asyncio.create_task(institutional_incubator_worker(pool))
     asyncio.create_task(ai_trainer_worker(pool)) # 🧠 تشغيل مدرب الذكاء الاصطناعي
     asyncio.create_task(ml_inspector_worker(pool)) # 🧠 تشغيل محقق الذكاء الاصطناعي
