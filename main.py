@@ -1454,7 +1454,7 @@ async def silent_data_harvester_worker(pool):
                         ai_confidence = round(ai_confidence, 1) # 👈 هذا السطر سيجبر السكور على أن يكون برقم عشري واحد فقط (مثال: 84.2)
 
                         
-                        if ai_confidence >= 70.0:
+                        if ai_confidence >= 60.0:
                             # التحقق مما إذا تم إرسال هذه العملة مؤخراً لتجنب الإزعاج
                             async with pool.acquire() as conn:
                                 is_signaled = await conn.fetchval("""
