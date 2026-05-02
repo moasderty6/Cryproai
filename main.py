@@ -1385,7 +1385,7 @@ async def silent_data_harvester_worker(pool):
                     if clean_sym in BLACKLISTED_COINS: continue
                     
                     vol_usd = float(t["quoteVolume"])
-                    if vol_usd >= 400_000: # الفلتر المبدئي للسيولة
+                    if vol_usd >= 200_000: # الفلتر المبدئي للسيولة
                         coins.append({"symbol": clean_sym, "price": float(t["lastPrice"]), "volume": vol_usd})
                 
                 # ترتيب العملات حسب السيولة وأخذ أعلى 350
@@ -1454,7 +1454,7 @@ async def silent_data_harvester_worker(pool):
                         ai_confidence = round(ai_confidence, 1) # 👈 هذا السطر سيجبر السكور على أن يكون برقم عشري واحد فقط (مثال: 84.2)
 
                         
-                        if ai_confidence >= 80.0:
+                        if ai_confidence >= 70.0:
                             # التحقق مما إذا تم إرسال هذه العملة مؤخراً لتجنب الإزعاج
                             async with pool.acquire() as conn:
                                 is_signaled = await conn.fetchval("""
@@ -2130,14 +2130,14 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             is_macro_downtrend = price < ema200_val
             current_regime_trend = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
 
-            required_score = 65.0 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 60.0
+            required_score = 75.0 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 70.0
             
             # 🌟 تخفيض سكور القبول 5 نقاط كاملة إذا كانت العملة تُطبخ في غرفة الاحتضان!
             if is_incubated: 
                 required_score -= 5.0
                 print(f"🎯 [Incubator Bypass] {symbol} threshold lowered to {required_score} due to Macro Coiling!")
 
-            required_confluence = 1 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 1
+            required_confluence = 2 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 2
 
             if score >= required_score and confluence_count >= required_confluence:    
                 avg_vol_usd_for_depth = avg_vol_20 * price if avg_vol_20 > 0 else 15000.0
