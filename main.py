@@ -251,7 +251,7 @@ def train_xgboost_sync(records):
     import xgboost as xgb
     # إعدادات متقدمة جداً لمنع الـ Overfitting (حفظ البيانات بدلاً من فهمها)
     model = xgb.XGBRegressor(
-        n_estimators=200,
+        n_estimators=400,
         max_depth=5,
         learning_rate=0.03,
         subsample=0.8,
@@ -1454,7 +1454,7 @@ async def silent_data_harvester_worker(pool):
                         ai_confidence = round(ai_confidence, 1) # 👈 هذا السطر سيجبر السكور على أن يكون برقم عشري واحد فقط (مثال: 84.2)
 
                         
-                        if ai_confidence >= 60.0:
+                        if ai_confidence >= 75.0:
                             # التحقق مما إذا تم إرسال هذه العملة مؤخراً لتجنب الإزعاج
                             async with pool.acquire() as conn:
                                 is_signaled = await conn.fetchval("""
@@ -2013,6 +2013,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             score = round(max(0.0, min(final_weighted_score, 99.5)), 1)
 
             # --- 🏷️ تحديد نوع الإشارة بدقة ---
+                        # --- 🏷️ تحديد نوع الإشارة بدقة ---
             dominant_pillar = max(scores, key=scores.get)
             if score >= 80.0:
                 if dominant_pillar == "vol" and scores["vol"] >= 85.0: final_signal = "Deep MM Absorption 🏦"
@@ -2021,8 +2022,19 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 elif dominant_pillar == "ob" and scores["ob"] >= 85.0: final_signal = "Orderflow Dominance 💸"
                 elif dominant_pillar == "tech" and scores["tech"] >= 85.0: final_signal = "Pre-Breakout Squeeze ⚡"
                 else: final_signal = "High Probability Setup 🎯"
+            
+            # التعديل الموضعي: تقسيم سكورات السبعينيات بناءً على محرك السوق الفعلي
+            elif score >= 70.0:
+                if dominant_pillar in ["cvd", "vol"]:
+                    final_signal = "Smart Money Inflow 🐋" # تدفق أموال ذكية (السيولة والفوليوم هي السبب)
+                elif dominant_pillar == "ob":
+                    final_signal = "Orderbook Pressure 🧱" # ضغط دفتر الأوامر (تكدس طلبات هجومية)
+                else:
+                    final_signal = "Structural Compression 🗜️" # انضغاط هيكلي (المشتقات والتحليل الفني هي السبب)
+            
             else:
-                final_signal = "Active Accumulation 🧲"
+                final_signal = "Active Accumulation 🧲" # لما دون السبعين (الوضع الافتراضي)
+
 
             # ==========================================
             # 🌉 جسر توحيد المتغيرات (Variable Unification Bridge)
