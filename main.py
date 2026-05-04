@@ -1835,6 +1835,78 @@ def detect_dark_pool_vca(df, current_cvd_usd, oi_change_pct, funding_rate=0.0, o
         signal_tag = "DEEP_ABSORPTION"
 
     return round(vca_score, 1), signal_tag
+async def get_institutional_vpin(symbol: str, client: httpx.AsyncClient, target_trades: int = 10000):
+    """
+    [VPIN Truth Filter] Volume-Synchronized Probability of Informed Trading.
+    يسحب 10,000 صفقة ويقسمها إلى 50 دلو سيولة لكشف سمية التدفق (Toxicity).
+    """
+    clean_sym = symbol.replace("USDT", "") + "USDT"
+    trades = []
+    try:
+        base_url = get_random_binance_base()
+        last_id = None
+        
+        requests_needed = target_trades // 1000
+        for _ in range(requests_needed):
+            await binance_rate_limit_event.wait()
+            params = {"symbol": clean_sym, "limit": 1000}
+            if last_id:
+                params["fromId"] = last_id - 1000 
+                
+            res = await client.get(f"{base_url}/api/v3/aggTrades", params=params, timeout=5.0)
+            if res.status_code != 200: break
+            
+            batch = res.json()
+            if not batch: break
+            
+            trades = batch + trades 
+            last_id = batch[0]['a'] 
+            
+        if len(trades) < 2000: return 0.5 
+        
+        import numpy as np
+        trade_vols = np.array([float(t['q']) * float(t['p']) for t in trades])
+        taker_sell_flags = np.array([t['m'] for t in trades])
+        
+        total_vol = np.sum(trade_vols)
+        if total_vol == 0: return 0.5
+        
+        num_buckets = 50 
+        bucket_size = total_vol / num_buckets
+        
+        buckets_buy = np.zeros(num_buckets)
+        buckets_sell = np.zeros(num_buckets)
+        
+        current_bucket = 0
+        current_accumulated = 0.0
+        
+        for i in range(len(trades)):
+            vol = trade_vols[i]
+            is_sell = taker_sell_flags[i]
+            
+            if current_accumulated + vol > bucket_size and current_bucket < num_buckets - 1:
+                excess = (current_accumulated + vol) - bucket_size
+                current_bucket_share = vol - excess
+                
+                if is_sell: buckets_sell[current_bucket] += current_bucket_share
+                else: buckets_buy[current_bucket] += current_bucket_share
+                
+                current_bucket += 1
+                current_accumulated = excess
+                
+                if is_sell: buckets_sell[current_bucket] += excess
+                else: buckets_buy[current_bucket] += excess
+            else:
+                if is_sell: buckets_sell[current_bucket] += vol
+                else: buckets_buy[current_bucket] += vol
+                current_accumulated += vol
+                
+        imbalances = np.abs(buckets_buy - buckets_sell)
+        vpin = np.sum(imbalances) / total_vol
+        return float(vpin)
+        
+    except Exception:
+        return 0.5
 
 async def analyze_radar_coin(c, client, market_regime, sem):
     async with sem:  
@@ -1918,7 +1990,9 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             _, futures_signal, funding_val, oi_change_pct = await get_futures_liquidity(symbol, client, price, old_price_val)
             whale_score, phantom_tags = await detect_phantom_liquidity_ws(symbol, client, price, approx_24h_vol_usd)
             rs_score = await detect_btc_relative_strength(symbol, client)
-            
+                        # 🚀 استدعاء فلتر الحقيقة VPIN (قراءة 10,000 صفقة)
+            vpin_score = await get_institutional_vpin(symbol, client)
+            print(f"🔬 [VPIN Engine] {symbol} | Toxicity Score: {vpin_score:.2f}")
             tags.extend(phantom_tags)
             if limit_abs_signal == "Limit_Absorption": tags.append("Limit_Absorption")
             if micro_cvd_signal == "Micro_Silent_Accumulation": tags.append("Whale_CVD")
@@ -2140,7 +2214,16 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             # ==========================================
             # 🌟 هنا تتدخل الإستراتيجية العظمى: إذا كانت العملة محتضنة، نتساهل مع الفيتو اللحظي!
             veto_tolerance = 1.3 if is_incubated else 1.0 # نسبة تساهل 30% للمحتضنة
+                        # 🛑 فلتر VPIN: إعدام الاختراقات الوهمية اللحظية (Retail Noise)
+            if vpin_score < 0.25 and micro_cvd_trend > 0:
+                tags.append("VPIN_Retail_Noise_Trap")
+                print(f"🗑️ {symbol} - مرفوض: اختراق وهمي مدفوع بقطيع الأفراد (VPIN: {vpin_score:.2f}).")
+                return None
             
+            # إذا كانت السيولة شديدة السمية (تدخل مؤسساتي شرس) نعطيها تاج داعم
+            if vpin_score > 0.65:
+                tags.append("VPIN_Toxic_Inflow")
+
             if current_vwap_z > (dyn_vwap_z * veto_tolerance):
                 tags.append("Late_FOMO_Pump_VWAP")
                 print(f"🗑️ {symbol} - مرفوض: انحراف قوي عن VWAP (متجاوزاً عتبة الاحتضان {veto_tolerance}).")
