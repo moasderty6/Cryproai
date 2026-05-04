@@ -1952,33 +1952,42 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             current_low = df["low"].iloc[-1]
             current_close = df["close"].iloc[-1]
             is_liquidity_sweep = (current_low < recent_low_20) and (current_close > recent_low_20)
-
             # ====================================================================
-            # 🧠 المرحلة الثالثة: محرك التسعير الكمي المضاعف (Multiplicative Quant Engine)
+            # 🧠 المرحلة الثالثة: محرك التسعير الكمي المضاعف (True Multiplicative Quant Engine)
             # ====================================================================
-            # 1. فك القيود (Uncapped Limits): جعل جميع الركائز تتنفس حتى 100%
+            # 1. حساب الفوليوم الدولاري الدقيق لكل شمعة لتجنب تضخم السعر الراجع (Retroactive Inflation)
+            df["vol_usd"] = df["volume"] * df["close"]
+            avg_vol_usd_20 = df["vol_usd"].tail(20).mean()
+            avg_vol_usd_20 = max(avg_vol_usd_20, 1.0) # حماية من القسمة على صفر
             
             # --- البُعد الأول: الاتجاه (Directional Conviction) ---
-            # يعتمد على السيولة الكلية (CVD)، المشتقات، والتحليل الفني
-            avg_vol_20_temp = df["volume"].tail(20).mean()
-            avg_vol_usd_temp = avg_vol_20_temp * price if avg_vol_20_temp > 0 else 1.0
+            # أ. تقييم السيولة (CVD)
             real_cvd_usd_eval = float(micro_cvd_trend) * price 
-            cvd_ratio = real_cvd_usd_eval / avg_vol_usd_temp
+            cvd_ratio = real_cvd_usd_eval / avg_vol_usd_20
             
             cvd_score = quant_sigmoid_score(cvd_ratio, sensitivity=6.0, limit=100.0)
             spot_lead_bonus = max(0.0, min(20.0, spot_lead_score * 2.0))
             dir_cvd = min(100.0, cvd_score + spot_lead_bonus)
             
-            phantom_bonus = quant_sigmoid_score(whale_score, sensitivity=0.5, limit=50.0)
+            # ب. تقييم المشتقات (Derivatives & Phantom Liquidity)
+            # تحويل سيولة الحيتان المخفية (Phantom) إلى نسبة مئوية تضاعف قوة المشتقات
+            phantom_multiplier = 1.0 + (quant_sigmoid_score(whale_score, sensitivity=0.5, limit=50.0) / 100.0)
             funding_sensitivity = -3000.0 if (futures_signal == "OI_Rising" and oi_change_pct > 0.02) else -1000.0
-            dir_deriv = quant_sigmoid_score(funding_val, sensitivity=funding_sensitivity, limit=100.0)
-            dir_deriv = min(100.0, dir_deriv + phantom_bonus)
+            base_deriv = quant_sigmoid_score(funding_val, sensitivity=funding_sensitivity, limit=100.0)
+            dir_deriv = min(100.0, base_deriv * phantom_multiplier)
             
+            # ج. تقييم الهيكلة الفنية (Technical Structure)
             tech_base = 50.0
             squeeze_ratio = current_bb_width / (avg_bb_width + 1e-8) if not pd.isna(avg_bb_width) and avg_bb_width > 0 else 1.0
-            if squeeze_ratio < 0.8: tech_base += quant_sigmoid_score(1.0 - squeeze_ratio, sensitivity=5.0, limit=30.0)
+            if squeeze_ratio < 0.8: 
+                tech_base += quant_sigmoid_score(1.0 - squeeze_ratio, sensitivity=5.0, limit=30.0)
+            
+            # 🛡️ تصحيح مؤسساتي: علاوة صيد السيولة متغيرة حسب حجم الأموال الممتصة (ليس رقماً ثابتاً)
+            if is_liquidity_sweep and real_cvd_usd_eval > 0: 
+                sweep_strength = min(1.0, real_cvd_usd_eval / (avg_vol_usd_20 * 0.5)) 
+                tech_base += (20.0 * sweep_strength)
+                
             tech_base += quant_sigmoid_score(rs_score, sensitivity=0.5, limit=20.0)
-            if is_liquidity_sweep and real_cvd_usd_eval > 0: tech_base += 15.0
             dir_tech = min(100.0, tech_base)
 
             # 🛡️ استرجاع أوزان حالة السوق بدقة (Regime-based Weighting)
@@ -1992,42 +2001,62 @@ async def analyze_radar_coin(c, client, market_regime, sem):
 
             # --- البُعد الثاني: التوقيت (Timing & Execution) ---
             imbalance = depth_data.get('imbalance', 0.0)
+            is_spoofed_flag = depth_data.get('is_spoofed', False)
+            is_hollow_flag = depth_data.get('is_hollow', False)
+
             ob_base = quant_sigmoid_score(imbalance, sensitivity=4.0, limit=100.0)
             global_ob_bonus = min(20.0, math.log1p(max(0, global_ob_pressure - 1.0)) * 10.0)
             timing_score = min(100.0, ob_base + global_ob_bonus)
             
-            if depth_data.get('is_hollow', False) or depth_data.get('is_spoofed', False):
-                timing_score *= 0.3 
+            # 🧠 التعامل الذكي مع التلاعب (Smart Spoofing Logic)
+            if is_hollow_flag:
+                timing_score *= 0.4 # عقاب صارم لفراغ السيولة (خطر الانزلاق)
+            elif is_spoofed_flag:
+                # إذا كان التلاعب يدعم الاتجاه (تجميع صانع سوق)، العقاب خفيف
+                if (imbalance > 0.1 and current_regime_trend == "Trending_Bull") or (imbalance < -0.1 and current_regime_trend == "Trending_Bear"):
+                    timing_score *= 0.8 
+                else:
+                    # تلاعب عكس الاتجاه (فخ سيولة حقيقي)
+                    timing_score *= 0.3 
 
-            # --- البُعد الثالث: الفوليوم كبوابة حتمية (The Volume Gatekeeper) ---
-            # تحويل VCA و Incubation إلى "زخم إضافي" للـ Z-Score
-            vca_z_boost = vca_bonus_score / 15.0  
-            inc_z_boost = incubation_bonus / 15.0
-            
-            effective_z = current_z + vca_z_boost + inc_z_boost
-            
-            # دالة Sigmoid قاسية تتمركز عند Z-Score = 1.5
-            safe_z_calc = max(-10.0, min(10.0, 2.0 * (effective_z - 1.5)))
+            # --- البُعد الثالث: الفوليوم كبوابة حتمية (The Pure Volume Gatekeeper) ---
+            # 🛡️ الحفاظ على نزاهة Z-Score وعدم تلوثه بأي إضافات
+            safe_z_calc = max(-10.0, min(10.0, 2.0 * (current_z - 1.5)))
             raw_vol_multiplier = 1.0 / (1.0 + math.exp(-safe_z_calc))
             
-            # 🚨 تم إصلاح الثغرة الرياضية (Negative Exponent Overflow) هنا:
-            if lar_score <= 0.0:
-                vol_penalty_factor = 0.1 # خنق تام إذا كان الامتصاص سلبياً أو معدوماً
-            elif lar_score < 1.0:
-                vol_penalty_factor = math.exp(-2.0 / (lar_score + 1e-8))
+            # 🚨 إصلاح ثغرة (Negative Exponent Underflow) وحماية القسمة
+            safe_lar = max(lar_score, 0.05) 
+            if safe_lar < 0.1:
+                vol_penalty_factor = 0.1 # خنق تام إذا كان الامتصاص معدوماً
+            elif safe_lar < 1.0:
+                vol_penalty_factor = math.exp(-2.0 / safe_lar)
             else:
                 vol_penalty_factor = 1.0
                 
             volume_multiplier = raw_vol_multiplier * vol_penalty_factor
 
-            # --- ⚖️ الدمج المضاعف المؤسساتي (Multiplicative Fusion) ---
-            base_conviction = (directional_score * 0.70) + (timing_score * 0.30)
-            final_raw_score = base_conviction * volume_multiplier
+            # --- البُعد الرابع: محفزات الألفا الهيكلية (Structural Alpha Multipliers) ---
+            # تحويل VCA و Incubation إلى مضاعفات للسكور النهائي بدلاً من تشويه الإحصائيات
+            vca_multiplier = 1.0 + (vca_bonus_score / 100.0) 
+            incubation_multiplier = 1.0 + (incubation_bonus / 100.0)
+            # أقصى تضخيم مسموح به هو 35% لضمان عدم إعطاء سكور عالي لعملة ميتة
+            structural_alpha_boost = min(1.35, vca_multiplier * incubation_multiplier)
+
+            # --- ⚖️ الدمج الهندسي المؤسساتي (Weighted Geometric Fusion) ---
+            # استخدام الضرب التبادلي: إذا كان التوقيت سيئاً (يقترب من الصفر)، السكور ينهار لحماية المشترك
+            base_conviction = (directional_score ** 0.70) * (timing_score ** 0.30)
             
-            # 🚀 محفز الإجماع الأسّي (Exponential Confluence Boost)
-            if directional_score >= 80.0 and timing_score >= 80.0 and effective_z >= 2.5:
-                boost_factor = 1.05 + (effective_z * 0.012)
-                final_raw_score = min(99.5, final_raw_score * boost_factor)
+            # تطبيق محفزات الدارك بول (VCA) وغرفة الاحتضان
+            enhanced_conviction = base_conviction * structural_alpha_boost
+            
+            # البوابة النهائية (Volume Multiplier) تصفي الفرصة
+            final_raw_score = enhanced_conviction * volume_multiplier
+            
+            # 🚀 محفز الإجماع الأسّي (Exponential Confluence Boost) للمراكز المثالية
+            if directional_score >= 75.0 and timing_score >= 75.0 and current_z >= 2.0:
+                # نضع سقفاً لـ Z-Score هنا لمنع تضخم الأرقام اللانهائي
+                boost_factor = 1.05 + (min(current_z, 5.0) * 0.01)
+                final_raw_score = final_raw_score * boost_factor
             
             score = round(max(0.0, min(final_raw_score, 99.5)), 1)
             
