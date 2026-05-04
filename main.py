@@ -1975,20 +1975,25 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             funding_sensitivity = -3000.0 if (futures_signal == "OI_Rising" and oi_change_pct > 0.02) else -1000.0
             base_deriv = quant_sigmoid_score(funding_val, sensitivity=funding_sensitivity, limit=100.0)
             dir_deriv = min(100.0, base_deriv * phantom_multiplier)
-            
-            # ج. تقييم الهيكلة الفنية (Technical Structure)
+            # 🛡️ ج. تقييم الهيكلة الفنية (المحرك المصحح لاكتشاف السكاكين الساقطة)
             tech_base = 50.0
             squeeze_ratio = current_bb_width / (avg_bb_width + 1e-8) if not pd.isna(avg_bb_width) and avg_bb_width > 0 else 1.0
-            if squeeze_ratio < 0.8: 
-                tech_base += quant_sigmoid_score(1.0 - squeeze_ratio, sensitivity=5.0, limit=30.0)
             
-            # 🛡️ تصحيح مؤسساتي: علاوة صيد السيولة متغيرة حسب حجم الأموال الممتصة (ليس رقماً ثابتاً)
+            if squeeze_ratio < 0.8: 
+                # مكافأة التجميع والانضغاط (هنا تتألق العملات الميتة قبل الانفجار)
+                tech_base += quant_sigmoid_score(1.0 - squeeze_ratio, sensitivity=5.0, limit=30.0)
+            elif squeeze_ratio > 1.3:
+                # 🛑 عقاب التوسع العنيف (سحق العملات المنهارة مثل ORCA)
+                penalty = quant_sigmoid_score(squeeze_ratio - 1.0, sensitivity=5.0, limit=30.0)
+                tech_base -= penalty
+            
             if is_liquidity_sweep and real_cvd_usd_eval > 0: 
                 sweep_strength = min(1.0, real_cvd_usd_eval / (avg_vol_usd_20 * 0.5)) 
                 tech_base += (20.0 * sweep_strength)
                 
             tech_base += quant_sigmoid_score(rs_score, sensitivity=0.5, limit=20.0)
-            dir_tech = min(100.0, tech_base)
+            dir_tech = max(0.0, min(100.0, tech_base)) # حماية من النزول تحت الصفر
+
 
             # 🛡️ استرجاع أوزان حالة السوق بدقة (Regime-based Weighting)
             current_regime_trend = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
@@ -2034,13 +2039,16 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 vol_penalty_factor = 1.0
                 
             volume_multiplier = raw_vol_multiplier * vol_penalty_factor
-
             # --- البُعد الرابع: محفزات الألفا الهيكلية (Structural Alpha Multipliers) ---
-            # تحويل VCA و Incubation إلى مضاعفات للسكور النهائي بدلاً من تشويه الإحصائيات
             vca_multiplier = 1.0 + (vca_bonus_score / 100.0) 
             incubation_multiplier = 1.0 + (incubation_bonus / 100.0)
-            # أقصى تضخيم مسموح به هو 35% لضمان عدم إعطاء سكور عالي لعملة ميتة
-            structural_alpha_boost = min(1.35, vca_multiplier * incubation_multiplier)
+            
+            # 🛑 كابح الدارك بول: لا نُعطي ستيرويد (Bonus) لعملة تنهار والبولينجر يتوسع!
+            if squeeze_ratio < 1.2:
+                structural_alpha_boost = min(1.35, vca_multiplier * incubation_multiplier)
+            else:
+                structural_alpha_boost = 1.0 # إغلاق محفز الألفا لأن العملة تنزف
+
 
             # --- ⚖️ الدمج الهندسي المؤسساتي (Weighted Geometric Fusion) ---
             # استخدام الضرب التبادلي: إذا كان التوقيت سيئاً (يقترب من الصفر)، السكور ينهار لحماية المشترك
