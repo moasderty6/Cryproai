@@ -2232,7 +2232,7 @@ DEEP_EXPERTS = {}
 
 # السحب الآمن للتوكن من بيئة السيرفر بدلاً من كتابته صراحة
 HF_TOKEN = os.getenv("HF_TOKEN")  
-HF_REPO_ID = "Djhdhdhdh827237/quant-moe-models" # اسم المستودع عادي يكون مكشوف
+HF_REPO_ID = "Djdhdhdh827237/quant-moe-models" # اسم المستودع عادي يكون مكشوف
 
 
 async def moe_hot_swap_worker():
