@@ -11,3 +11,5 @@ ta==0.11.0
 websockets
 xgboost
 scikit-learn
+onnxruntime
+huggingface_hub
