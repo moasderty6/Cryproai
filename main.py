@@ -26,38 +26,15 @@ def quant_cdf_score(z_value, limit=100.0):
     probability = 0.5 * (1.0 + math.erf(z_value / math.sqrt(2.0)))
     return probability * limit
 
-# --- الكود الجديد ---
 def quant_sigmoid_score(value, sensitivity=1.0, limit=100.0):
     """
-    [Institutional Upgrade] المحرك الهجين (Piecewise Log-Sigmoid Activation):
-    يخصص 80% من السكور للسيولة العادية، و20% لامتصاص القيم المتطرفة (Black Swans) بالنمو اللوغاريتمي البطيء.
+    محرك النعومة (Sigmoid Activation):
+    يحول القيم المطلقة المفتوحة أو السلبية (مثل Imbalance أو Funding) إلى سكور بين 0 و 100 بسلاسة.
     """
-    import math
-    raw_value = sensitivity * value
-    
-    # تقسيم النطاق (80% طبيعي، 20% للذيول السميكة)
-    base_limit = limit * 0.80 
-    tail_limit = limit * 0.20 
-    
-    # 1. حساب السكور الأساسي للقيم الطبيعية (حتى نطاق Z=3.5 تقريباً)
-    # نحمي دالة Sigmoid من الطفح ونركزها على النطاق الجوهري للسوق
-    safe_base = max(-5.0, min(5.0, raw_value))
-    sig_base = 1.0 / (1.0 + math.exp(-safe_base))
-    base_score = sig_base * base_limit
-    
-    # 2. 🧠 علاوة التطرف (Tail Bonus) لمعالجة ضخ الحيتان الملياري
-    tail_score = 0.0
-    if raw_value > 5.0:
-        # نمو لوغاريتمي بطيء جداً للملايين والمليارات (يمتص الفومو ولا يتجاوز السقف)
-        tail_score = math.log1p(raw_value - 5.0) * (tail_limit / 5.0) 
-        tail_score = min(tail_score, tail_limit) 
-    elif raw_value < -5.0:
-        tail_score = -math.log1p(abs(raw_value) - 5.0) * (tail_limit / 5.0)
-        tail_score = max(tail_score, -tail_limit)
-
-    # الدمج الهندسي لضمان الخروج النهائي بين 0 و Limit دون أي تشوهات
-    final_score = base_score + tail_score
-    return float(max(0.0, min(limit, final_score)))
+    # حماية من الطفح الرياضي (Overflow) للقيم المتطرفة جداً
+    safe_value = max(-20.0, min(20.0, sensitivity * value))
+    sig = 1.0 / (1.0 + math.exp(-safe_value))
+    return sig * limit
 def quant_fat_tail_score(z_value, tail_weight=1.5, limit=100.0):
     """
     محرك التقييم للذيول السميكة (Fat-Tailed / Cauchy CDF Engine):
@@ -1335,77 +1312,38 @@ async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_
 
 def calculate_volume_zscore(df, window=720):
     """
-    [Institutional Upgrade] محرك شذوذ الفوليوم مع الإسقاط الحجمي اللاخطي 
-    سريع جدا ومضاد للتشوه: يحجم الشموع العملاقة السابقة لسرعة المعالجة،
-    ويتنبأ بحجم الشمعة الحالية لاصطياد الحيتان قبل إغلاق الشمعة.
-    تم تطبيق العزل (df.copy) لمنع تسرب البيانات والتضخم المزدوج.
+    محرك شذوذ الفوليوم المؤسساتي (Robust Z-Score) باستخدام Winsorized Std
+    سريع جداً (Vectorized) ومضاد للتشوه: يحجم الشموع العملاقة السابقة لسرعة المعالجة.
     """
-    import time
-    import math
-    import pandas as pd
+    df["volume"] = pd.to_numeric(df["volume"], errors='coerce')
     
-    # العزل الجراحي: أخذ نسخة لمنع تلوث المصفوفة الأصلية وتضخم الفوليوم المزدوج
-    df_calc = df.copy()
-    df_calc["volume"] = pd.to_numeric(df_calc["volume"], errors='coerce')
-    df_calc["timestamp"] = pd.to_numeric(df_calc["timestamp"], errors='coerce') # ضمان أن الزمن أرقام
+    # 1. حساب الوسيط المتحرك (Median) وهو مدعوم ومُحسّن بـ C-level
+    rolling_median = df["volume"].rolling(window=window, min_periods=100).median()
     
-    # ====================================================================
-    # محرك الإسقاط الحجمي اللاخطي (Square-Root Time Scaling)
-    # ====================================================================
-    try:
-        current_vol = float(df_calc["volume"].iloc[-1])
-        candle_start = float(df_calc["timestamp"].iloc[-1])
-        
-        # حماية في حال كانت المصفوفة تحتوي شمعة واحدة فقط
-        if len(df_calc) > 1:
-            prev_candle_start = float(df_calc["timestamp"].iloc[-2])
-            candle_duration = max(60.0, candle_start - prev_candle_start) # طول الشمعة الفعلي
-        else:
-            candle_duration = 900.0 # افتراضي 15 دقيقة
-            
-        elapsed_time = max(1.0, time.time() - candle_start)
-        elapsed_time = min(elapsed_time, candle_duration) # لا يتجاوز طول الشمعة
-        
-        time_progress_pct = elapsed_time / candle_duration
-        
-        # كابح الثقة الزمني: كلما نضجت الشمعة زادت ثقتنا بالإسقاط
-        time_confidence = math.sqrt(time_progress_pct)
-        
-        current_velocity = current_vol / elapsed_time
-        remaining_time = candle_duration - elapsed_time
-        
-        # الفوليوم التنبؤي المكبوت (Dampened Projected Volume)
-        raw_future_vol = current_velocity * remaining_time
-        safe_projected_vol = current_vol + (raw_future_vol * time_confidence)
-        
-        # الفيتو الزمني: في أول 10% من الشمعة نحن عميان، لذلك نعتمد الفوليوم الفعلي لتجنب الفخاخ
-        if time_progress_pct > 0.10:
-            # حقن الفوليوم المتوقع في النسخة المعزولة قبل حساب الـ Z-Score!
-            df_calc.at[df_calc.index[-1], "volume"] = safe_projected_vol
-            
-    except Exception as e:
-        pass # في حال فشل الحساب الزمني لأي سبب، يكمل بالفوليوم الفعلي بسلاسة
-
-    # ====================================================================
-    # حساب Z-Score المؤسساتي (المحمي)
-    # ====================================================================
-    # 1. حساب الوسيط المتحرك (Median)
-    rolling_median = df_calc["volume"].rolling(window=window, min_periods=100).median()
+    # 2 & 3. التصحيح الكمي: Winsorization (تقليم الأطراف) بدلاً من حلقة MAD البطيئة
+    # نكبح القيم المتطرفة للفوليوم عند 4 أضعاف الوسيط لحماية الانحراف المعياري.
+    # هذا يمنع شمعة انفجارية واحدة من تدمير الانحراف لـ 720 شمعة قادمة.
+    clipped_volume = df["volume"].clip(upper=rolling_median * 4)
     
-    # 2. التصحيح الكمي: Winsorization (تقليم الأطراف)
-    clipped_volume = df_calc["volume"].clip(upper=rolling_median * 4)
+    # حساب الانحراف المعياري السريع جداً على الفوليوم المكبّح
     rolling_std = clipped_volume.rolling(window=window, min_periods=100).std(ddof=0)
     
-    # 3. حساب Z-Score اللحظي (المبني الآن على الفوليوم المستقبلي للشمعة الحالية!)
-    df_calc["z_score"] = (df_calc["volume"] - rolling_median) / (rolling_std + 1e-8)
+    # 4. حساب Z-Score اللحظي
+    # البسط: الفوليوم الحقيقي الحالي (غير المكبوت) لكي نلتقط الانفجار الحالي بقوة!
+    # المقام: الانحراف المعياري المحمي (لا نحتاج لضرب بـ 1.4826 لأنه Std فعلي)
+    df["z_score"] = (df["volume"] - rolling_median) / (rolling_std + 1e-8)
     
-    current_z = df_calc["z_score"].iloc[-1]
+    current_z = df["z_score"].iloc[-1]
     last_median = rolling_median.iloc[-1]
+    
+    # نحتفظ باسم المتغير last_mad لتوافق مخرجات الدالة مع باقي الكود دون أي كسر
     last_mad = rolling_std.iloc[-1] 
     
+    # حماية من القسمة على صفر في العملات الميتة جداً
     if pd.isna(current_z) or current_z == float('inf'):
         current_z = 0.0
 
+    # إرجاع 3 قيم تماماً كما يتوقع باقي الكود
     return float(current_z), float(last_median), float(last_mad)
 
 async def silent_data_harvester_worker(pool):
@@ -1686,36 +1624,26 @@ async def detect_real_whale_trades(symbol: str, client: httpx.AsyncClient, volum
         cluster_counts = df.groupby('time_sec')['value'].count()
         algo_clusters = cluster_counts[cluster_counts > 7] # 7 صفقات فأكثر في ثانية واحدة
         cluster_weight = min(len(algo_clusters) / 10.0, 4.0) # أقصى تعزيز 4 نقاط
-# --- الكود الجديد ---
-        # 2. كشف تجانس الأحجام بعتبات ديناميكية متكيفة (Adaptive Empirical Thresholds)
+
+        # 2. كشف تجانس الأحجام (Iceberg / TWAP Variance Detection)
+        # تجاهل صفقات التجزئة البسيطة للأفراد (أقل من 200 دولار) للتركيز على مسار المؤسسات
         meaningful_buys = buy_trades[buy_trades['value'] > 200]
         meaningful_sells = sell_trades[sell_trades['value'] > 200]
 
         algo_buy_score = 0.0
         algo_sell_score = 0.0
 
-        # 🧠 حساب العتبة الديناميكية بناءً على التذبذب الكلي للسوق الحالي (Self-Empirical Baseline)
-        all_meaningful = df[df['value'] > 200]
-        if len(all_meaningful) > 30:
-            baseline_cv = all_meaningful['value'].std() / (all_meaningful['value'].mean() + 1e-8)
-        else:
-            baseline_cv = 2.0 # الوضع الافتراضي لضمان عمل الدالة
-
-        # الخوارزمية تتكيف: نعتبر الأوامر "صناعية/روبوت" إذا كان تجانسها يمثل 50% أو أقل من العشوائية العامة الحالية للسوق
-        # نضع سقفاً وأرضية للحماية (Floor & Ceiling)
-        dynamic_cv_threshold = max(0.5, min(1.8, baseline_cv * 0.5))
-
         # Coefficient of Variation (CV) = Standard Deviation / Mean
+        # الخوارزميات تترك CV منخفض جداً لأنها تقطع الأحجام بشكل رياضي متساوٍ
         if len(meaningful_buys) > 15:
             buy_cv = meaningful_buys['value'].std() / (meaningful_buys['value'].mean() + 1e-8)
-            if buy_cv < dynamic_cv_threshold: # استخدام العتبة المتكيفة بدل الرقم الثابت 1.2
-                # تقييم يعتمد على مدى انحراف التجانس عن العتبة الديناميكية
-                algo_buy_score += (dynamic_cv_threshold - buy_cv) * (10.0 / dynamic_cv_threshold)
+            if buy_cv < 1.2: # تجانس رياضي غير طبيعي (روبوت تجميع)
+                algo_buy_score += (1.2 - buy_cv) * 10
 
         if len(meaningful_sells) > 15:
             sell_cv = meaningful_sells['value'].std() / (meaningful_sells['value'].mean() + 1e-8)
-            if sell_cv < dynamic_cv_threshold:
-                algo_sell_score += (dynamic_cv_threshold - sell_cv) * (10.0 / dynamic_cv_threshold)
+            if sell_cv < 1.2: # تجانس رياضي (روبوت تصريف)
+                algo_sell_score += (1.2 - sell_cv) * 10
 
         # 3. الهيمنة الاتجاهية (Directional Delta)
         delta_pct = (buy_vol - sell_vol) / total_vol
@@ -4869,35 +4797,29 @@ async def run_analysis(cb: types.CallbackQuery):
     # 3. حساب سرعة السيولة (Volume Velocity - Vol/Sec)
     current_velocity = current_vol / elapsed_time
     avg_velocity = avg_vol_20 / candle_duration
-# --- الكود الجديد ---
-            # 4. الإسقاط الحجمي اللاخطي: كابح الثقة الزمني (Square-Root Time Scaling)
+    
+    # 4. الإسقاط الخطي مع كابح الضجيج (Linear Projection with Anti-Spoof Dampener)
     time_progress_pct = elapsed_time / candle_duration
-            
-            # 🧠 حساب معامل الثقة المؤسساتي بناءً على جذر الوقت المنقضي
-            # في الدقيقة الأولى من شمعة الساعة، نثق بـ 12.9% فقط من الفوليوم التنبؤي!
-    import math
-    time_confidence = math.sqrt(time_progress_pct)
-
-            # استدعاء قيمة الـ CVD الحالية بشكل آمن
+    
+    # استدعاء قيمة الـ CVD الحالية بشكل آمن
+        # استدعاء قيمة الـ CVD الحالية بشكل آمن
     current_cvd_check = cvd_trend_val
 
-            # 🧠 حساب الفوليوم التنبؤي المكبوت (Dampened Projected Volume)
-            # بدلاً من الإسقاط الخطي الأعمى، نأخذ: (الفوليوم الحالي) + (الفوليوم المتبقي المتوقع × معامل الثقة)
-    remaining_time = candle_duration - elapsed_time
-    raw_future_vol = current_velocity * remaining_time
-    safe_projected_vol = current_vol + (raw_future_vol * time_confidence)
-
     if time_progress_pct < 0.15: # أول 15% من عمر الشمعة (مرحلة فخاخ الحيتان)
+ # أول 15% من عمر الشمعة (مرحلة فخاخ الحيتان)
+        # [تعديل صانع السوق]: لا نقبل الفوليوم العنيف في البداية إلا إذا كان مدعوماً بتدفق شرائي (Taker Buy) حقيقي
         if current_vol > (avg_vol_20 * 0.3) and current_cvd_check > 0:
-            projected_vol = safe_projected_vol
+            projected_vol = current_velocity * candle_duration
         else:
             projected_vol = current_vol # الفوليوم وهمي أو بيعي، أوقف التنبؤ!
+ # تجاهل الإسقاط، اعتبر الفوليوم كما هو لتجنب الفخ
     else:
-        projected_vol = safe_projected_vol
-            # 5. اتخاذ قرار الانفجار (Surge) بناءً على المعادلة المتكيفة
-            # نرفع العتبة التنبؤية قليلاً لتجنب الإشارات الكاذبة لأن المحرك أصبح أكثر دقة
-    dampened_velocity = current_velocity * time_confidence # 👈 الكابح هنا
-    vol_surge = (current_vol > (avg_vol_20 * 1.5)) or (projected_vol > (avg_vol_20 * 2.0)) or (dampened_velocity > (avg_velocity * 2.5))
+        # الإسقاط الطبيعي لما بعد مرحلة الخطر
+        projected_vol = current_velocity * candle_duration
+
+    # 5. اتخاذ قرار الانفجار (Surge) بناءً على "المستقبل" و"السرعة"
+    # الانفجار يتحقق إذا كان الفوليوم الفعلي ضخم (شمعة أغلقت)، أو الفوليوم التنبؤي مرعب، أو سرعة التدفق أضعاف المعتاد
+    vol_surge = (current_vol > (avg_vol_20 * 1.5)) or (projected_vol > (avg_vol_20 * 1.8)) or (current_velocity > (avg_velocity * 2.2))
     # ====================================================================
     # أ. شروط انعكاس الاتجاه من هابط إلى صاعد (اصطياد القاع الاستباقي)
     if classic_trend == "Bearish":
