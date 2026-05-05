@@ -2162,6 +2162,124 @@ async def get_institutional_vpin(symbol: str, client: httpx.AsyncClient, target_
         
     except Exception:
         return 0.5
+import numpy as np
+import onnxruntime as ort
+import os
+
+# ====================================================================
+# 🧠 THE DEEP LEARNING ENGINE (MoE - ONNX) - COMPLETELY SEPARATED
+# ====================================================================
+DEEP_EXPERTS = {}
+
+def load_deep_experts():
+    global DEEP_EXPERTS
+    try:
+        sess_options = ort.SessionOptions()
+        sess_options.intra_op_num_threads = 1
+        sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+
+        if os.path.exists("model_bull.onnx"):
+            DEEP_EXPERTS[1] = ort.InferenceSession("model_bull.onnx", sess_options)
+        if os.path.exists("model_bear.onnx"):
+            DEEP_EXPERTS[2] = ort.InferenceSession("model_bear.onnx", sess_options)
+        if os.path.exists("model_chop.onnx"):
+            DEEP_EXPERTS[3] = ort.InferenceSession("model_chop.onnx", sess_options)
+            
+    except Exception:
+        pass # صمت تام لكي لا يزعج سيرفرك إذا لم تكن الملفات موجودة بعد
+
+load_deep_experts()
+
+def predict_deep_moe(features: dict) -> float:
+    if not DEEP_EXPERTS: return -1.0 # لا يوجد ملفات، إذن المودل نائم
+    
+    try:
+        regime = int(features.get('market_regime', 0))
+        expert_id = regime if regime in DEEP_EXPERTS else 3 
+        if expert_id not in DEEP_EXPERTS: return -1.0
+
+        expert_model = DEEP_EXPERTS[expert_id]
+        
+        # تجهيز البيانات
+        input_vector = np.array([[
+            float(features.get('sp500_trend', 0.0)), float(features.get('sentiment_score', 50.0)),
+            float(features.get('z_score', 0.0)), float(features.get('cvd_to_vol_ratio', 0.0)),
+            float(features.get('ofi_imbalance', 0.0)), float(features.get('ob_skewness', 1.0)),
+            float(features.get('whale_inflow', 0.0)), float(features.get('adx', 0.0)),
+            float(features.get('rsi', 50.0)), float(features.get('micro_volatility', 0.0)),
+            float(features.get('cvd_divergence', 0.0)), float(features.get('funding_rate', 0.0))
+        ]], dtype=np.float32)
+
+        input_name = expert_model.get_inputs()[0].name
+        output_name = expert_model.get_outputs()[0].name
+        
+        prediction = expert_model.run([output_name], {input_name: input_vector})[0]
+        raw_score = float(prediction[0][0]) if prediction.ndim > 1 else float(prediction[0])
+        return round(max(0.0, min(100.0, ((raw_score + 1.0) / 2.0) * 100.0)), 1)
+    except:
+        return -1.0
+import os
+import asyncio
+import onnxruntime as ort
+from huggingface_hub import hf_hub_download
+
+# ====================================================================
+# 🦅 HEDGE FUND GRADE: Atomic Zero-Downtime Model Hot-Swapping
+# ====================================================================
+DEEP_EXPERTS = {}
+
+# 🚨 ضع هنا (نفس التي استخدمتها في مصنع التدريب)import os
+
+# السحب الآمن للتوكن من بيئة السيرفر بدلاً من كتابته صراحة
+HF_TOKEN = os.getenv("HF_TOKEN")  
+HF_REPO_ID = "Djhdhdhdh827237/quant-moe-models" # اسم المستودع عادي يكون مكشوف
+
+
+async def moe_hot_swap_worker():
+    """
+    عامل الاستبدال الحي: يجلب الأوزان الجديدة من السحابة ويركبها في الذاكرة 
+    بدون أي انقطاع في تيار بيانات بايننس (Zero Slippage/Downtime).
+    """
+    global DEEP_EXPERTS
+    await asyncio.sleep(20) # ننتظر استقرار السيرفر عند الإقلاع
+    print("☁️ [MoE Ghost Sync] Hedge Fund Model Synchronization is Online...")
+
+    while True:
+        try:
+            print("🔄 [MoE Ghost Sync] Checking Hugging Face for fresh Brain Weights...")
+            new_experts = {}
+            
+            # إعدادات الـ ONNX بأعلى كفاءة للمعالجات (CPUs)
+            sess_options = ort.SessionOptions()
+            sess_options.intra_op_num_threads = 1
+            sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+
+            models_to_fetch = {1: "model_bull.onnx", 2: "model_bear.onnx", 3: "model_chop.onnx"}
+
+            # جلب النماذج في خيط خلفي (Background Thread) لمنع تجميد البوت اللحظي
+            for regime_id, model_name in models_to_fetch.items():
+                file_path = await asyncio.to_thread(
+                    hf_hub_download,
+                    repo_id=HF_REPO_ID,
+                    filename=model_name,
+                    token=HF_TOKEN,
+                    force_download=True # إجبار السيرفر على جلب أحدث نسخة دائماً
+                )
+                # تحميل النموذج الجديد في الذاكرة المعزولة أولاً
+                new_experts[regime_id] = ort.InferenceSession(file_path, sess_options)
+
+            # ⚛️ الاستبدال الذرّي (Atomic Swap): 
+            # نستبدل القاموس القديم بالجديد في عملية واحدة لا تتجزأ (Thread-Safe)
+            if len(new_experts) == 3:
+                DEEP_EXPERTS = new_experts
+                print("✅ [MoE Ghost Sync] Atomic Swap Complete! New Brains injected successfully.")
+
+        except Exception as e:
+            # صمت مؤسساتي: إذا فشل الاتصال، لا نوقف البوت، بل نستمر باستخدام الأوزان القديمة
+            print(f"⚠️ [MoE Ghost Sync] Connection failed, keeping old models. Error: {e}")
+
+        # ينام لمدة 12 ساعة، ثم يستيقظ لجلب أي تحديثات جديدة من مصنع Kaggle
+        await asyncio.sleep(43200) 
 
 async def analyze_radar_coin(c, client, market_regime, sem):
     async with sem:  
@@ -2587,17 +2705,28 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     'cvd_divergence': float(cvd_divergence), 
                     'funding_rate': float(funding_val)
                 }
-
-                                # 🧠 [Shadow Mode] استدعاء نموذج الذكاء الاصطناعي لمعرفة رأيه فقط
+                # 1. الذكاء الكلاسيكي (XGBoost) - يعمل كما كان تماماً
                 ai_confidence = await asyncio.to_thread(predict_signal_sync, ml_features)
-                
+
+                # 2. الذكاء العميق (MoE) - يعمل بجانبه دون تداخل
+                ai_confidence_deep = await asyncio.to_thread(predict_deep_moe, ml_features)
+
+                # صياغة النتائج للأدمن
                 if ai_confidence != -1.0:
-                    # طباعة النسبة للأدمن دون أي تدخل في القرار
-                    ai_status = f"Shadow Mode 👁️ (Score: {ai_confidence:.1f}%)"
+                    xgb_status = f"الكلاسيكي (XGB): {ai_confidence:.1f}%"
                 else:
-                    # في حال لم يتدرب النموذج بعد (أقل من 100 صفقة)
-                    ai_status = "Training & Learning ⏳"
-                
+                    xgb_status = "الكلاسيكي (XGB): قيد التدريب ⏳"
+
+                if ai_confidence_deep != -1.0:
+                    regime_names = {1: "Bull 🐂", 2: "Bear 🐻", 3: "Chop ⚖️"}
+                    active_expert = regime_names.get(ml_features.get('market_regime', 0), "Unknown")
+                    deep_status = f"العميق (MoE): {ai_confidence_deep:.1f}% | خبير: {active_expert}"
+                else:
+                    deep_status = "العميق (MoE): لم يتم رفع النماذج بعد 📥"
+
+                # نمرر كلا الحالتين لطباعتهما
+                ai_status = f"{xgb_status}\n🤖 {deep_status}"
+
                 # 🛡️ إجبار البوت على استخدام سكور الرادار الكلاسيكي فقط دون أي تغيير
                 final_score = score 
                 
@@ -5638,6 +5767,7 @@ async def on_startup(app):
     asyncio.create_task(radar_worker_process(pool))
     asyncio.create_task(institutional_incubator_worker(pool))
     asyncio.create_task(institutional_vanguard_worker())
+    asyncio.create_task(moe_hot_swap_worker())
     asyncio.create_task(ai_trainer_worker(pool)) # 🧠 تشغيل مدرب الذكاء الاصطناعي
     asyncio.create_task(ml_inspector_worker(pool)) # 🧠 تشغيل محقق الذكاء الاصطناعي
     await bot.set_webhook(f"{WEBHOOK_URL}/")
