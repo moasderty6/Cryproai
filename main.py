@@ -193,7 +193,8 @@ def get_payment_kb(lang):
     ])
 # ذاكرة مؤقتة لبيانات السلسلة لتجنب استنفاد الـ API (Cache)
 ON_CHAIN_CACHE = {"usdt_inflow_score": 0.0, "last_updated": 0}
-
+# الذاكرة الاستباقية للمحرك المؤسساتي (مفصولة تماماً عن الرادار)
+VANGUARD_MEMORY = {}
 async def get_whale_inflow_score():
     """
     قراءة توجه الحيتان الحقيقي من منصة Binance مباشرة.
@@ -1014,6 +1015,236 @@ async def detect_market_regime(client):
     print(f"🌍 Market Regime: {regime} | Volatility: {volatility} | ADX: {current_adx:.1f}")
     
     return {"trend": regime, "volatility": volatility, "adx": current_adx}
+import numpy as np
+import pandas as pd
+
+async def build_liquidation_heatmap(symbol: str, client: httpx.AsyncClient):
+    """
+    1. محرك خريطة التصفيات (OI Profile Engine)
+    لا يعتمد على Funding Rate اللحظي البدائي، بل يربط تراكم العقود المفتوحة (OI) بالأسعار التاريخية
+    لبناء "خريطة حرارية" دقيقة لأماكن تمركز رافعات الـ 10x والـ 20x.
+    """
+    fapi_base = "https://fapi.binance.com"
+    clean_sym = symbol.replace("USDT", "") + "USDT"
+    
+    try:
+        # نجلب بيانات 3 أيام (كل 4 ساعات)
+        oi_url = f"{fapi_base}/futures/data/openInterestHist?symbol={clean_sym}&period=4h&limit=18"
+        klines_url = f"{get_random_binance_base()}/api/v3/klines?symbol={clean_sym}&interval=4h&limit=18"
+        
+        await binance_rate_limit_event.wait()
+        res_oi, res_klines = await asyncio.gather(
+            client.get(oi_url, timeout=5.0),
+            client.get(klines_url, timeout=5.0)
+        )
+        
+        if res_oi.status_code != 200 or res_klines.status_code != 200: return None
+        
+        oi_data = res_oi.json()
+        klines_data = res_klines.json()
+        
+        if len(oi_data) != len(klines_data) or len(oi_data) < 10: return None
+
+        df = pd.DataFrame({
+            'vwap': [(float(k[2]) + float(k[3]) + float(k[4])) / 3 for k in klines_data],
+            'oi_value': [float(o['sumOpenInterestValue']) for o in oi_data]
+        })
+        
+        # حساب التغير في الـ OI (Delta) لربطه بالسعر
+        df['oi_delta'] = df['oi_value'].diff().fillna(0)
+        
+        # تجميع التغيرات الإيجابية الضخمة (مكان دخول الأموال الجديدة)
+        massive_build_ups = df[df['oi_delta'] > df['oi_delta'].std()]
+        if massive_build_ups.empty: return None
+        
+        # مركز ثقل بناء المراكز (أين دخلت أغلب الأموال؟)
+        pain_node = np.average(massive_build_ups['vwap'], weights=massive_build_ups['oi_delta'])
+        
+        current_price = df['vwap'].iloc[-1]
+        
+        # تحديد المغناطيس: إذا كان السعر تحت نقطة الدخول، فالمغناطيس هو تصفية الشورت (Short Squeeze)
+        # نقدر التصفية عند تحرك 5% (متوسط رافعة 20x)
+        if current_price < pain_node:
+            liq_target = pain_node * 1.05 
+            type_liq = "Short Liquidation Magnet 🧲"
+        else:
+            liq_target = pain_node * 0.95
+            type_liq = "Long Liquidation Magnet 🧲"
+            
+        return {"pain_node": pain_node, "target": liq_target, "type": type_liq, "distance_pct": abs(current_price - liq_target)/current_price}
+    except Exception:
+        return None
+
+async def track_orderbook_center_of_mass(symbol: str, client: httpx.AsyncClient, current_price: float):
+    """
+    2. محرك زحف أرضية السيولة (LOB Center of Mass Crawler)
+    يحسب VWAP للطلبات المخفية (Center of Mass). إذا كانت ترتفع يومياً والسعر ثابت،
+    فهذا يعني أن صانع السوق يرفع أرضية العملة ببطء استعداداً للانفجار.
+    """
+    sym = symbol.replace("USDT", "") + "USDT"
+    current_time = time.time()
+    
+    try:
+        url = f"{get_random_binance_base()}/api/v3/depth?symbol={sym}&limit=100"
+        await binance_rate_limit_event.wait()
+        res = await client.get(url, timeout=3.0)
+        
+        if res.status_code != 200: return None
+        bids = np.array([[float(p), float(v)] for p, v in res.json().get('bids', [])])
+        if len(bids) == 0: return None
+        
+        # نأخذ السيولة العميقة (أول 10% من عمق السوق)
+        top_bids = bids[bids[:, 0] >= current_price * 0.90]
+        if len(top_bids) == 0: return None
+        
+        # حساب مركز الكتلة (Center of Mass) لأوامر الشراء
+        total_vol = np.sum(top_bids[:, 1])
+        com_price = np.sum(top_bids[:, 0] * top_bids[:, 1]) / total_vol
+        
+        if symbol not in VANGUARD_MEMORY:
+            VANGUARD_MEMORY[symbol] = {"com_history": []}
+            
+        history = VANGUARD_MEMORY[symbol]["com_history"]
+        
+        # تسجيل قراءة جديدة كل 4 ساعات لتكوين مسار زمني
+        if not history or (current_time - history[-1]['ts']) > 14400:
+            history.append({"ts": current_time, "com": com_price, "price": current_price})
+            # الاحتفاظ ببيانات آخر 7 أيام (42 قراءة)
+            VANGUARD_MEMORY[symbol]["com_history"] = history[-42:]
+            
+        # التحليل: إذا كان لدينا بيانات أكثر من 3 أيام (18 قراءة)
+        if len(history) > 18:
+            old_com = history[0]['com']
+            new_com = history[-1]['com']
+            old_price = history[0]['price']
+            new_price = history[-1]['price']
+            
+            com_growth = (new_com - old_com) / old_com
+            price_growth = (new_price - old_price) / old_price
+            
+            # 🧠 الألفا: أرضية الأوردر بوك ارتفعت أكثر من 2% بينما السعر شبه ثابت أو ينزف!
+            if com_growth > 0.02 and price_growth < 0.01:
+                return {"com_growth_pct": com_growth * 100, "days_tracked": len(history) / 6.0}
+                
+        return None
+    except Exception:
+        return None
+
+async def detect_global_derivatives_frontrunning(symbol: str, client: httpx.AsyncClient):
+    """
+    3. محرك الاستباق المؤسساتي (Aggregated Derivatives vs Spot Divergence)
+    لا يقارن منصة بأخرى، بل يقارن "سوق العقود الآجلة ككل" مقابل "سوق السبوت ككل".
+    إذا كان صانع السوق يجمع، سيقوم بالتحوط (Hedging) في سوق المشتقات أولاً قبل ضخ سيولة السبوت.
+    """
+    clean_sym = symbol.replace("USDT", "") + "USDT"
+    try:
+        # جلب فريم الساعة لآخر 24 ساعة
+        spot_url = f"{get_random_binance_base()}/api/v3/klines?symbol={clean_sym}&interval=1h&limit=24"
+        fapi_url = f"https://fapi.binance.com/fapi/v1/klines?symbol={clean_sym}&interval=1h&limit=24"
+        
+        await binance_rate_limit_event.wait()
+        spot_res, fapi_res = await asyncio.gather(
+            client.get(spot_url, timeout=5.0),
+            client.get(fapi_url, timeout=5.0)
+        )
+        
+        if spot_res.status_code != 200 or fapi_res.status_code != 200: return None
+        
+        spot_df = pd.DataFrame(spot_res.json(), columns=["t","o","h","l","c","v","ct","qv","trades","tbv","tqav","ignore"])
+        fapi_df = pd.DataFrame(fapi_res.json(), columns=["t","o","h","l","c","v","ct","qv","trades","tbv","tqav","ignore"])
+        
+        # حساب التدفق التراكمي (CVD)
+        spot_df['tbv'], spot_df['v'] = pd.to_numeric(spot_df['tbv']), pd.to_numeric(spot_df['v'])
+        fapi_df['tbv'], fapi_df['v'] = pd.to_numeric(fapi_df['tbv']), pd.to_numeric(fapi_df['v'])
+        
+        spot_cvd = (spot_df['tbv'] - (spot_df['v'] - spot_df['tbv'])).sum()
+        fapi_cvd = (fapi_df['tbv'] - (fapi_df['v'] - fapi_df['tbv'])).sum()
+        
+        spot_vol = spot_df['v'].sum()
+        fapi_vol = fapi_df['v'].sum()
+        
+        if spot_vol == 0 or fapi_vol == 0: return None
+        
+        spot_imbalance = spot_cvd / spot_vol
+        fapi_imbalance = fapi_cvd / fapi_vol
+        
+        # 🧠 الألفا: سوق المشتقات يشتري بقوة (Front-running) بينما السبوت يبيع أو حيادي
+        divergence = fapi_imbalance - spot_imbalance
+        
+        if divergence > 0.15 and spot_imbalance <= 0:
+            return {"type": "Derivatives Leading 📈", "divergence": divergence * 100}
+        elif divergence < -0.15 and spot_imbalance >= 0:
+            return {"type": "Derivatives Distribution 📉", "divergence": divergence * 100}
+            
+        return None
+    except Exception:
+        return None
+async def institutional_vanguard_worker():
+    """
+    غرفة العمليات الاستباقية (Vanguard Worker)
+    يعمل بشكل معزول تماماً، يبحث في أعلى 150 عملة ليرسل تقارير للأدمن فقط.
+    """
+    await asyncio.sleep(300) # انتظار 5 دقائق بعد تشغيل البوت
+    print("🦅 [Vanguard Engine] Institutional Pre-cognition is Online.")
+    
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                await binance_rate_limit_event.wait()
+                base_url = get_random_binance_base()
+                res = await client.get(f"{base_url}/api/v3/ticker/24hr")
+                
+                if res.status_code == 200:
+                    tickers = [t for t in res.json() if t['symbol'].endswith("USDT") and float(t['quoteVolume']) > 5_000_000]
+                    # نأخذ أعلى 150 عملة سيولة فقط
+                    tickers = sorted(tickers, key=lambda x: float(x['quoteVolume']), reverse=True)[:150]
+                    
+                    for t in tickers:
+                        sym = t['symbol'].replace("USDT", "")
+                        if sym in BLACKLISTED_COINS: continue
+                        
+                        price = float(t['lastPrice'])
+                        
+                        # تشغيل المحركات الثلاثة معاً
+                        liq_data = await build_liquidation_heatmap(sym, client)
+                        com_data = await track_orderbook_center_of_mass(sym, client, price)
+                        lead_lag_data = await detect_global_derivatives_frontrunning(sym, client)
+                        
+                        # 🧠 شرط إطلاق الإنذار للأدمن: 
+                        # يجب أن نكتشف (زحف الأوردر بوك) أو (استباق المشتقات) مقترناً بمغناطيس تصفية
+                        
+                        if (com_data or lead_lag_data) and liq_data:
+                            # فلتر إضافي: لا ترسل إذا كانت مسافة التصفية بعيدة جداً (أكثر من 15%)
+                            if liq_data['distance_pct'] > 0.15: continue
+                            
+                            report = f"🦅 <b>استخبارات الطليعة المؤسساتية (Vanguard)</b> 🦅\n"
+                            report += f"━━━━━━━━━━━━━━\n"
+                            report += f"💎 <b>العملة:</b> #{sym}\n"
+                            report += f"💵 <b>السعر الحالي:</b> ${format_price(price)}\n\n"
+                            
+                            if com_data:
+                                report += f"🧱 <b>زحف السيولة (Dark Accumulation):</b>\n"
+                                report += f"أرضية طلبات الشراء ارتفعت بنسبة <b>{com_data['com_growth_pct']:.1f}%</b> خلال <b>{com_data['days_tracked']:.1f} أيام</b> والسعر لا يزال مضغوطاً.\n\n"
+                            
+                            if lead_lag_data:
+                                report += f"⚡ <b>استباق المشتقات (Front-running):</b>\n"
+                                report += f"حيتان الفيوتشرز يسبقون السبوت ({lead_lag_data['type']}) بانحراف <b>{lead_lag_data['divergence']:.1f}%</b>.\n\n"
+                                
+                            report += f"🧲 <b>مغناطيس التصفية القادم:</b>\n"
+                            report += f"النوع: {liq_data['type']}\n"
+                            report += f"الهدف المؤسساتي المتوقع: <b>${format_price(liq_data['target'])}</b>\n"
+                            report += f"━━━━━━━━━━━━━━\n"
+                            report += f"<i>* هذه رسالة مشفرة للأدمن فقط تكشف نوايا صانع السوق قبل الانفجار.</i>"
+                            
+                            # إرسال للأدمن فقط
+                            await bot.send_message(ADMIN_USER_ID, report, parse_mode=ParseMode.HTML)
+                            
+                        await asyncio.sleep(1) # استراحة بين العملات لتجنب الحظر
+                        
+        except Exception as e:
+            print(f"⚠️ [Vanguard Engine] Error: {e}")
+            
+        await asyncio.sleep(3600) # يمسح السوق مرة واحدة كل ساعة بهدوء تام
 
 import websockets
 import json
@@ -5382,6 +5613,7 @@ async def on_startup(app):
     asyncio.create_task(macro_data_worker()) # 🌍 تشغيل عامل الماكرو
     asyncio.create_task(radar_worker_process(pool))
     asyncio.create_task(institutional_incubator_worker(pool))
+    asyncio.create_task(institutional_vanguard_worker())
     asyncio.create_task(ai_trainer_worker(pool)) # 🧠 تشغيل مدرب الذكاء الاصطناعي
     asyncio.create_task(ml_inspector_worker(pool)) # 🧠 تشغيل محقق الذكاء الاصطناعي
     await bot.set_webhook(f"{WEBHOOK_URL}/")
