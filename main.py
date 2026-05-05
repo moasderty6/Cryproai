@@ -4871,33 +4871,33 @@ async def run_analysis(cb: types.CallbackQuery):
     avg_velocity = avg_vol_20 / candle_duration
 # --- الكود الجديد ---
             # 4. الإسقاط الحجمي اللاخطي: كابح الثقة الزمني (Square-Root Time Scaling)
-            time_progress_pct = elapsed_time / candle_duration
+    time_progress_pct = elapsed_time / candle_duration
             
             # 🧠 حساب معامل الثقة المؤسساتي بناءً على جذر الوقت المنقضي
             # في الدقيقة الأولى من شمعة الساعة، نثق بـ 12.9% فقط من الفوليوم التنبؤي!
-            import math
-            time_confidence = math.sqrt(time_progress_pct)
+    import math
+    time_confidence = math.sqrt(time_progress_pct)
 
             # استدعاء قيمة الـ CVD الحالية بشكل آمن
-            current_cvd_check = cvd_trend_val
+    current_cvd_check = cvd_trend_val
 
             # 🧠 حساب الفوليوم التنبؤي المكبوت (Dampened Projected Volume)
             # بدلاً من الإسقاط الخطي الأعمى، نأخذ: (الفوليوم الحالي) + (الفوليوم المتبقي المتوقع × معامل الثقة)
-            remaining_time = candle_duration - elapsed_time
-            raw_future_vol = current_velocity * remaining_time
-            safe_projected_vol = current_vol + (raw_future_vol * time_confidence)
+    remaining_time = candle_duration - elapsed_time
+    raw_future_vol = current_velocity * remaining_time
+    safe_projected_vol = current_vol + (raw_future_vol * time_confidence)
 
-            if time_progress_pct < 0.15: # أول 15% من عمر الشمعة (مرحلة فخاخ الحيتان)
-                if current_vol > (avg_vol_20 * 0.3) and current_cvd_check > 0:
-                    projected_vol = safe_projected_vol
-                else:
-                    projected_vol = current_vol # الفوليوم وهمي أو بيعي، أوقف التنبؤ!
-            else:
-                projected_vol = safe_projected_vol
+    if time_progress_pct < 0.15: # أول 15% من عمر الشمعة (مرحلة فخاخ الحيتان)
+        if current_vol > (avg_vol_20 * 0.3) and current_cvd_check > 0:
+            projected_vol = safe_projected_vol
+        else:
+            projected_vol = current_vol # الفوليوم وهمي أو بيعي، أوقف التنبؤ!
+    else:
+        projected_vol = safe_projected_vol
             # 5. اتخاذ قرار الانفجار (Surge) بناءً على المعادلة المتكيفة
             # نرفع العتبة التنبؤية قليلاً لتجنب الإشارات الكاذبة لأن المحرك أصبح أكثر دقة
-            dampened_velocity = current_velocity * time_confidence # 👈 الكابح هنا
-            vol_surge = (current_vol > (avg_vol_20 * 1.5)) or (projected_vol > (avg_vol_20 * 2.0)) or (dampened_velocity > (avg_velocity * 2.5))
+    dampened_velocity = current_velocity * time_confidence # 👈 الكابح هنا
+    vol_surge = (current_vol > (avg_vol_20 * 1.5)) or (projected_vol > (avg_vol_20 * 2.0)) or (dampened_velocity > (avg_velocity * 2.5))
     # ====================================================================
     # أ. شروط انعكاس الاتجاه من هابط إلى صاعد (اصطياد القاع الاستباقي)
     if classic_trend == "Bearish":
