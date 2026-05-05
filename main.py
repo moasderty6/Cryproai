@@ -1020,15 +1020,14 @@ import pandas as pd
 
 async def build_liquidation_heatmap(symbol: str, client: httpx.AsyncClient):
     """
-    1. محرك خريطة التصفيات (OI Profile Engine)
-    لا يعتمد على Funding Rate اللحظي البدائي، بل يربط تراكم العقود المفتوحة (OI) بالأسعار التاريخية
-    لبناء "خريطة حرارية" دقيقة لأماكن تمركز رافعات الـ 10x والـ 20x.
+    [Tier-1 Quant Upgrade] Dynamic Cross-Margin Liquidation Engine
+    يحسب عقدة الألم (Pain Node) ويربطها بالتذبذب الديناميكي للعملة (Volatility Bands)
+    بدلاً من الاعتماد على نسبة 5% الثابتة الساذجة.
     """
     fapi_base = "https://fapi.binance.com"
     clean_sym = symbol.replace("USDT", "") + "USDT"
     
     try:
-        # نجلب بيانات 3 أيام (كل 4 ساعات)
         oi_url = f"{fapi_base}/futures/data/openInterestHist?symbol={clean_sym}&period=4h&limit=18"
         klines_url = f"{get_random_binance_base()}/api/v3/klines?symbol={clean_sym}&interval=4h&limit=18"
         
@@ -1046,46 +1045,59 @@ async def build_liquidation_heatmap(symbol: str, client: httpx.AsyncClient):
         if len(oi_data) != len(klines_data) or len(oi_data) < 10: return None
 
         df = pd.DataFrame({
+            'high': [float(k[2]) for k in klines_data],
+            'low': [float(k[3]) for k in klines_data],
+            'close': [float(k[4]) for k in klines_data],
             'vwap': [(float(k[2]) + float(k[3]) + float(k[4])) / 3 for k in klines_data],
             'oi_value': [float(o['sumOpenInterestValue']) for o in oi_data]
         })
         
-        # حساب التغير في الـ OI (Delta) لربطه بالسعر
         df['oi_delta'] = df['oi_value'].diff().fillna(0)
         
-        # تجميع التغيرات الإيجابية الضخمة (مكان دخول الأموال الجديدة)
         massive_build_ups = df[df['oi_delta'] > df['oi_delta'].std()]
         if massive_build_ups.empty: return None
         
-        # مركز ثقل بناء المراكز (أين دخلت أغلب الأموال؟)
         pain_node = np.average(massive_build_ups['vwap'], weights=massive_build_ups['oi_delta'])
+        
+        # 🧠 [التحديث المؤسساتي]: حساب التذبذب اللحظي لعزل رافعات الحيتان (Cross-Margin Proxy)
+        df['tr'] = df['high'] - df['low']
+        local_volatility_pct = (df['tr'].mean() / df['close'].mean())
+        
+        # معامل تصفية ديناميكي: العملات الهادئة (تذبذب ضعيف) تُضرب برافعات عالية والعكس صحيح
+        # حماية الحدود: بين 3% (لرافعات الحيتان الثقيلة) و 12% (لرافعات التجزئة)
+        liquidation_margin_pct = max(0.03, min(local_volatility_pct * 1.5, 0.12))
         
         current_price = df['vwap'].iloc[-1]
         
-        # تحديد المغناطيس: إذا كان السعر تحت نقطة الدخول، فالمغناطيس هو تصفية الشورت (Short Squeeze)
-        # نقدر التصفية عند تحرك 5% (متوسط رافعة 20x)
         if current_price < pain_node:
-            liq_target = pain_node * 1.05 
+            liq_target = pain_node * (1.0 + liquidation_margin_pct)
             type_liq = "Short Liquidation Magnet 🧲"
         else:
-            liq_target = pain_node * 0.95
+            liq_target = pain_node * (1.0 - liquidation_margin_pct)
             type_liq = "Long Liquidation Magnet 🧲"
             
-        return {"pain_node": pain_node, "target": liq_target, "type": type_liq, "distance_pct": abs(current_price - liq_target)/current_price}
+        return {
+            "pain_node": pain_node, 
+            "target": liq_target, 
+            "type": type_liq, 
+            "distance_pct": abs(current_price - liq_target)/current_price
+        }
     except Exception:
         return None
 
+
 async def track_orderbook_center_of_mass(symbol: str, client: httpx.AsyncClient, current_price: float):
     """
-    2. محرك زحف أرضية السيولة (LOB Center of Mass Crawler)
-    يحسب VWAP للطلبات المخفية (Center of Mass). إذا كانت ترتفع يومياً والسعر ثابت،
-    فهذا يعني أن صانع السوق يرفع أرضية العملة ببطء استعداداً للانفجار.
+    [Tier-1 Quant Upgrade] Deep Liquidity Center of Mass
+    يعزل ضجيج خوارزميات الـ HFT ويركز على سيولة "حزام الالتزام" (Commitment Band) 
+    لاكتشاف الزحف الحقيقي لأرضية صانع السوق (Dark Accumulation).
     """
     sym = symbol.replace("USDT", "") + "USDT"
     current_time = time.time()
     
     try:
-        url = f"{get_random_binance_base()}/api/v3/depth?symbol={sym}&limit=100"
+        # 1000 مستوى لكشف السيولة العميقة حقاً وليس القشور السطحية
+        url = f"{get_random_binance_base()}/api/v3/depth?symbol={sym}&limit=1000"
         await binance_rate_limit_event.wait()
         res = await client.get(url, timeout=3.0)
         
@@ -1093,38 +1105,43 @@ async def track_orderbook_center_of_mass(symbol: str, client: httpx.AsyncClient,
         bids = np.array([[float(p), float(v)] for p, v in res.json().get('bids', [])])
         if len(bids) == 0: return None
         
-        # نأخذ السيولة العميقة (أول 10% من عمق السوق)
-        top_bids = bids[bids[:, 0] >= current_price * 0.90]
-        if len(top_bids) == 0: return None
+        # 🧠 [التحديث المؤسساتي]: هندسة عزل الطبقات (Liquidity Stratification)
+        # استبعاد أول 0.5% (جدران وهمية سريعة السحب للترهيب)
+        # استبعاد ما هو أدنى من 7% (طلبات ميتة لن تتنفذ قريباً وتكسر الدقة)
+        upper_bound = current_price * 0.995
+        lower_bound = current_price * 0.930
         
-        # حساب مركز الكتلة (Center of Mass) لأوامر الشراء
-        total_vol = np.sum(top_bids[:, 1])
-        com_price = np.sum(top_bids[:, 0] * top_bids[:, 1]) / total_vol
+        commitment_bids = bids[(bids[:, 0] <= upper_bound) & (bids[:, 0] >= lower_bound)]
+        if len(commitment_bids) == 0: return None
+        
+        total_vol = np.sum(commitment_bids[:, 1])
+        com_price = np.sum(commitment_bids[:, 0] * commitment_bids[:, 1]) / total_vol
         
         if symbol not in VANGUARD_MEMORY:
             VANGUARD_MEMORY[symbol] = {"com_history": []}
             
         history = VANGUARD_MEMORY[symbol]["com_history"]
         
-        # تسجيل قراءة جديدة كل 4 ساعات لتكوين مسار زمني
-        if not history or (current_time - history[-1]['ts']) > 14400:
+        # تسجيل قراءة جديدة كل ساعة (3600 ثانية) لتكوين مسار دقيق للاختراقات
+        if not history or (current_time - history[-1]['ts']) > 3600:
             history.append({"ts": current_time, "com": com_price, "price": current_price})
-            # الاحتفاظ ببيانات آخر 7 أيام (42 قراءة)
-            VANGUARD_MEMORY[symbol]["com_history"] = history[-42:]
+            VANGUARD_MEMORY[symbol]["com_history"] = history[-72:] # حفظ 3 أيام من البيانات
             
-        # التحليل: إذا كان لدينا بيانات أكثر من 3 أيام (18 قراءة)
-        if len(history) > 18:
-            old_com = history[0]['com']
-            new_com = history[-1]['com']
-            old_price = history[0]['price']
-            new_price = history[-1]['price']
+        # 🧠 التقييم المؤسساتي للزحف السعري (استخدام تمليس المتوسطات لمنع التشوه اللحظي)
+        if len(history) > 12: # نحتاج 12 ساعة كحد أدنى للحكم
+            # استخدام متوسط 3 ساعات للبدء والنهاية لقتل شذوذ اللقطات المفردة
+            old_com = sum(h['com'] for h in history[:3]) / 3
+            new_com = sum(h['com'] for h in history[-3:]) / 3
+            
+            old_price = sum(h['price'] for h in history[:3]) / 3
+            new_price = sum(h['price'] for h in history[-3:]) / 3
             
             com_growth = (new_com - old_com) / old_com
             price_growth = (new_price - old_price) / old_price
             
-            # 🧠 الألفا: أرضية الأوردر بوك ارتفعت أكثر من 2% بينما السعر شبه ثابت أو ينزف!
-            if com_growth > 0.02 and price_growth < 0.01:
-                return {"com_growth_pct": com_growth * 100, "days_tracked": len(history) / 6.0}
+            # 🚀 الألفا: أرضية الأوردر بوك العميقة زحفت صعوداً بأكثر من 1.5% بينما السعر محتجز أو ينزف!
+            if com_growth > 0.015 and price_growth < 0.005:
+                return {"com_growth_pct": com_growth * 100, "days_tracked": len(history) / 24.0}
                 
         return None
     except Exception:
@@ -1132,15 +1149,15 @@ async def track_orderbook_center_of_mass(symbol: str, client: httpx.AsyncClient,
 
 async def detect_global_derivatives_frontrunning(symbol: str, client: httpx.AsyncClient):
     """
-    3. محرك الاستباق المؤسساتي (Aggregated Derivatives vs Spot Divergence)
-    لا يقارن منصة بأخرى، بل يقارن "سوق العقود الآجلة ككل" مقابل "سوق السبوت ككل".
-    إذا كان صانع السوق يجمع، سيقوم بالتحوط (Hedging) في سوق المشتقات أولاً قبل ضخ سيولة السبوت.
+    [Tier-1 Quant Upgrade] Microstructure Derivatives Front-Running
+    يقيس "تسارع" الانحراف في تدفق الأوامر (Order Flow Acceleration) للفريمات الصغيرة (15m)،
+    لأن التحوط المؤسساتي يحدث كصدمة استباقية قبل ساعات قليلة من انفجار السبوت.
     """
     clean_sym = symbol.replace("USDT", "") + "USDT"
     try:
-        # جلب فريم الساعة لآخر 24 ساعة
-        spot_url = f"{get_random_binance_base()}/api/v3/klines?symbol={clean_sym}&interval=1h&limit=24"
-        fapi_url = f"https://fapi.binance.com/fapi/v1/klines?symbol={clean_sym}&interval=1h&limit=24"
+        # النزول بالعدسة إلى 15 دقيقة لالتقاط البصمة الدقيقة للتدفق لآخر 6 ساعات
+        spot_url = f"{get_random_binance_base()}/api/v3/klines?symbol={clean_sym}&interval=15m&limit=24"
+        fapi_url = f"https://fapi.binance.com/fapi/v1/klines?symbol={clean_sym}&interval=15m&limit=24"
         
         await binance_rate_limit_event.wait()
         spot_res, fapi_res = await asyncio.gather(
@@ -1153,32 +1170,39 @@ async def detect_global_derivatives_frontrunning(symbol: str, client: httpx.Asyn
         spot_df = pd.DataFrame(spot_res.json(), columns=["t","o","h","l","c","v","ct","qv","trades","tbv","tqav","ignore"])
         fapi_df = pd.DataFrame(fapi_res.json(), columns=["t","o","h","l","c","v","ct","qv","trades","tbv","tqav","ignore"])
         
-        # حساب التدفق التراكمي (CVD)
         spot_df['tbv'], spot_df['v'] = pd.to_numeric(spot_df['tbv']), pd.to_numeric(spot_df['v'])
         fapi_df['tbv'], fapi_df['v'] = pd.to_numeric(fapi_df['tbv']), pd.to_numeric(fapi_df['v'])
         
-        spot_cvd = (spot_df['tbv'] - (spot_df['v'] - spot_df['tbv'])).sum()
-        fapi_cvd = (fapi_df['tbv'] - (fapi_df['v'] - fapi_df['tbv'])).sum()
+        # حساب التدفق اللحظي للسيولة العدوانية (Delta) لكل شمعة
+        spot_df['delta'] = spot_df['tbv'] - (spot_df['v'] - spot_df['tbv'])
+        fapi_df['delta'] = fapi_df['tbv'] - (fapi_df['v'] - fapi_df['tbv'])
         
-        spot_vol = spot_df['v'].sum()
-        fapi_vol = fapi_df['v'].sum()
+        # 🧠 [التحديث المؤسساتي]: التركيز على "التسارع" في آخر ساعتين (8 شموع)
+        recent_spot_cvd = spot_df['delta'].tail(8).sum()
+        recent_fapi_cvd = fapi_df['delta'].tail(8).sum()
         
-        if spot_vol == 0 or fapi_vol == 0: return None
+        recent_spot_vol = spot_df['v'].tail(8).sum()
+        recent_fapi_vol = fapi_df['v'].tail(8).sum()
         
-        spot_imbalance = spot_cvd / spot_vol
-        fapi_imbalance = fapi_cvd / fapi_vol
+        if recent_spot_vol == 0 or recent_fapi_vol == 0: return None
         
-        # 🧠 الألفا: سوق المشتقات يشتري بقوة (Front-running) بينما السبوت يبيع أو حيادي
-        divergence = fapi_imbalance - spot_imbalance
+        # كثافة الشراء الماركت نسبة إلى إجمالي الحجم
+        spot_inflow_ratio = recent_spot_cvd / recent_spot_vol
+        fapi_inflow_ratio = recent_fapi_cvd / recent_fapi_vol
         
-        if divergence > 0.15 and spot_imbalance <= 0:
+        divergence = fapi_inflow_ratio - spot_inflow_ratio
+        
+        # 🚀 الألفا: المشتقات تقود بتدفق شرائي عنيف (فارق > 20%) بينما السبوت نائم أو يصحح
+        if divergence > 0.20 and spot_inflow_ratio <= 0.05:
             return {"type": "Derivatives Leading 📈", "divergence": divergence * 100}
-        elif divergence < -0.15 and spot_imbalance >= 0:
+        # توزيع صامت (Distribution): بيع قوي في المشتقات بينما السبوت مستقر
+        elif divergence < -0.20 and spot_inflow_ratio >= -0.05:
             return {"type": "Derivatives Distribution 📉", "divergence": divergence * 100}
             
         return None
     except Exception:
         return None
+
 async def institutional_vanguard_worker():
     """
     غرفة العمليات الاستباقية (Vanguard Worker)
