@@ -1676,11 +1676,15 @@ async def silent_data_harvester_worker(pool):
                         if isinstance(candles_15m, Exception) or not candles_15m: continue
                         if isinstance(candles_1d, Exception): candles_1d = []
 
-                        # تحويل شموع اليوم إلى أسبوع برمجياً دون الحاجة لطلب API إضافي
+                        # تحويل شموع اليوم إلى أسبوع برمجياً دون الحاجة لطلب API إضافي                        # تحويل شموع اليوم إلى أسبوع برمجياً دون الحاجة لطلب API إضافي
                         candles_1w_simulated = []
                         if candles_1d and len(candles_1d) >= 14:
                             df_daily = pd.DataFrame(candles_1d).iloc[:, :6]
                             df_daily.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+                            
+                            # 🟢 التعديل الجراحي: تحويل النصوص إلى أرقام قبل التجميع
+                            df_daily[["open", "high", "low", "close", "volume"]] = df_daily[["open", "high", "low", "close", "volume"]].apply(pd.to_numeric, errors='coerce')
+                            
                             df_daily['datetime'] = pd.to_datetime(df_daily['timestamp'].astype(float), unit='s')
                             df_daily.set_index('datetime', inplace=True)
                             
@@ -1694,6 +1698,7 @@ async def silent_data_harvester_worker(pool):
                         w_void, m_z30, htf_accum, days_exp = await asyncio.to_thread(
                             calculate_macro_htf_features, candles_1d, candles_1w_simulated
                         )
+
                         
                         candles = candles_15m # نمررها للدوال التي تعتمد على 15m
 
@@ -2492,14 +2497,19 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             if limit_abs_signal == "Limit_Absorption": tags.append("Limit_Absorption")
             if micro_cvd_signal == "Micro_Silent_Accumulation": tags.append("Whale_CVD")
             if futures_signal: tags.append(futures_signal)
-                        # 🧠 جلب شموع 1D السريعة (40 شمعة فقط) لحساب متغيرات الماكرو
+                        # 🧠 جلب شموع 1D السريعة (40 شمعة فقط) لحساب متغيرات الماكرو            # ==========================================================
+            # 🧠 جلب بيانات الماكرو للذكاء الاصطناعي (أقل استهلاك للـ API)
+            # ==========================================================
             candles_1d_macro = await get_candles_binance(f"{symbol}USDT", "1d", limit=40)
             candles_1w_simulated = []
             
-            # تحويل شموع اليوم إلى أسبوع برمجياً (لتوفير طلب API إضافي)
             if candles_1d_macro and len(candles_1d_macro) >= 14:
                 df_daily = pd.DataFrame(candles_1d_macro).iloc[:, :6]
                 df_daily.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+                
+                # 🟢 التعديل الجراحي: تحويل النصوص إلى أرقام قبل التجميع لمنع لصق النصوص
+                df_daily[["open", "high", "low", "close", "volume"]] = df_daily[["open", "high", "low", "close", "volume"]].apply(pd.to_numeric, errors='coerce')
+                
                 df_daily['datetime'] = pd.to_datetime(df_daily['timestamp'].astype(float), unit='s')
                 df_daily.set_index('datetime', inplace=True)
                 
@@ -2509,10 +2519,11 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 }).dropna()
                 candles_1w_simulated = weekly_df.values.tolist()
 
-            # حساب المتغيرات الكلية للعملة
             w_void, m_z30, htf_accum, days_exp = await asyncio.to_thread(
                 calculate_macro_htf_features, candles_1d_macro, candles_1w_simulated
             )
+            # ==========================================================
+
 
             # 🚀 استدعاء خوارزمية الدارك بول (VCA) وغرفة الاحتضان
             # 🚀 استدعاء خوارزمية الدارك بول (VCA) وغرفة الاحتضان
