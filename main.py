@@ -240,11 +240,13 @@ def train_xgboost_sync(records):
     # 1. تنظيف البيانات من القيم المفقودة
     df = df.dropna(subset=['trade_quality_score'])
     
-    # 2. تحديد المدخلات المؤسساتية (15 بُعداً)
+    # 2. تحديد المدخلات المؤسساتية (15 بُعداً)    # 2. تحديد المدخلات المؤسساتية (أصبحت 17 بُعداً الآن)
     X = df[['market_regime', 'sp500_trend_pct', 'sentiment_score', 
             'vol_z_score', 'cvd_to_vol_ratio', 'imbalance_ratio', 
             'ob_skewness', 'whale_dominance_pct', 'adx', 'rsi', 
-            'micro_volatility_pct', 'cvd_divergence', 'funding_rate']]
+            'micro_volatility_pct', 'cvd_divergence', 'funding_rate',
+            'weekly_liquidity_void', 'macro_z_score_30d', 
+            'htf_whale_accumulation', 'days_since_last_expansion']]
 
     # 3. الهدف هو التنبؤ بجودة الصفقة (Regression)
     y = df['trade_quality_score']
@@ -270,12 +272,14 @@ async def ai_trainer_worker(pool):
     while True:
         try:
             async with pool.acquire() as conn:
-                # جلب البيانات المؤسساتية بالكامل
+                # 🟢 التعديل الجراحي: إضافة متغيرات الماكرو الـ 4 الجديدة للاستعلام
                 records = await conn.fetch("""
                     SELECT market_regime, sp500_trend_pct, sentiment_score, 
                            vol_z_score, cvd_to_vol_ratio, imbalance_ratio, 
                            ob_skewness, whale_dominance_pct, adx, rsi, 
                            micro_volatility_pct, cvd_divergence, funding_rate,
+                           weekly_liquidity_void, macro_z_score_30d, 
+                           htf_whale_accumulation, days_since_last_expansion,
                            trade_quality_score
                     FROM ml_training_data 
                     WHERE is_processed = 1
@@ -311,8 +315,14 @@ def predict_signal_sync(features: dict) -> float:
         'rsi': float(features.get('rsi', 50.0)),
         'micro_volatility_pct': float(features.get('micro_volatility', 0.0)),
         'cvd_divergence': float(features.get('cvd_divergence', 0.0)),
-        'funding_rate': float(features.get('funding_rate', 0.0))
+        'funding_rate': float(features.get('funding_rate', 0.0)),
+        # المتغيرات الجديدة للماكرو
+        'weekly_liquidity_void': float(features.get('weekly_liquidity_void', 0.0)),
+        'macro_z_score_30d': float(features.get('macro_z_score_30d', 0.0)),
+        'htf_whale_accumulation': float(features.get('htf_whale_accumulation', 0.0)),
+        'days_since_last_expansion': float(features.get('days_since_last_expansion', 0.0))
     }])
+
 
     # التنبؤ بسكور الجودة المتوقع
     predicted_quality = AI_QUANT_MODEL.predict(input_data)[0]
@@ -1656,9 +1666,37 @@ async def silent_data_harvester_worker(pool):
                     pair = f"{sym}USDT"
                     
                     try:
-                        # 1. جلب الشموع (15 دقيقة للتدريب السريع والدقيق)
-                        candles = await get_candles_binance(pair, "15m", limit=750)
-                        if not candles: continue
+                        # 1. جلب الشموع (15 دقيقة للتدريب السريع والدقيق)                        # 1. جلب الشموع (15m للتحليل + 1d للماكرو) بخفة تامة
+                        candles_15m, candles_1d = await asyncio.gather(
+                            get_candles_binance(pair, "15m", limit=750),
+                            get_candles_binance(pair, "1d", limit=40), # 40 يوم تكفي للـ Z-score و الـ FVG
+                            return_exceptions=True
+                        )
+                        
+                        if isinstance(candles_15m, Exception) or not candles_15m: continue
+                        if isinstance(candles_1d, Exception): candles_1d = []
+
+                        # تحويل شموع اليوم إلى أسبوع برمجياً دون الحاجة لطلب API إضافي
+                        candles_1w_simulated = []
+                        if candles_1d and len(candles_1d) >= 14:
+                            df_daily = pd.DataFrame(candles_1d).iloc[:, :6]
+                            df_daily.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+                            df_daily['datetime'] = pd.to_datetime(df_daily['timestamp'].astype(float), unit='s')
+                            df_daily.set_index('datetime', inplace=True)
+                            
+                            weekly_df = df_daily.resample('W-MON').agg({
+                                'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 
+                                'volume': 'sum', 'timestamp': 'first'
+                            }).dropna()
+                            candles_1w_simulated = weekly_df.values.tolist()
+
+                        # حساب الماكرو الحقيقي بصمت
+                        w_void, m_z30, htf_accum, days_exp = await asyncio.to_thread(
+                            calculate_macro_htf_features, candles_1d, candles_1w_simulated
+                        )
+                        
+                        candles = candles_15m # نمررها للدوال التي تعتمد على 15m
+
                         
                         df, last_rsi, current_adx, current_z, vol_mean, vol_std = await asyncio.to_thread(process_dataframe_sync, candles)
                                                 # 🎯 التحديث اللحظي للسعر لحل مشكلة السعر القديم والأوردر بوك المجنون
@@ -1682,7 +1720,6 @@ async def silent_data_harvester_worker(pool):
                         
                         current_regime_trend = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
                         regime_map = {"Trending_Bull": 1, "Trending_Bear": 2, "Ranging": 3}
-                        
                         # تجهيز الميزات (Features) وتسجيلها
                         ml_features = {
                             'market_regime': regime_map.get(current_regime_trend, 0),
@@ -1697,8 +1734,14 @@ async def silent_data_harvester_worker(pool):
                             'rsi': float(last_rsi),
                             'micro_volatility': float(micro_volatility) if not pd.isna(micro_volatility) else 0.0,
                             'cvd_divergence': float(cvd_divergence),
-                            'funding_rate': float(funding_val)
+                            'funding_rate': float(funding_val),
+                            # 🟢 حقن البيانات المؤسساتية الحقيقية للماكرو
+                            'weekly_liquidity_void': float(w_void),
+                            'macro_z_score_30d': float(m_z30),
+                            'htf_whale_accumulation': float(htf_accum),
+                            'days_since_last_expansion': float(days_exp)
                         }
+
                         
                         # تسجيل البيانات بصمت
                         await log_signal_for_ml(pool, sym, price, ml_features)
@@ -1812,7 +1855,6 @@ async def silent_data_harvester_worker(pool):
         except Exception as e:
             print(f"⚠️ Harvester Error: {e}")
             await asyncio.sleep(300)
-
 
 def process_dataframe_sync(candles_data):
     """دالة خارجية لمعالجة البيانات بدون تجميد البوت"""
@@ -2200,15 +2242,21 @@ def predict_deep_moe(features: dict) -> float:
 
         expert_model = DEEP_EXPERTS[expert_id]
         
-        # تجهيز البيانات
+        # تجهيز البيانات        # تجهيز البيانات (16 متغيراً مطابقاً تماماً لما تدرب عليه النموذج)
         input_vector = np.array([[
             float(features.get('sp500_trend', 0.0)), float(features.get('sentiment_score', 50.0)),
             float(features.get('z_score', 0.0)), float(features.get('cvd_to_vol_ratio', 0.0)),
             float(features.get('ofi_imbalance', 0.0)), float(features.get('ob_skewness', 1.0)),
             float(features.get('whale_inflow', 0.0)), float(features.get('adx', 0.0)),
             float(features.get('rsi', 50.0)), float(features.get('micro_volatility', 0.0)),
-            float(features.get('cvd_divergence', 0.0)), float(features.get('funding_rate', 0.0))
+            float(features.get('cvd_divergence', 0.0)), float(features.get('funding_rate', 0.0)),
+            # 🟢 المتغيرات الأربعة المضافة للماكرو
+            float(features.get('weekly_liquidity_void', 0.0)),
+            float(features.get('macro_z_score_30d', 0.0)),
+            float(features.get('htf_whale_accumulation', 0.0)),
+            float(features.get('days_since_last_expansion', 0.0))
         ]], dtype=np.float32)
+
 
         input_name = expert_model.get_inputs()[0].name
         output_name = expert_model.get_outputs()[0].name
@@ -2280,6 +2328,80 @@ async def moe_hot_swap_worker():
 
         # ينام لمدة 12 ساعة، ثم يستيقظ لجلب أي تحديثات جديدة من مصنع Kaggle
         await asyncio.sleep(43200) 
+def calculate_macro_htf_features(candles_1d, candles_1w):
+    """
+    [Institutional Grade] HTF Macro Features Engine
+    يحسب 4 أبعاد معقدة للسيولة باستخدام الفريم اليومي والأسبوعي.
+    """
+    # قيم افتراضية آمنة في حال فشل جلب البيانات
+    macro_z_30d = 0.0
+    days_since_expansion = 0.0
+    htf_accumulation = 0.0
+    weekly_void_score = 0.0
+
+    try:
+        # --- معالجة الفريم اليومي ---
+        if candles_1d and len(candles_1d) >= 30:
+            df_1d = pd.DataFrame(candles_1d).iloc[:, :6]
+            df_1d.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+            df_1d[["close", "high", "low", "volume"]] = df_1d[["close", "high", "low", "volume"]].apply(pd.to_numeric)
+            
+            # 1. حساب الانحراف المعياري لـ 30 يوم (macro_z_score_30d)
+            sma_30 = df_1d['close'].rolling(30).mean().iloc[-1]
+            std_30 = df_1d['close'].rolling(30).std(ddof=0).iloc[-1]
+            if std_30 > 0:
+                macro_z_30d = float((df_1d['close'].iloc[-1] - sma_30) / std_30)
+                macro_z_30d = max(-10.0, min(10.0, macro_z_30d)) # حماية من القيم الشاذة
+
+            # 2. حساب أيام الانضغاط (days_since_last_expansion)
+            df_1d['tr'] = df_1d['high'] - df_1d['low']
+            df_1d['atr'] = df_1d['tr'].rolling(14).mean()
+            # نعرف الانفجار بأنه شمعة مداها أكبر من 2.5 ضعف متوسط المدى
+            df_1d['is_expansion'] = df_1d['tr'] > (df_1d['atr'] * 2.5)
+            
+            expansion_indices = np.where(df_1d['is_expansion'])[0]
+            if len(expansion_indices) > 0:
+                last_exp_idx = expansion_indices[-1]
+                days_since_expansion = float(len(df_1d) - 1 - last_exp_idx)
+            else:
+                days_since_expansion = 30.0 # الحد الأقصى إذا لم يحدث انفجار منذ شهر
+            
+            # 3. تجميع الحيتان الكلي (htf_whale_accumulation) باستخدام Chaikin Money Flow (CMF) المطور
+            # يعطي وزناً للفوليوم بناءً على إغلاق الشمعة (بالقرب من القمة = شراء قوي)
+            money_flow_mult = ((df_1d['close'] - df_1d['low']) - (df_1d['high'] - df_1d['close'])) / (df_1d['high'] - df_1d['low'] + 1e-8)
+            df_1d['cmf_vol'] = money_flow_mult * df_1d['volume']
+            htf_accumulation = float((df_1d['cmf_vol'].tail(14).sum() / (df_1d['volume'].tail(14).sum() + 1e-8)) * 100.0)
+
+        # --- معالجة الفريم الأسبوعي ---
+        if candles_1w and len(candles_1w) >= 3:
+            df_1w = pd.DataFrame(candles_1w).iloc[:, :6]
+            df_1w.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+            df_1w[["high", "low"]] = df_1w[["high", "low"]].apply(pd.to_numeric)
+            
+            # 4. حساب الفجوات الأسبوعية (weekly_liquidity_void) - SMC Fair Value Gaps
+            # نبحث في آخر 10 أسابيع عن فجوات لم يتم إغلاقها
+            void_intensity = 0.0
+            lookback = min(10, len(df_1w) - 2)
+            
+            for i in range(len(df_1w)-1, len(df_1w)-lookback-1, -1):
+                c1_high = df_1w['high'].iloc[i-2]
+                c3_low = df_1w['low'].iloc[i]
+                c1_low = df_1w['low'].iloc[i-2]
+                c3_high = df_1w['high'].iloc[i]
+
+                if c1_high < c3_low: # Bullish FVG (فجوة شرائية مفتوحة)
+                    gap_pct = (c3_low - c1_high) / c1_high
+                    void_intensity += (gap_pct * 100)
+                elif c1_low > c3_high: # Bearish FVG (فجوة بيعية مفتوحة)
+                    gap_pct = (c1_low - c3_high) / c3_high
+                    void_intensity -= (gap_pct * 100)
+            
+            weekly_void_score = float(void_intensity)
+
+    except Exception as e:
+        print(f"⚠️ [Macro Engine] Error calculating HTF features: {e}")
+
+    return weekly_void_score, macro_z_30d, htf_accumulation, days_since_expansion
 
 async def analyze_radar_coin(c, client, market_regime, sem):
     async with sem:  
@@ -2370,6 +2492,28 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             if limit_abs_signal == "Limit_Absorption": tags.append("Limit_Absorption")
             if micro_cvd_signal == "Micro_Silent_Accumulation": tags.append("Whale_CVD")
             if futures_signal: tags.append(futures_signal)
+                        # 🧠 جلب شموع 1D السريعة (40 شمعة فقط) لحساب متغيرات الماكرو
+            candles_1d_macro = await get_candles_binance(f"{symbol}USDT", "1d", limit=40)
+            candles_1w_simulated = []
+            
+            # تحويل شموع اليوم إلى أسبوع برمجياً (لتوفير طلب API إضافي)
+            if candles_1d_macro and len(candles_1d_macro) >= 14:
+                df_daily = pd.DataFrame(candles_1d_macro).iloc[:, :6]
+                df_daily.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+                df_daily['datetime'] = pd.to_datetime(df_daily['timestamp'].astype(float), unit='s')
+                df_daily.set_index('datetime', inplace=True)
+                
+                weekly_df = df_daily.resample('W-MON').agg({
+                    'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 
+                    'volume': 'sum', 'timestamp': 'first'
+                }).dropna()
+                candles_1w_simulated = weekly_df.values.tolist()
+
+            # حساب المتغيرات الكلية للعملة
+            w_void, m_z30, htf_accum, days_exp = await asyncio.to_thread(
+                calculate_macro_htf_features, candles_1d_macro, candles_1w_simulated
+            )
+
             # 🚀 استدعاء خوارزمية الدارك بول (VCA) وغرفة الاحتضان
             # 🚀 استدعاء خوارزمية الدارك بول (VCA) وغرفة الاحتضان
             # ----------------------------------------------------
@@ -2703,8 +2847,14 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     'rsi': float(last_rsi),
                     'micro_volatility': float(micro_volatility) if not pd.isna(micro_volatility) else 0.0,
                     'cvd_divergence': float(cvd_divergence), 
-                    'funding_rate': float(funding_val)
+                    'funding_rate': float(funding_val),
+                    # 🟢 البيانات المؤسساتية الحقيقية
+                    'weekly_liquidity_void': float(w_void),
+                    'macro_z_score_30d': float(m_z30),
+                    'htf_whale_accumulation': float(htf_accum),
+                    'days_since_last_expansion': float(days_exp)
                 }
+
                 # 1. الذكاء الكلاسيكي (XGBoost) - يعمل كما كان تماماً
                 ai_confidence = await asyncio.to_thread(predict_signal_sync, ml_features)
 
@@ -2840,7 +2990,7 @@ async def handle_binance_rate_limit(retry_after: int = 60):
         binance_rate_limit_event.set() 
 async def log_signal_for_ml(pool, symbol: str, price: float, features: dict):
     async with pool.acquire() as conn:
-        # منع تكرار الإشارة لنفس العملة خلال 24 ساعة لتجنب تضخم البيانات (Overfitting)
+        # منع تكرار الإشارة لنفس العملة خلال 24 ساعة
         exists = await conn.fetchval("""
             SELECT 1 FROM ml_training_data 
             WHERE symbol = $1 AND signal_time > CURRENT_TIMESTAMP - INTERVAL '5 hours'
@@ -2851,51 +3001,51 @@ async def log_signal_for_ml(pool, symbol: str, price: float, features: dict):
             INSERT INTO ml_training_data 
             (symbol, entry_price, market_regime, sp500_trend_pct, sentiment_score, 
              vol_z_score, cvd_to_vol_ratio, imbalance_ratio, ob_skewness, whale_dominance_pct,
-             adx, rsi, micro_volatility_pct, cvd_divergence, funding_rate)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+             adx, rsi, micro_volatility_pct, cvd_divergence, funding_rate,
+             weekly_liquidity_void, macro_z_score_30d, htf_whale_accumulation, days_since_last_expansion)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
         """, 
-        symbol, 
-        price, 
-        int(features.get('market_regime', 0)),
-        float(features.get('sp500_trend', 0.0)), 
-        float(features.get('sentiment_score', 50.0)),
-        float(features.get('z_score', 0.0)), 
-        float(features.get('cvd_to_vol_ratio', 0.0)), # 👈 القيمة النسبية الأهم
-        float(features.get('ofi_imbalance', 0.0)), 
-        float(features.get('ob_skewness', 1.0)), 
-        float(features.get('whale_inflow', 0.0)),
-        float(features.get('adx', 0.0)), 
-        float(features.get('rsi', 50.0)), 
-        float(features.get('micro_volatility', 0.0)),
-        float(features.get('cvd_divergence', 0.0)), 
-        float(features.get('funding_rate', 0.0)))
+        symbol, price, 
+        int(features.get('market_regime', 0)), float(features.get('sp500_trend', 0.0)), 
+        float(features.get('sentiment_score', 50.0)), float(features.get('z_score', 0.0)), 
+        float(features.get('cvd_to_vol_ratio', 0.0)), float(features.get('ofi_imbalance', 0.0)), 
+        float(features.get('ob_skewness', 1.0)), float(features.get('whale_inflow', 0.0)),
+        float(features.get('adx', 0.0)), float(features.get('rsi', 50.0)), 
+        float(features.get('micro_volatility', 0.0)), float(features.get('cvd_divergence', 0.0)), 
+        float(features.get('funding_rate', 0.0)),
         
+        # 🟢 متغيرات الماكرو الجديدة المحقونة
+        float(features.get('weekly_liquidity_void', 0.0)),
+        float(features.get('macro_z_score_30d', 0.0)),
+        float(features.get('htf_whale_accumulation', 0.0)),
+        float(features.get('days_since_last_expansion', 0.0)))
+
         print(f"🧠 [ML Logger] Institutional Data captured for {symbol} at ${price}")
 import numpy as np
 
 async def ml_inspector_worker(pool):
     """
-    [Institutional Grade] Walk-Forward Evaluation Engine.
-    يستيقظ لتقييم الصفقات المعلقة عبر قياس MFE/MAE والـ Alpha مقارنة بالبيتكوين.
+    [Hedge Fund Grade] Multi-Horizon Evaluation Engine.
+    يقيم الصفقات على مدار 3، 7، و 14 يوماً ويتسامح مع الانعكاسات الاستباقية.
     """
     await asyncio.sleep(120)
-    print("🕵️‍♂️ [Quant Inspector] Institutional Labeling Engine is online...")
+    print("🕵️‍♂️ [Quant Inspector] 14-Day Horizon Engine is online...")
     
     while True:
         try:
             async with pool.acquire() as conn:
-                # جلب الإشارات التي مر عليها 24 ساعة ولم يتم معالجتها
+                # نطلب فقط الصفقات التي مر عليها 14 يوماً كاملة لتنضج!
                 pending = await conn.fetch("""
                     SELECT id, symbol, entry_price, EXTRACT(EPOCH FROM signal_time) as sig_ts
                     FROM ml_training_data 
-                    WHERE is_processed = 0 AND signal_time <= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+                    WHERE is_processed = 0 AND signal_time <= CURRENT_TIMESTAMP - INTERVAL '14 days'
                 """)
                 
             if not pending:
-                await asyncio.sleep(600)
+                await asyncio.sleep(3600) # ينام ساعة
                 continue
                 
-            async with httpx.AsyncClient(timeout=15) as client:
+            async with httpx.AsyncClient(timeout=20) as client:
                 for row in pending:
                     sym = f"{row['symbol']}USDT"
                     entry = float(row['entry_price'])
@@ -2903,94 +3053,94 @@ async def ml_inspector_worker(pool):
                     
                     base_url = get_random_binance_base()
                     
-                    # 1. جلب شموع العملة (15 دقيقة) لـ 24 ساعة (96 شمعة)
+                    # جلب 336 شمعة (ساعة واحدة) = 14 يوماً
                     res_asset = await client.get(
                         f"{base_url}/api/v3/klines",
-                        params={"symbol": sym, "interval": "15m", "startTime": start_time_ms, "limit": 96}
+                        params={"symbol": sym, "interval": "1h", "startTime": start_time_ms, "limit": 336}
                     )
                     
-                    # 2. جلب شموع البيتكوين لنفس الفترة لحساب الـ Alpha
                     res_btc = await client.get(
                         f"{base_url}/api/v3/klines",
-                        params={"symbol": "BTCUSDT", "interval": "15m", "startTime": start_time_ms, "limit": 96}
+                        params={"symbol": "BTCUSDT", "interval": "1h", "startTime": start_time_ms, "limit": 336}
                     )
                     
                     if res_asset.status_code == 200 and res_btc.status_code == 200:
                         klines = res_asset.json()
                         btc_klines = res_btc.json()
                         
-                        if not klines or len(klines) < 96 or not btc_klines:
+                        if not klines or len(klines) < 300 or not btc_klines:
                             continue
-                            
-                        # --- حساب الأهداف الزمنية (Multi-Horizon Returns) ---
-                        # الشمعة 4 = بعد ساعة، الشمعة 16 = بعد 4 ساعات، الشمعة 95 = بعد 24 ساعة
-                        ret_1h = ((float(klines[3][4]) - entry) / entry) * 100 if len(klines) >= 4 else 0.0
-                        ret_4h = ((float(klines[15][4]) - entry) / entry) * 100 if len(klines) >= 16 else 0.0
-                        ret_24h = ((float(klines[-1][4]) - entry) / entry) * 100
+                        # --- 1. حساب العوائد الزمنية (Time-Horizon Returns) ---
+                        # فريم الساعة = الشمعة 1، 4 ساعات = الشمعة 4، 24 ساعة = الشمعة 24
+                        ret_1h = ((float(klines[1][4]) - entry) / entry) * 100 if len(klines) > 1 else 0.0
+                        ret_4h = ((float(klines[4][4]) - entry) / entry) * 100 if len(klines) > 4 else 0.0
+                        ret_24h = ((float(klines[24][4]) - entry) / entry) * 100 if len(klines) > 24 else 0.0
                         
-                        # --- حساب الـ Alpha مقارنة بالبيتكوين ---
+                        ret_3d = ((float(klines[71][4]) - entry) / entry) * 100 if len(klines) > 71 else 0.0
+                        ret_7d = ((float(klines[167][4]) - entry) / entry) * 100 if len(klines) > 167 else 0.0
+                        ret_14d = ((float(klines[-1][4]) - entry) / entry) * 100
+                        
                         btc_entry = float(btc_klines[0][1])
                         btc_exit = float(btc_klines[-1][4])
-                        btc_return_24h = ((btc_exit - btc_entry) / btc_entry) * 100
-                        alpha_24h = ret_24h - btc_return_24h
-                        
-                        # --- التقييم الزمني لمسار السعر (MFE & MAE) ---
-                        mfe = 0.0
-                        mae = 0.0
-                        is_stopped_out = False
-                        
-                        # نعتبر أن هناك وقف خسارة وهمي عند -5% لتصحيح التقييم (Risk Penalty)
-                        HARD_STOP_LOSS = 5.0 
-                        
-                        for k in klines:
-                            high = float(k[2])
-                            low = float(k[3])
-                            
-                            profit_pct = ((high - entry) / entry) * 100
-                            drawdown_pct = ((entry - low) / entry) * 100
-                            
-                            if profit_pct > mfe: mfe = profit_pct
-                            if drawdown_pct > mae: mae = drawdown_pct
-                            
-                            # إذا ضربت العملة الانعكاس قبل تحقيق ربح جيد، نوقف تحديث الـ MFE
-                            if mae >= HARD_STOP_LOSS:
-                                is_stopped_out = True
-                                break 
-                                
-                        # --- The Hedge Fund Score (Trade Quality) ---
-                        # معادلة تقييم تدمج بين الربح، الخسارة المحتملة، وسرعة الحركة
-                        # تتراوح النتيجة بين -1.0 (تدمير للمحفظة) إلى +1.0 (صفقة قناص مثالية)
-                        
-                        if is_stopped_out and mfe < 3.0:
-                            trade_quality = -1.0 # ضربت الوقف فوراً
-                        else:
-                            # Quality = (MFE - MAE) / (MFE + MAE + 0.1)
-                            # الإضافة 0.1 لمنع القسمة على صفر
-                            raw_quality = (mfe - mae) / (mfe + mae + 0.1)
-                            
-                            # نعزز التقييم إذا كانت الألفا إيجابية (العملة أقوى من البيتكوين)
-                            alpha_bonus = min(0.2, max(-0.2, alpha_24h / 50.0))
-                            trade_quality = max(-1.0, min(1.0, raw_quality + alpha_bonus))
+                        btc_return_14d = ((btc_exit - btc_entry) / btc_entry) * 100
+                        alpha_14d = ret_14d - btc_return_14d
 
-                        # --- حفظ النتائج في قاعدة البيانات ---
+                        
+                        # --- 2. محرك التسامح والانفجار متعدد الآفاق (Multi-Horizon MFE/MAE) ---
+                        klines_3d = klines[:72]   
+                        klines_7d = klines[:168]  
+                        klines_14d = klines       
+
+                        def calculate_excursions(k_list, entry_price):
+                            mfe, mae = 0.0, 0.0
+                            for k in k_list:
+                                high, low = float(k[2]), float(k[3])
+                                profit = ((high - entry_price) / entry_price) * 100
+                                drawdown = ((entry_price - low) / entry_price) * 100
+                                if profit > mfe: mfe = profit
+                                if drawdown > mae: mae = drawdown
+                            return mfe, mae
+
+                        mfe_3d, mae_3d = calculate_excursions(klines_3d, entry)
+                        mfe_7d, mae_7d = calculate_excursions(klines_7d, entry)
+                        mfe_14d, mae_14d = calculate_excursions(klines_14d, entry)
+
+                        # 🧠 التقييم المبني على السرعة (Velocity) والتسامح مع الانعكاس
+                        score_3d = (mfe_3d - (mae_3d * 1.2)) / (mfe_3d + mae_3d + 0.1)
+                        score_7d = (mfe_7d - mae_7d) / (mfe_7d + mae_7d + 0.1)
+                        
+                        drawdown_penalty_14d = mae_14d * (0.2 if mfe_14d > 50.0 else 0.5)
+                        score_14d = (mfe_14d - drawdown_penalty_14d) / (mfe_14d + drawdown_penalty_14d + 0.1)
+
+                        # ⚖️ الدمج الهندسي بالأوزان 
+                        raw_quality = (score_3d * 0.40) + (score_7d * 0.30) + (score_14d * 0.30)
+                        
+                        alpha_bonus = min(0.3, max(-0.3, alpha_14d / 50.0))
+                        trade_quality = max(-1.0, min(1.0, raw_quality + alpha_bonus))
+                        # --- 3. الحفظ في قاعدة البيانات ---
                         async with pool.acquire() as conn:
                             await conn.execute("""
                                 UPDATE ml_training_data 
-                                SET ret_1h = $1, ret_4h = $2, ret_24h = $3,
-                                    max_favorable_excursion = $4, max_adverse_excursion = $5,
-                                    btc_return_24h = $6, alpha_24h = $7,
-                                    trade_quality_score = $8, is_processed = 1
-                                WHERE id = $9
-                            """, ret_1h, ret_4h, ret_24h, mfe, mae, btc_return_24h, alpha_24h, float(trade_quality), row['id'])
+                                SET ret_1h = $1, ret_4h = $2, ret_24h = $3, 
+                                    ret_3d = $4, ret_7d = $5, ret_14d = $6,
+                                    max_favorable_excursion = $7, max_adverse_excursion = $8,
+                                    btc_return_24h = $9, alpha_24h = $10,
+                                    trade_quality_score = $11, is_processed = 1
+                                WHERE id = $12
+                            """, 
+                            ret_1h, ret_4h, ret_24h, # الآن نمررهم بشكل صحيح!
+                            ret_3d, ret_7d, ret_14d, 
+                            mfe_14d, mae_14d, btc_return_14d, alpha_14d, float(trade_quality), row['id'])
                         
-                        print(f"📊 [Quant Labeling] {sym} | MFE: +{mfe:.1f}% | MAE: -{mae:.1f}% | Quality Score: {trade_quality:.2f}")
+                        print(f"📊 [14D Labeling] {sym} | 14D Return: {ret_14d:.1f}% | Quality: {trade_quality:.2f}")
                         
-                    await asyncio.sleep(0.5) # الامتثال لقيود بايننس
+                    await asyncio.sleep(0.5) 
                     
         except Exception as e:
             print(f"⚠️ Quant Inspector Error: {e}")
             
-        await asyncio.sleep(600) # فحص كل 10 دقائق
+        await asyncio.sleep(600)
+
 
 # --- الذاكرة المؤسساتية للماكرو والاحتضان ---
 # --- الذاكرة المؤسساتية للماكرو والاحتضان ---
@@ -5755,7 +5905,25 @@ async def on_startup(app):
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS invited_by BIGINT")
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS ref_count INTEGER DEFAULT 0")
                 # 🧠 ترقية جدول الذكاء الاصطناعي (إضافة كل الأعمدة المؤسساتية الجديدة إن لم تكن موجودة)
+                # 1. إضافة أعمدة التقييم الزمني الجديد
+        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS ret_3d DOUBLE PRECISION DEFAULT NULL")
+        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS ret_7d DOUBLE PRECISION DEFAULT NULL")
+        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS ret_14d DOUBLE PRECISION DEFAULT NULL")
         
+        # 2. إضافة أعمدة الماكرو (Macro Features)
+        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS weekly_liquidity_void DOUBLE PRECISION DEFAULT 0.0")
+        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS macro_z_score_30d DOUBLE PRECISION DEFAULT 0.0")
+        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS htf_whale_accumulation DOUBLE PRECISION DEFAULT 0.0")
+        await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS days_since_last_expansion DOUBLE PRECISION DEFAULT 0.0")
+
+        # 3. 🎯 التكتيك الذهبي: إعادة الصفقات القديمة إلى محكمة التفتيش
+        # هذا السطر سيجعل البوت يعيد تقييم كل الصفقات القديمة بالمنطق الجديد!
+        await conn.execute("""
+            UPDATE ml_training_data 
+            SET is_processed = 0 
+            WHERE ret_14d IS NULL AND signal_time <= CURRENT_TIMESTAMP - INTERVAL '14 days'
+        """)
+
         # 3. تفعيل حسابات الأدمن بشكل دائم
         initial_paid_users = {1317225334, 5527572646}
         for uid in initial_paid_users:
