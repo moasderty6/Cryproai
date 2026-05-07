@@ -1756,8 +1756,12 @@ async def silent_data_harvester_worker(pool):
                         ai_confidence = await asyncio.to_thread(predict_signal_sync, ml_features)
                         ai_confidence = round(ai_confidence, 1) # 👈 هذا السطر سيجبر السكور على أن يكون برقم عشري واحد فقط (مثال: 84.2)
 
-                        
-                        if ai_confidence >= 75.0:
+                        # 🧠 إضافة: تقييم الذكاء العميق (MoE)
+                        ai_confidence_deep = await asyncio.to_thread(predict_deep_moe, ml_features)
+                        ai_confidence_deep = round(ai_confidence_deep, 1) if ai_confidence_deep != -1.0 else -1.0
+
+                        # 🛑 الشرط الصارم: يجب أن يكون كلا النموذجين 75% فما فوق
+                        if ai_confidence >= 75.0 and ai_confidence_deep >= 75.0:
                             # التحقق مما إذا تم إرسال هذه العملة مؤخراً لتجنب الإزعاج
                             async with pool.acquire() as conn:
                                 is_signaled = await conn.fetchval("""
@@ -1828,9 +1832,11 @@ async def silent_data_harvester_worker(pool):
                                 signal_id = str(uuid.uuid4())[:8] 
                                 signal_type = f"🤖 AI APEX Pick"
                                 
+                                # إرجاع القاموس لشكله الأصلي لعدم كسر الكود لديك، مع إضافة مفتاح جديد للسكور العميق
                                 radar_pending_approvals[signal_id] = {
                                     "symbol": sym, "price": price, "signal": signal_type, "score": ai_confidence,
-                                    "insight_ar": insight_ar, "insight_en": insight_en
+                                    "insight_ar": insight_ar, "insight_en": insight_en,
+                                    "score_deep": ai_confidence_deep
                                 }
 
                                 admin_kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -1843,10 +1849,11 @@ async def silent_data_harvester_worker(pool):
                                     f"🏆 <b>العملة:</b> #{sym}\n"
                                     f"💵 السعر: ${format_price(price)}\n"
                                     f"⚡ نوع التجميع: {signal_type}\n"
-                                    f"🤖 تقييم الذكاء الاصطناعي: <b>{ai_confidence:.1f}%</b>\n\n"
+                                    f"🤖 <b>التقييم:</b> XGB: <b>{ai_confidence:.1f}%</b> | العميق (MoE): <b>{ai_confidence_deep:.1f}%</b> 🧠\n\n"
                                     f"📝 <b>التحليل:</b>\n{insight_ar}\n\n"
                                     f"هل تريد الموافقة على نشرها؟"
                                 )
+
 
                                 await bot.send_message(ADMIN_USER_ID, admin_text, reply_markup=admin_kb, parse_mode=ParseMode.HTML)
                                 print(f"🎯 [Apex Sniper] {sym} fired with AI score {ai_confidence:.1f}%!")
