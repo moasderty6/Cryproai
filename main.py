@@ -1722,7 +1722,52 @@ async def silent_data_harvester_worker(pool):
                         ema200_val = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else df["close"].ewm(span=50).mean().iloc[-1]
                         cvd_divergence = 1.0 if (price > ema200_val and cvd_trend < 0) else -1.0 if (price < ema200_val and cvd_trend > 0) else 0.0
                         micro_volatility = df['close'].tail(20).pct_change().std() * 100
+                                                # ====================================================================
+                        # 🧬 محرك مصفوفة التجميع الصامت (Stealth Accumulation Matrix)
+                        # ====================================================================
+                        current_cvd_usd = cvd_trend * price
                         
+                        # حساب متوسط السيولة اليومية لآخر 30 يوم من الشموع المتوفرة
+                        df_1d_macro = pd.DataFrame(candles_1d).iloc[:, :6]
+                        df_1d_macro.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+                        df_1d_macro['volume'] = pd.to_numeric(df_1d_macro['volume'])
+                        adv_30d_usd = df_1d_macro['volume'].tail(30).mean() * price
+                        
+                        async with pool.acquire() as conn:
+                            # فحص الذاكرة التاريخية للعملة
+                            matrix_row = await conn.fetchrow("""
+                                SELECT start_price, adv_30d_usd, accumulated_cvd_usd, 
+                                EXTRACT(EPOCH FROM start_time) as start_ts 
+                                FROM stealth_accumulation_matrix WHERE symbol = $1
+                            """, sym)
+                            
+                            if matrix_row:
+                                # 🔄 المرحلة الثانية: التراكم (Stateful Aggregation)
+                                new_accum = matrix_row['accumulated_cvd_usd'] + current_cvd_usd
+                                start_price_db = matrix_row['start_price']
+                                days_elapsed = (time.time() - matrix_row['start_ts']) / 86400.0
+                                
+                                # 🗑️ المرحلة الرابعة: التدمير الذاتي (Garbage Collection)
+                                # إذا هبط السعر 3% تحت بداية التجميع (الحوت ينزف) أو مر 7 أيام دون انفجار
+                                if price < (start_price_db * 0.97) or days_elapsed > 7.0:
+                                    await conn.execute("DELETE FROM stealth_accumulation_matrix WHERE symbol = $1", sym)
+                                    print(f"🗑️ [Matrix] {sym} Removed (Invalidated by Drop or Time-Decay).")
+                                else:
+                                    # تحديث المخزون
+                                    await conn.execute("UPDATE stealth_accumulation_matrix SET accumulated_cvd_usd = $1, last_updated = CURRENT_TIMESTAMP WHERE symbol = $2", new_accum, sym)
+                            else:
+                                # 🎯 المرحلة الأولى: نقطة الصفر (Node Zero Trigger)
+                                # شروط الدخول للذاكرة: شذوذ فوليوم + تدفق شرائي + السعر ليس في قمة
+                                recent_high = df['high'].tail(20).max()
+                                if current_z > 1.8 and current_cvd_usd > 0 and price < (recent_high * 0.93):
+                                    await conn.execute("""
+                                        INSERT INTO stealth_accumulation_matrix 
+                                        (symbol, start_price, adv_30d_usd, accumulated_cvd_usd) 
+                                        VALUES ($1, $2, $3, $4)
+                                    """, sym, price, adv_30d_usd, current_cvd_usd)
+                                    print(f"🧬 [Matrix] Node Zero Triggered for {sym}. Tracking stealth buildup...")
+                        # ====================================================================
+
                         current_regime_trend = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
                         regime_map = {"Trending_Bull": 1, "Trending_Bear": 2, "Ranging": 3}
                         # تجهيز الميزات (Features) وتسجيلها
@@ -1829,10 +1874,28 @@ async def silent_data_harvester_worker(pool):
                                     f"• <b>Structure:</b> {tech_en}"
                                 )
 
+                                # ====================================================================
+                                # 🚨 صدمة العرض المؤسساتية (للأدمن فقط - لا تحفظ في إشارة المستخدمين)
+                                # ====================================================================
+                                supply_shock_msg_ar = ""
+                                
+                                async with pool.acquire() as conn:
+                                    matrix_data = await conn.fetchrow("""
+                                        SELECT accumulated_cvd_usd, adv_30d_usd, EXTRACT(EPOCH FROM start_time) as start_ts 
+                                        FROM stealth_accumulation_matrix WHERE symbol = $1
+                                    """, sym)
+                                
+                                if matrix_data and matrix_data['adv_30d_usd'] > 0:
+                                    shock_ratio = (matrix_data['accumulated_cvd_usd'] / matrix_data['adv_30d_usd']) * 100
+                                    if shock_ratio > 5.0:
+                                        days_active = (time.time() - matrix_data['start_ts']) / 86400.0
+                                        supply_shock_msg_ar = f"🚨 <b>صدمة عرض مؤسساتية:</b> تم سحب {shock_ratio:.1f}% من السيولة الشهرية بهدوء منذ {days_active:.1f} أيام!\n\n"
+                                # ====================================================================
+
                                 signal_id = str(uuid.uuid4())[:8] 
                                 signal_type = f"🤖 AI APEX Pick"
                                 
-                                # إرجاع القاموس لشكله الأصلي لعدم كسر الكود لديك، مع إضافة مفتاح جديد للسكور العميق
+                                # 🛡️ إدراج التحليل العادي للمستخدمين بدون بيانات صدمة العرض!
                                 radar_pending_approvals[signal_id] = {
                                     "symbol": sym, "price": price, "signal": signal_type, "score": ai_confidence,
                                     "insight_ar": insight_ar, "insight_en": insight_en,
@@ -1844,16 +1907,17 @@ async def silent_data_harvester_worker(pool):
                                     [InlineKeyboardButton(text="❌ إلغاء وتجاهل", callback_data=f"rad_rej_{signal_id}")]
                                 ])
 
+                                # 🎯 حقن رسالة الحوت هنا فقط، لكي تظهر في شاشة الأدمن ولا تصل للمستخدم
                                 admin_text = (
                                     f"🦅 <b>تنبيه طوارئ: قناص الذكاء الاصطناعي (Apex) التقط جوهرة!</b>\n"
                                     f"🏆 <b>العملة:</b> #{sym}\n"
                                     f"💵 السعر: ${format_price(price)}\n"
                                     f"⚡ نوع التجميع: {signal_type}\n"
                                     f"🤖 <b>التقييم:</b> XGB: <b>{ai_confidence:.1f}%</b> | العميق (MoE): <b>{ai_confidence_deep:.1f}%</b> 🧠\n\n"
+                                    f"{supply_shock_msg_ar}"  # <--- ستظهر لك هنا فقط إذا تجاوز الحوت 5%
                                     f"📝 <b>التحليل:</b>\n{insight_ar}\n\n"
                                     f"هل تريد الموافقة على نشرها؟"
                                 )
-
 
                                 await bot.send_message(ADMIN_USER_ID, admin_text, reply_markup=admin_kb, parse_mode=ParseMode.HTML)
                                 print(f"🎯 [Apex Sniper] {sym} fired with AI score {ai_confidence:.1f}%!")
@@ -3472,35 +3536,54 @@ async def ai_opportunity_radar(pool):
                     f"• <b>Structure:</b> {tech_en}"
                 )
 
+                # ====================================================================
+                # 🚨 صدمة العرض المؤسساتية (للأدمن فقط - لا تحفظ في إشارة المستخدمين)
+                # ====================================================================
+                supply_shock_msg_ar = ""
+                
+                # استخدام pool مباشرة لأنه متاح في الدالة
+                async with pool.acquire() as conn:
+                    matrix_data = await conn.fetchrow("""
+                        SELECT accumulated_cvd_usd, adv_30d_usd, EXTRACT(EPOCH FROM start_time) as start_ts 
+                        FROM stealth_accumulation_matrix WHERE symbol = $1
+                    """, symbol)
+                
+                if matrix_data and matrix_data['adv_30d_usd'] > 0:
+                    shock_ratio = (matrix_data['accumulated_cvd_usd'] / matrix_data['adv_30d_usd']) * 100
+                    if shock_ratio > 5.0:
+                        days_active = (time.time() - matrix_data['start_ts']) / 86400.0
+                        supply_shock_msg_ar = f"🚨 <b>صدمة عرض مؤسساتية:</b> تم سحب {shock_ratio:.1f}% من السيولة الشهرية بهدوء منذ {days_active:.1f} أيام!\n"
+                # ====================================================================
+
                 signal_id = str(uuid.uuid4())[:8] 
+                # 🛡️ إدراج التحليل العادي للمستخدمين بدون بيانات صدمة العرض!
                 radar_pending_approvals[signal_id] = {
                     "symbol": symbol, "price": price, "signal": signal, "score": best_score,
                     "insight_ar": insight_ar, "insight_en": insight_en
                 }
+                
                 # تشغيل التسجيل في الخلفية لكي لا يؤخر إرسال الرسالة للأدمن
-                                # 🧠 تسجيل البيانات للذكاء الاصطناعي (أخذنا البيانات الجاهزة من دالة التحليل مباشرة)
                 asyncio.create_task(log_signal_for_ml(pool, symbol, price, best_meta.get('ml_features', {})))
-
 
                 admin_kb = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="✅ موافقة ونشر للمشتركين", callback_data=f"rad_app_{signal_id}")],
                     [InlineKeyboardButton(text="❌ إلغاء وتجاهل", callback_data=f"rad_rej_{signal_id}")]
                 ])
 
-                                # جلب حالة الذكاء الاصطناعي من النتائج (وإذا لم يجدها يضع Learning افتراضياً)
                 current_ai_status = best_meta.get('ai_status', 'Learning ⏳')
 
+                # 🎯 حقن رسالة الحوت هنا فقط، لكي تظهر في شاشة الأدمن ولا تصل للمستخدم
                 admin_text = (
                     f"⚠️ <b>تنبيه أدمن: قناص القيعان أنهى المسح 🎯</b>\n"
                     f"🏆 <b>أفضل عملة:</b> #{symbol}\n"
                     f"💵 السعر: ${format_price(price)}\n"
                     f"⚡ نوع التجميع: {signal}\n"
-                    f"🤖 حالة الـ AI: <b>{current_ai_status}</b>\n"  # 👈 هذا هو السطر الذي سيظهر لك التغيير
+                    f"🤖 حالة الـ AI: <b>{current_ai_status}</b>\n"
                     f"📊 تقييم الفرصة: <b>{best_score}/100</b>\n\n"
+                    f"{supply_shock_msg_ar}"  # <--- ستظهر لك هنا فقط إذا تجاوز الحوت 5%
                     f"📝 <b>التحليل:</b>\n{insight_ar}\n\n"
                     f"هل تريد الموافقة على نشرها؟"
                 )
-
 
                 await bot.send_message(ADMIN_USER_ID, admin_text, reply_markup=admin_kb, parse_mode=ParseMode.HTML)
                 print(f"✅ تم اصطياد قاع {symbol} بسكور {best_score}!")
@@ -5863,6 +5946,17 @@ async def on_startup(app):
         await conn.execute("CREATE TABLE IF NOT EXISTS users_info (user_id BIGINT PRIMARY KEY, lang TEXT, last_active DATE)")
         await conn.execute("CREATE TABLE IF NOT EXISTS paid_users (user_id BIGINT PRIMARY KEY, expiry_date TIMESTAMP)")
         await conn.execute("CREATE TABLE IF NOT EXISTS trial_users (user_id BIGINT PRIMARY KEY)")
+        # 🧬 The Stealth Accumulation Matrix (ذاكرة الحيتان التراكمية)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS stealth_accumulation_matrix (
+                symbol TEXT PRIMARY KEY,
+                start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                start_price DOUBLE PRECISION,
+                adv_30d_usd DOUBLE PRECISION,
+                accumulated_cvd_usd DOUBLE PRECISION DEFAULT 0.0,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
         # 🟢 الجديد: إنشاء جدول تتبع العملات المكتشفة في الرادار
         await conn.execute("""
