@@ -3880,11 +3880,21 @@ async def send_photo_to_trials(m: types.Message):
 
 @dp.message(Command("status"))
 async def status_cmd(m: types.Message):
+    # التأكد أن الأمر للأدمن فقط
+    if m.from_user.id != ADMIN_USER_ID:
+        return
+        
     pool = dp['db_pool']
     try:
         async with pool.acquire() as conn:
             total = await conn.fetchval("SELECT count(*) FROM users_info")
-            vips = await conn.fetchval("SELECT count(*) FROM paid_users")
+            
+            # 🟢 جلب المشتركين النشطين فقط (تاريخهم في المستقبل)
+            active_vips = await conn.fetchval("SELECT count(*) FROM paid_users WHERE expiry_date > CURRENT_TIMESTAMP OR expiry_date IS NULL")
+            
+            # 🔴 جلب المشتركين المنتهية اشتراكاتهم (تاريخهم في الماضي)
+            expired_vips = await conn.fetchval("SELECT count(*) FROM paid_users WHERE expiry_date <= CURRENT_TIMESTAMP")
+            
             total_trials = await conn.fetchval("SELECT count(*) FROM trial_users")
             active_today = await conn.fetchval("SELECT count(*) FROM users_info WHERE last_active = CURRENT_DATE")
         
@@ -3893,7 +3903,9 @@ async def status_cmd(m: types.Message):
                f"👥 **إجمالي القاعدة:** `{total}` مستخدم\n"
                f"🔥 **النشاط اليومي:** `{active_today}` مستخدم نشط\n"
                f"🎁 **مستخدمي التجربة:** `{total_trials}` شخص\n"
-               f"💎 **المشتركين VIP:** `{vips}` مشترك")
+               f"💎 **VIP النشطين:** `{active_vips}` مشترك\n"
+               f"⏳ **VIP المنتهيين:** `{expired_vips}` مشترك")
+               
         await m.answer(msg, parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         print(f"Status Error: {e}")
