@@ -5695,7 +5695,7 @@ async def run_analysis(cb: types.CallbackQuery):
     
     if lang == "ar":
         final_report = f"""
-📊 <b>التحليل لـ {clean_sym}</b> | {tf} | <code>{format_price(price)}$</code>{inst_txt}
+📊 <b>التحليل لـ {clean_sym}</b> | {tf} | <code>{format_price(price)}$</code>
 الاتجاه: <b>{real_trend}</b>
 درجة الثقة: {trend_strength_display}
 
@@ -5720,7 +5720,7 @@ RSI: {safe_rsi:.1f} | MACD: {macd_fmt} | ADX: {adx_val:.1f}
 {dex_alert_str}"""
     else:
         final_report = f"""
-📊 <b>Analysis: {clean_sym}</b> | {tf} | <code>{format_price(price)}$</code>{inst_txt}
+📊 <b>Analysis: {clean_sym}</b> | {tf} | <code>{format_price(price)}$</code>
 Trend: <b>{real_trend}</b>
 Quant Conviction: {trend_strength_display}
 
