@@ -3647,7 +3647,10 @@ async def approve_radar_signal(cb: types.CallbackQuery):
     if cb.from_user.id != ADMIN_USER_ID:
         return await cb.answer("❌ هذا الزر للأدمن فقط.", show_alert=True)
 
+    await cb.answer() # 🟢 أضف هذا السطر هنا لمنع تجميد شاشتك كأدمن
+
     signal_id = cb.data.replace("rad_app_", "")
+    # ... باقي الكود ...
     data = radar_pending_approvals.get(signal_id)
 
     if not data:
@@ -5766,11 +5769,15 @@ RSI: {safe_rsi:.1f} | MACD: {macd_fmt} | ADX: {adx_val:.1f}
 {dex_alert_str}"""
 
     # 3. إرسال النتيجة فوراً للمستخدم
+    # 3. إرسال النتيجة فوراً للمستخدم
     try:
         await cb.message.edit_text(final_report, parse_mode=ParseMode.HTML)
     except Exception as e:
         if "message is not modified" not in str(e):
             await cb.message.answer(final_report, parse_mode=ParseMode.HTML)
+
+    # 🟢 أضف هذا السطر لإنهاء حالة التحميل للزر
+    await cb.answer() 
 
 
 
