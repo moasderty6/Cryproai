@@ -16,6 +16,14 @@ import numpy as np
 import datetime
 import websockets
 import math
+import logging
+import traceback
+
+# هذا السطر سيجعل أي خطأ مخفي في البوت يظهر فوراً باللون الأحمر في الكونسول
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 def quant_cdf_score(z_value, limit=100.0):
     """
