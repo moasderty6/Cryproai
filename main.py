@@ -137,22 +137,52 @@ GREATEST(
 ) + INTERVAL '30 days'
     """, user_id)
 
+import traceback
+
 async def is_user_paid(db, user_id: int):
-    query = """
-        SELECT 1 FROM paid_users 
-        WHERE user_id = $1
-AND (
-    expiry_date IS NULL
-    OR expiry_date > NOW()
-)
-    """
-    res = await db.fetchval(query, user_id)
-    return bool(res)
+    try:
+        print(f"🔥 CHECKING SUB FOR {user_id}")
+
+        query = """
+            SELECT 1
+            FROM paid_users
+            WHERE user_id = $1
+            AND (
+                expiry_date IS NULL
+                OR expiry_date > NOW()
+            )
+        """
+
+        res = await db.fetchval(query, user_id)
+
+        print(f"✅ SUB RESULT = {res}")
+
+        return bool(res)
+
+    except Exception as e:
+        print("🚨 ERROR INSIDE is_user_paid")
+        traceback.print_exc()
+
+        return False
 
 async def has_trial(db, user_id: int):
-    print(f"🔍 [Trial Check] User: {user_id}")
-    res = await db.fetchval("SELECT 1 FROM trial_users WHERE user_id = $1", user_id)
-    return not bool(res)
+    try:
+        print(f"🔥 TRIAL CHECK {user_id}")
+
+        res = await db.fetchval(
+            "SELECT 1 FROM trial_users WHERE user_id = $1",
+            user_id
+        )
+
+        print(f"✅ TRIAL RESULT = {res}")
+
+        return not bool(res)
+
+    except Exception:
+        print("🚨 ERROR INSIDE has_trial")
+        traceback.print_exc()
+
+        return False
 
 def format_price(price):
     if price is None:
