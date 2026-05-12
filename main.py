@@ -4007,7 +4007,7 @@ async def set_lang(cb: types.CallbackQuery):
         print(f"DB Error in set_lang: {e}")
         # إذا حدث خطأ، نظهر رسالة منبثقة للمستخدم
         return await cb.answer("Server busy, try again...", show_alert=True)
-    
+    print(f"DEBUG | User: {cb.from_user.id} | Checking sub for lang: {lang}...")
     # 3. فحص حالة السيولة والاشتراك للمستخدم
     is_paid = await is_user_paid(dp['db_pool'], cb.from_user.id)
     has_tr = await has_trial(dp['db_pool'], cb.from_user.id)
