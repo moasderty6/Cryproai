@@ -3783,49 +3783,56 @@ async def process_manage_id(m: types.Message, state: FSMContext):
     await m.answer(f"⚙️ <b>إدارة اشتراك المستخدم:</b> <code>{target_id}</code>\nاختر الإجراء المطلوب:", reply_markup=kb)
 
 # 3. معالجة زر الإضافة
+# 3. معالجة زر الإضافة
 @dp.callback_query(F.data.startswith("sub_add_"))
 async def add_month_btn(cb: types.CallbackQuery):
     if cb.from_user.id != ADMIN_USER_ID:
-        return
+        return await cb.answer("❌ للأدمن فقط", show_alert=True)
     
     target_id = int(cb.data.replace("sub_add_", ""))
     pool = dp['db_pool']
     
     async with pool.acquire() as conn:
-        # إضافة شهر (نفس نظام الدفع تماماً)
         await conn.execute("""
             INSERT INTO paid_users (user_id, expiry_date) 
             VALUES ($1, CURRENT_TIMESTAMP + INTERVAL '30 days') 
             ON CONFLICT (user_id) DO UPDATE 
             SET expiry_date = GREATEST(COALESCE(paid_users.expiry_date, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP) + INTERVAL '30 days'
         """, target_id)
-        
         new_date = await conn.fetchval("SELECT expiry_date FROM paid_users WHERE user_id = $1", target_id)
         
-    await cb.message.edit_text(f"✅ <b>تمت الإضافة!</b>\nتم إضافة 30 يوم بنجاح للمستخدم: <code>{target_id}</code>\n📅 تاريخ الانتهاء الجديد: {new_date.strftime('%Y-%m-%d')}")
+    try:
+        await cb.message.edit_text(f"✅ <b>تمت الإضافة!</b>\nتم إضافة 30 يوم بنجاح للمستخدم: <code>{target_id}</code>\n📅 تاريخ الانتهاء الجديد: {new_date.strftime('%Y-%m-%d')}")
+    except Exception:
+        pass
+    await cb.answer("✅ تمت الإضافة بنجاح")
 
 # 4. معالجة زر الخصم
 @dp.callback_query(F.data.startswith("sub_min_"))
 async def minus_month_btn(cb: types.CallbackQuery):
     if cb.from_user.id != ADMIN_USER_ID:
-        return
+        return await cb.answer("❌ للأدمن فقط", show_alert=True)
     
     target_id = int(cb.data.replace("sub_min_", ""))
     pool = dp['db_pool']
     
     async with pool.acquire() as conn:
-        # خصم شهر
         res = await conn.execute("""
             UPDATE paid_users 
             SET expiry_date = expiry_date - INTERVAL '30 days' 
             WHERE user_id = $1
         """, target_id)
         
-        if res == "UPDATE 1":
-            new_date = await conn.fetchval("SELECT expiry_date FROM paid_users WHERE user_id = $1", target_id)
-            await cb.message.edit_text(f"✅ <b>تم الخصم!</b>\nتم خصم 30 يوم بنجاح من المستخدم: <code>{target_id}</code>\n📅 تاريخ الانتهاء الجديد: {new_date.strftime('%Y-%m-%d')}")
-        else:
-            await cb.message.edit_text(f"❌ المستخدم <code>{target_id}</code> غير موجود في جدول المشتركين!")
+        try:
+            if res == "UPDATE 1":
+                new_date = await conn.fetchval("SELECT expiry_date FROM paid_users WHERE user_id = $1", target_id)
+                await cb.message.edit_text(f"✅ <b>تم الخصم!</b>\nتم خصم 30 يوم بنجاح من المستخدم: <code>{target_id}</code>\n📅 تاريخ الانتهاء الجديد: {new_date.strftime('%Y-%m-%d')}")
+            else:
+                await cb.message.edit_text(f"❌ المستخدم <code>{target_id}</code> غير موجود في جدول المشتركين!")
+        except Exception:
+            pass
+            
+    await cb.answer("✅ تمت العملية")
 
 @dp.message(Command("clear_radar"))
 async def clear_radar_memory_cmd(m: types.Message):
@@ -3994,16 +4001,20 @@ async def set_lang(cb: types.CallbackQuery):
     has_tr = await has_trial(dp['db_pool'], cb.from_user.id)
 
     # 4. توجيه المستخدم (Routing)
+    # ... الكود السابق ...
     if is_paid:
         msg = "✅ أهلاً بك مجدداً! اشتراكك مفعل.\nأرسل رمز العملة للتحليل." if lang == "ar" else "✅ Welcome back! Your subscription is active.\nSend a coin symbol to analyze."
     elif has_tr:
         msg = "🎁 لديك تجربة مجانية واحدة! أرسل رمز العملة للتحليل." if lang == "ar" else "🎁 You have one free trial! Send a coin symbol for analysis."
     else:
-        msg = "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ شهرياً." if lang == "ar" else "⚠️ Your free trial has ended. For full access, please subscribe for a Monthly fee of 10 USDT or 500 ⭐."
+        msg = "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ شهرياً." if lang == "ar" else "⚠️ Your free trial has ended. For full access, please subscribe."
     
-    # 5. تعديل واجهة المستخدم
-    await cb.message.edit_text(msg, reply_markup=None if (is_paid or has_tr) else get_payment_kb(lang))
-
+    try:
+        await cb.message.edit_text(msg, reply_markup=None if (is_paid or has_tr) else get_payment_kb(lang))
+    except Exception:
+        pass
+    
+    await cb.answer() # إنهاء دوران زر اللغة
 async def search_dex_coin(symbol: str, retries: int = 3):
     """تبحث عن العملة وتجلب السيولة وعنوان العقد الحقيقي لفحص الأمان"""
     url = f"https://api.dexscreener.com/latest/dex/search?q={symbol}"
@@ -5205,10 +5216,15 @@ async def run_analysis(cb: types.CallbackQuery):
     tf = cb.data.replace("tf_", "")
     
     if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
-        return await cb.message.edit_text(
-            "⚠️ انتهت تجربتك المجانية." if lang=="ar" else "⚠️ Trial ended.",
-            reply_markup=get_payment_kb(lang)
-        )
+        try:
+            await cb.message.edit_text(
+                "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك." if lang=="ar" else "⚠️ Trial ended. Please subscribe.",
+                reply_markup=get_payment_kb(lang)
+            )
+        except Exception:
+            pass # تجاهل خطأ عدم تعديل الرسالة
+        return await cb.answer("⚠️ انتهى الاشتراك / Subscription Ended", show_alert=True)
+
 
     try:
         await cb.message.edit_text("🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing...")
