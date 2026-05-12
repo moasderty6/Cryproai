@@ -128,15 +128,23 @@ async def extend_user_subscription(db, user_id: int):
     # db هنا ممكن تكون pool أو conn، الاثنين فيهم execute
     await db.execute("""
         INSERT INTO paid_users (user_id, expiry_date) 
-        VALUES ($1, CURRENT_TIMESTAMP + INTERVAL '30 days') 
+        VALUES ($1, NOW() + INTERVAL '30 days') 
         ON CONFLICT (user_id) DO UPDATE 
-        SET expiry_date = GREATEST(COALESCE(paid_users.expiry_date, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP) + INTERVAL '30 days'
+        SET expiry_date =
+GREATEST(
+    COALESCE(paid_users.expiry_date, NOW()),
+    NOW()
+) + INTERVAL '30 days'
     """, user_id)
 
 async def is_user_paid(db, user_id: int):
     query = """
         SELECT 1 FROM paid_users 
-        WHERE user_id = $1 AND (expiry_date IS NULL OR expiry_date > CURRENT_TIMESTAMP)
+        WHERE user_id = $1
+AND (
+    expiry_date IS NULL
+    OR expiry_date > NOW()
+)
     """
     res = await db.fetchval(query, user_id)
     return bool(res)
@@ -3674,7 +3682,11 @@ async def approve_radar_signal(cb: types.CallbackQuery):
     async with pool.acquire() as conn:
         users = await conn.fetch("""
             SELECT u.user_id, u.lang, 
-                   CASE WHEN p.expiry_date > CURRENT_TIMESTAMP THEN true ELSE false END as is_paid
+                   CASE
+    WHEN p.expiry_date > NOW()
+    THEN true
+    ELSE false
+END as is_paid
             FROM users_info u
             LEFT JOIN paid_users p ON u.user_id = p.user_id
         """)
@@ -3808,9 +3820,13 @@ async def add_month_btn(cb: types.CallbackQuery):
     async with pool.acquire() as conn:
         await conn.execute("""
             INSERT INTO paid_users (user_id, expiry_date) 
-            VALUES ($1, CURRENT_TIMESTAMP + INTERVAL '30 days') 
+            VALUES ($1, NOW() + INTERVAL '30 days') 
             ON CONFLICT (user_id) DO UPDATE 
-            SET expiry_date = GREATEST(COALESCE(paid_users.expiry_date, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP) + INTERVAL '30 days'
+            SET expiry_date =
+GREATEST(
+    COALESCE(paid_users.expiry_date, NOW()),
+    NOW()
+) + INTERVAL '30 days'
         """, target_id)
         new_date = await conn.fetchval("SELECT expiry_date FROM paid_users WHERE user_id = $1", target_id)
         
@@ -3832,7 +3848,8 @@ async def minus_month_btn(cb: types.CallbackQuery):
     async with pool.acquire() as conn:
         res = await conn.execute("""
             UPDATE paid_users 
-            SET expiry_date = expiry_date - INTERVAL '30 days' 
+            SET expiry_date =
+COALESCE(expiry_date, NOW()) - INTERVAL '30 days' 
             WHERE user_id = $1
         """, target_id)
         
@@ -5995,7 +6012,12 @@ async def on_startup(app):
     async with pool.acquire() as conn:
         # 1. إنشاء الجداول بالشكل الجديد
         await conn.execute("CREATE TABLE IF NOT EXISTS users_info (user_id BIGINT PRIMARY KEY, lang TEXT, last_active DATE)")
-        await conn.execute("CREATE TABLE IF NOT EXISTS paid_users (user_id BIGINT PRIMARY KEY, expiry_date TIMESTAMP)")
+        await conn.execute("""
+CREATE TABLE IF NOT EXISTS paid_users (
+    user_id BIGINT PRIMARY KEY,
+    expiry_date TIMESTAMPTZ
+)
+""")
         await conn.execute("CREATE TABLE IF NOT EXISTS trial_users (user_id BIGINT PRIMARY KEY)")
         # 🧬 The Stealth Accumulation Matrix (ذاكرة الحيتان التراكمية)
         await conn.execute("""
@@ -6064,7 +6086,10 @@ async def on_startup(app):
 
         # 2. إجبار تحديث الجداول القديمة (للمشتركين الحاليين)
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS last_active DATE")
-        await conn.execute("ALTER TABLE paid_users ADD COLUMN IF NOT EXISTS expiry_date TIMESTAMP")
+        await conn.execute("""
+ALTER TABLE paid_users
+ADD COLUMN IF NOT EXISTS expiry_date TIMESTAMPTZ
+""")
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS invited_by BIGINT")
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS ref_count INTEGER DEFAULT 0")
                 # 🧠 ترقية جدول الذكاء الاصطناعي (إضافة كل الأعمدة المؤسساتية الجديدة إن لم تكن موجودة)
