@@ -16,14 +16,6 @@ import numpy as np
 import datetime
 import websockets
 import math
-import logging
-import traceback
-
-# هذا السطر سيجعل أي خطأ مخفي في البوت يظهر فوراً باللون الأحمر في الكونسول
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 
 def quant_cdf_score(z_value, limit=100.0):
     """
@@ -128,47 +120,22 @@ async def extend_user_subscription(db, user_id: int):
     # db هنا ممكن تكون pool أو conn، الاثنين فيهم execute
     await db.execute("""
         INSERT INTO paid_users (user_id, expiry_date) 
-        VALUES ($1, NOW() + INTERVAL '30 days') 
+        VALUES ($1, CURRENT_TIMESTAMP + INTERVAL '30 days') 
         ON CONFLICT (user_id) DO UPDATE 
-        SET expiry_date =
-GREATEST(
-    COALESCE(paid_users.expiry_date, NOW()),
-    NOW()
-) + INTERVAL '30 days'
+        SET expiry_date = GREATEST(COALESCE(paid_users.expiry_date, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP) + INTERVAL '30 days'
     """, user_id)
 
-import traceback
+async def is_user_paid(db, user_id: int):
+    query = """
+        SELECT 1 FROM paid_users 
+        WHERE user_id = $1 AND (expiry_date IS NULL OR expiry_date > CURRENT_TIMESTAMP)
+    """
+    res = await db.fetchval(query, user_id)
+    return bool(res)
 
-asyncasync def is_user_paid(db_or_conn, user_id: int):
-    try:
-        # نختبر إذا كان المدخل هو Pool أو Connection
-        if hasattr(db_or_conn, 'acquire'):
-            async with db_or_conn.acquire() as conn:
-                res = await conn.fetchval("""
-                    SELECT 1 FROM paid_users 
-                    WHERE user_id = $1 AND (expiry_date IS NULL OR expiry_date > NOW())
-                """, user_id)
-        else:
-            res = await db_or_conn.fetchval("""
-                SELECT 1 FROM paid_users 
-                WHERE user_id = $1 AND (expiry_date IS NULL OR expiry_date > NOW())
-            """, user_id)
-        return bool(res)
-    except Exception as e:
-        print(f"🚨 Error checking sub for {user_id}: {e}")
-        return False
-
-async def has_trial(db_or_conn, user_id: int):
-    try:
-        if hasattr(db_or_conn, 'acquire'):
-            async with db_or_conn.acquire() as conn:
-                res = await conn.fetchval("SELECT 1 FROM trial_users WHERE user_id = $1", user_id)
-        else:
-            res = await db_or_conn.fetchval("SELECT 1 FROM trial_users WHERE user_id = $1", user_id)
-        return not bool(res) # يعيد True إذا لم يستخدم التجربة بعد
-    except Exception:
-        return False
-
+async def has_trial(db, user_id: int):
+    res = await db.fetchval("SELECT 1 FROM trial_users WHERE user_id = $1", user_id)
+    return not bool(res)
 
 def format_price(price):
     if price is None:
@@ -195,14 +162,10 @@ async def create_nowpayments_invoice(user_id: int):
         "success_url": f"https://t.me/{(await bot.get_me()).username}",
     }
     try:
-        # 🟢 التعديل الجراحي: إضافة timeout بـ 10 ثواني لقتل الطلب المعلق
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient() as client:
             res = await client.post(url, headers=headers, json=data)
             return res.json().get("invoice_url")
-    except Exception as e: 
-        print(f"⚠️ خطأ في إنشاء فاتورة الدفع: {e}")
-        return None
-
+    except: return None
 
 async def send_stars_invoice(chat_id: int, lang="ar"):
     prices = [LabeledPrice(label="اشتراك البوت بـ 500 شهرياً ⭐" if lang=="ar" else "Subscribe Now with 500 ⭐ Monthly", amount=500)]
@@ -3698,11 +3661,7 @@ async def approve_radar_signal(cb: types.CallbackQuery):
     async with pool.acquire() as conn:
         users = await conn.fetch("""
             SELECT u.user_id, u.lang, 
-                   CASE
-    WHEN p.expiry_date > NOW()
-    THEN true
-    ELSE false
-END as is_paid
+                   CASE WHEN p.expiry_date > CURRENT_TIMESTAMP THEN true ELSE false END as is_paid
             FROM users_info u
             LEFT JOIN paid_users p ON u.user_id = p.user_id
         """)
@@ -3836,13 +3795,9 @@ async def add_month_btn(cb: types.CallbackQuery):
     async with pool.acquire() as conn:
         await conn.execute("""
             INSERT INTO paid_users (user_id, expiry_date) 
-            VALUES ($1, NOW() + INTERVAL '30 days') 
+            VALUES ($1, CURRENT_TIMESTAMP + INTERVAL '30 days') 
             ON CONFLICT (user_id) DO UPDATE 
-            SET expiry_date =
-GREATEST(
-    COALESCE(paid_users.expiry_date, NOW()),
-    NOW()
-) + INTERVAL '30 days'
+            SET expiry_date = GREATEST(COALESCE(paid_users.expiry_date, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP) + INTERVAL '30 days'
         """, target_id)
         new_date = await conn.fetchval("SELECT expiry_date FROM paid_users WHERE user_id = $1", target_id)
         
@@ -3864,8 +3819,7 @@ async def minus_month_btn(cb: types.CallbackQuery):
     async with pool.acquire() as conn:
         res = await conn.execute("""
             UPDATE paid_users 
-            SET expiry_date =
-COALESCE(expiry_date, NOW()) - INTERVAL '30 days' 
+            SET expiry_date = expiry_date - INTERVAL '30 days' 
             WHERE user_id = $1
         """, target_id)
         
@@ -4024,32 +3978,43 @@ async def start_cmd(m: types.Message):
 
 @dp.callback_query(F.data.startswith("lang_"))
 async def set_lang(cb: types.CallbackQuery):
+    # 1. إرسال تأكيد فوري لتيليجرام لقتل أيقونة التحميل المزعجة (The Fix)
     await cb.answer() 
+    
     lang = cb.data.split("_")[1]
-    uid = cb.from_user.id
 
     try:
-        # استخدام اتصال واحد فقط لجميع العمليات
+        # 2. تحديث قاعدة البيانات
         async with dp['db_pool'].acquire() as conn:
-            # تحديث اللغة
-            await conn.execute("UPDATE users_info SET lang = $1 WHERE user_id = $2", lang, uid)
-            
-            # فحص الاشتراك والتجربة باستخدام نفس الـ conn
-            is_paid = await is_user_paid(conn, uid)
-            has_tr = await has_trial(conn, uid)
-            
-            if is_paid:
-                msg = "✅ أهلاً بك مجدداً! اشتراكك مفعل.\nأرسل رمز العملة للتحليل." if lang == "ar" else "✅ Welcome back! Your subscription is active.\nSend a coin symbol to analyze."
-            elif has_tr:
-                msg = "🎁 لديك تجربة مجانية واحدة! أرسل رمز العملة للتحليل." if lang == "ar" else "🎁 You have one free trial! Send a coin symbol for analysis."
-            else:
-                msg = "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك." if lang == "ar" else "⚠️ Your free trial has ended. For full access, please subscribe."
-            
-            await cb.message.edit_text(msg, reply_markup=None if (is_paid or has_tr) else get_payment_kb(lang))
-
+            await conn.execute(
+                "UPDATE users_info SET lang = $1 WHERE user_id = $2",
+                lang,
+                cb.from_user.id
+            )
     except Exception as e:
-        print(f"🚨 Error in set_lang for {uid}: {e}")
- # إنهاء دوران زر اللغة
+        print(f"DB Error in set_lang: {e}")
+        # إذا حدث خطأ، نظهر رسالة منبثقة للمستخدم
+        return await cb.answer("Server busy, try again...", show_alert=True)
+    
+    # 3. فحص حالة السيولة والاشتراك للمستخدم
+    is_paid = await is_user_paid(dp['db_pool'], cb.from_user.id)
+    has_tr = await has_trial(dp['db_pool'], cb.from_user.id)
+
+    # 4. توجيه المستخدم (Routing)
+    # ... الكود السابق ...
+    if is_paid:
+        msg = "✅ أهلاً بك مجدداً! اشتراكك مفعل.\nأرسل رمز العملة للتحليل." if lang == "ar" else "✅ Welcome back! Your subscription is active.\nSend a coin symbol to analyze."
+    elif has_tr:
+        msg = "🎁 لديك تجربة مجانية واحدة! أرسل رمز العملة للتحليل." if lang == "ar" else "🎁 You have one free trial! Send a coin symbol for analysis."
+    else:
+        msg = "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ شهرياً." if lang == "ar" else "⚠️ Your free trial has ended. For full access, please subscribe."
+    
+    try:
+        await cb.message.edit_text(msg, reply_markup=None if (is_paid or has_tr) else get_payment_kb(lang))
+    except Exception:
+        pass
+    
+    await cb.answer() # إنهاء دوران زر اللغة
 async def search_dex_coin(symbol: str, retries: int = 3):
     """تبحث عن العملة وتجلب السيولة وعنوان العقد الحقيقي لفحص الأمان"""
     url = f"https://api.dexscreener.com/latest/dex/search?q={symbol}"
@@ -5238,45 +5203,36 @@ def calculate_institutional_vpvr_confluence(candles_4h, candles_1d, current_pric
 
 @dp.callback_query(F.data.startswith("tf_"))
 async def run_analysis(cb: types.CallbackQuery):
-    # 1. أول خطوة: جاوب الـ Callback عشان الزر يوقف لف عند المستخدم
-    await cb.answer() 
-
     uid, pool = cb.from_user.id, dp['db_pool']
     data = user_session_data.get(uid)
     
     if not data:
-        return await cb.message.answer("⚠️ انتهت الجلسة، يرجى إرسال الرمز من جديد.")
+        return await cb.answer("⚠️ انتهت الجلسة، يرجى إرسال الرمز من جديد.", show_alert=True)
 
     lang = data.get('lang', 'ar')
     sym = data.get('sym')
     price = data.get('price')
+    volume_24h = data.get('volume_24h', 0)
     tf = cb.data.replace("tf_", "")
+    
+    if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
+        try:
+            await cb.message.edit_text(
+                "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك." if lang=="ar" else "⚠️ Trial ended. Please subscribe.",
+                reply_markup=get_payment_kb(lang)
+            )
+        except Exception:
+            pass # تجاهل خطأ عدم تعديل الرسالة
+        return await cb.answer("⚠️ انتهى الاشتراك / Subscription Ended", show_alert=True)
 
-    # 2. التعديل الجوهري: فتح اتصال واحد (conn) واستخدامه لكل الفحوصات
-    try:
-        async with pool.acquire() as conn:
-            # بنمرر الـ conn للدوال بدل الـ pool عشان ما نفتح مواسير جديدة
-            paid = await is_user_paid(conn, uid)
-            trial = await has_trial(conn, uid)
-            
-            if not paid and not trial:
-                return await cb.message.edit_text(
-                    "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك." if lang=="ar" else "⚠️ Trial ended. Please subscribe.",
-                    reply_markup=get_payment_kb(lang)
-                )
 
-            # 3. إذا المستخدم مسموح له يحلل، بنكمل باقي الكود باستخدام نفس الـ conn إذا لزم الأمر
-            # لكن حالياً سنكمل تحليل العملة
-    except Exception as e:
-        print(f"DB Error in Analysis Check: {e}")
-        return
-
-    # باقي كود التحليل (Analyzing...)
     try:
         await cb.message.edit_text("🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing...")
-    except Exception:
-        pass
-
+    except Exception as e:
+        if "message is not modified" in str(e):
+            pass  
+        else:
+            print(f"Edit msg error in analysis: {e}")
 
     clean_sym = sym.replace("USDT", "").strip().upper()
     
@@ -5853,7 +5809,6 @@ RSI: {safe_rsi:.1f} | MACD: {macd_fmt} | ADX: {adx_val:.1f}
 # --- الدفع الكريبتو ---
 @dp.callback_query(F.data == "pay_crypto")
 async def crypto_pay(cb: types.CallbackQuery):
-    await cb.answer() # 🟢 التعديل: إضافة هذا السطر لإيقاف دوران الزر
     uid, pool = cb.from_user.id, dp['db_pool']
     user = await pool.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", uid)
     lang = user['lang'] if user else "ar"
@@ -5861,7 +5816,6 @@ async def crypto_pay(cb: types.CallbackQuery):
     await cb.message.edit_text(
         "⏳ يتم إنشاء رابط الدفع، يرجى الانتظار..." if lang == "ar" else "⏳ Generating payment link, please wait..."
     )
-    # ... باقي الدالة كما هي ...
 
     invoice_url = await create_nowpayments_invoice(cb.from_user.id)
     if invoice_url:
@@ -5993,29 +5947,17 @@ async def nowpayments_ipn(req: web.Request):
 async def handle_webhook(req: web.Request):
     try:
         data = await req.json()
-
-        update = types.Update.model_validate(
-            data,
-            context={"bot": bot}
-        )
-
-        # 🔥 لا تحبس السيرفر
-        asyncio.create_task(
-            dp.feed_update(bot, update)
-        )
-
+        asyncio.create_task(dp.feed_update(bot, types.Update(**data)))
         return web.Response(text="ok")
-
     except Exception as e:
-        print(f"🚨 WEBHOOK ERROR: {e}")
-        traceback.print_exc()
+        print(f"Webhook error: {e}")
+        return web.Response(text="error", status=500)
 
-        return web.Response(text="ok")
 async def on_startup(app):
     pool = await asyncpg.create_pool(
         DATABASE_URL,
-        min_size=5,
-        max_size=30,
+        min_size=1,
+        max_size=10,
         command_timeout=60,
         timeout=60,
         max_inactive_connection_lifetime=60
@@ -6035,12 +5977,7 @@ async def on_startup(app):
     async with pool.acquire() as conn:
         # 1. إنشاء الجداول بالشكل الجديد
         await conn.execute("CREATE TABLE IF NOT EXISTS users_info (user_id BIGINT PRIMARY KEY, lang TEXT, last_active DATE)")
-        await conn.execute("""
-CREATE TABLE IF NOT EXISTS paid_users (
-    user_id BIGINT PRIMARY KEY,
-    expiry_date TIMESTAMPTZ
-)
-""")
+        await conn.execute("CREATE TABLE IF NOT EXISTS paid_users (user_id BIGINT PRIMARY KEY, expiry_date TIMESTAMP)")
         await conn.execute("CREATE TABLE IF NOT EXISTS trial_users (user_id BIGINT PRIMARY KEY)")
         # 🧬 The Stealth Accumulation Matrix (ذاكرة الحيتان التراكمية)
         await conn.execute("""
@@ -6109,10 +6046,7 @@ CREATE TABLE IF NOT EXISTS paid_users (
 
         # 2. إجبار تحديث الجداول القديمة (للمشتركين الحاليين)
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS last_active DATE")
-        await conn.execute("""
-ALTER TABLE paid_users
-ADD COLUMN IF NOT EXISTS expiry_date TIMESTAMPTZ
-""")
+        await conn.execute("ALTER TABLE paid_users ADD COLUMN IF NOT EXISTS expiry_date TIMESTAMP")
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS invited_by BIGINT")
         await conn.execute("ALTER TABLE users_info ADD COLUMN IF NOT EXISTS ref_count INTEGER DEFAULT 0")
                 # 🧠 ترقية جدول الذكاء الاصطناعي (إضافة كل الأعمدة المؤسساتية الجديدة إن لم تكن موجودة)
@@ -6140,15 +6074,15 @@ ADD COLUMN IF NOT EXISTS expiry_date TIMESTAMPTZ
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
 
-    #asyncio.create_task(smart_radar_watchdog(pool))
-    #asyncio.create_task(silent_data_harvester_worker(pool))
-    #asyncio.create_task(macro_data_worker()) # 🌍 تشغيل عامل الماكرو
-    #asyncio.create_task(radar_worker_process(pool))
-    #asyncio.create_task(institutional_incubator_worker(pool))
-    #asyncio.create_task(institutional_vanguard_worker())
-    #asyncio.create_task(moe_hot_swap_worker())
-    #asyncio.create_task(ai_trainer_worker(pool)) # 🧠 تشغيل مدرب الذكاء الاصطناعي
-    #asyncio.create_task(ml_inspector_worker(pool)) # 🧠 تشغيل محقق الذكاء الاصطناعي
+    asyncio.create_task(smart_radar_watchdog(pool))
+    asyncio.create_task(silent_data_harvester_worker(pool))
+    asyncio.create_task(macro_data_worker()) # 🌍 تشغيل عامل الماكرو
+    asyncio.create_task(radar_worker_process(pool))
+    asyncio.create_task(institutional_incubator_worker(pool))
+    asyncio.create_task(institutional_vanguard_worker())
+    asyncio.create_task(moe_hot_swap_worker())
+    asyncio.create_task(ai_trainer_worker(pool)) # 🧠 تشغيل مدرب الذكاء الاصطناعي
+    asyncio.create_task(ml_inspector_worker(pool)) # 🧠 تشغيل محقق الذكاء الاصطناعي
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
 
