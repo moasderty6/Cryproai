@@ -3971,9 +3971,13 @@ async def start_cmd(m: types.Message):
 
 @dp.callback_query(F.data.startswith("lang_"))
 async def set_lang(cb: types.CallbackQuery):
+    # 1. إرسال تأكيد فوري لتيليجرام لقتل أيقونة التحميل المزعجة (The Fix)
+    await cb.answer() 
+    
     lang = cb.data.split("_")[1]
 
     try:
+        # 2. تحديث قاعدة البيانات
         async with dp['db_pool'].acquire() as conn:
             await conn.execute(
                 "UPDATE users_info SET lang = $1 WHERE user_id = $2",
@@ -3982,11 +3986,14 @@ async def set_lang(cb: types.CallbackQuery):
             )
     except Exception as e:
         print(f"DB Error in set_lang: {e}")
+        # إذا حدث خطأ، نظهر رسالة منبثقة للمستخدم
         return await cb.answer("Server busy, try again...", show_alert=True)
     
+    # 3. فحص حالة السيولة والاشتراك للمستخدم
     is_paid = await is_user_paid(dp['db_pool'], cb.from_user.id)
     has_tr = await has_trial(dp['db_pool'], cb.from_user.id)
 
+    # 4. توجيه المستخدم (Routing)
     if is_paid:
         msg = "✅ أهلاً بك مجدداً! اشتراكك مفعل.\nأرسل رمز العملة للتحليل." if lang == "ar" else "✅ Welcome back! Your subscription is active.\nSend a coin symbol to analyze."
     elif has_tr:
@@ -3994,10 +4001,8 @@ async def set_lang(cb: types.CallbackQuery):
     else:
         msg = "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ شهرياً." if lang == "ar" else "⚠️ Your free trial has ended. For full access, please subscribe for a Monthly fee of 10 USDT or 500 ⭐."
     
+    # 5. تعديل واجهة المستخدم
     await cb.message.edit_text(msg, reply_markup=None if (is_paid or has_tr) else get_payment_kb(lang))
-
-# --- التعامل مع الرموز ---
-# --- التعامل مع الرموز ---
 
 async def search_dex_coin(symbol: str, retries: int = 3):
     """تبحث عن العملة وتجلب السيولة وعنوان العقد الحقيقي لفحص الأمان"""
