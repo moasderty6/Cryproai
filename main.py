@@ -5277,6 +5277,8 @@ async def run_analysis(cb: types.CallbackQuery):
             pass # تجاهل خطأ عدم تعديل الرسالة
         return await cb.answer("⚠️ انتهى الاشتراك / Subscription Ended", show_alert=True)
 
+    # 🟢 التعديل الجذري هنا: أضف هذا السطر لإيقاف دوران الزر ومنع السبام
+    await cb.answer()
 
     try:
         await cb.message.edit_text("🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing...")
@@ -5285,6 +5287,7 @@ async def run_analysis(cb: types.CallbackQuery):
             pass  
         else:
             print(f"Edit msg error in analysis: {e}")
+
 
     clean_sym = sym.replace("USDT", "").strip().upper()
     
