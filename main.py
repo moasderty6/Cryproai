@@ -3792,8 +3792,11 @@ async def add_month_btn(cb: types.CallbackQuery):
     if cb.from_user.id != ADMIN_USER_ID:
         return await cb.answer("❌ للأدمن فقط", show_alert=True)
     
+    await cb.answer("⏳ جاري الإضافة...") # 🟢 أضف هذا السطر هنا ليفك تعليق الزر فوراً
+    
     target_id = int(cb.data.replace("sub_add_", ""))
     pool = dp['db_pool']
+    # ... باقي الكود كما هو ...
     
     async with pool.acquire() as conn:
         await conn.execute("""
@@ -3816,8 +3819,11 @@ async def minus_month_btn(cb: types.CallbackQuery):
     if cb.from_user.id != ADMIN_USER_ID:
         return await cb.answer("❌ للأدمن فقط", show_alert=True)
     
+    await cb.answer("⏳ جاري الخصم...") # 🟢 أضف هذا السطر هنا
+    
     target_id = int(cb.data.replace("sub_min_", ""))
     pool = dp['db_pool']
+    # ... باقي الكود كما هو ...
     
     async with pool.acquire() as conn:
         res = await conn.execute("""
@@ -5951,14 +5957,34 @@ async def nowpayments_ipn(req: web.Request):
 
 
 # --- السيرفر ---
+# 1. 🟢 أضف هذا المتغير خارج الدالة لحفظ المهام ومنع بايثون من قتلها
+background_tasks = set()
+
 async def handle_webhook(req: web.Request):
     try:
         data = await req.json()
-        asyncio.create_task(dp.feed_update(bot, types.Update(**data)))
+
+        update = types.Update.model_validate(
+            data,
+            context={"bot": bot}
+        )
+
+        # 🔥 2. التعديل الجذري: إنشاء المهمة وحمايتها بمرجع قوي
+        task = asyncio.create_task(dp.feed_update(bot, update))
+        
+        # إضافتها للسلة لحمايتها
+        background_tasks.add(task)
+        
+        # إخبار بايثون بحذفها من السلة فقط "بعد" أن تنتهي من تنفيذ كود الزر
+        task.add_done_callback(background_tasks.discard)
+
         return web.Response(text="ok")
+
     except Exception as e:
-        print(f"Webhook error: {e}")
-        return web.Response(text="error", status=500)
+        print(f"🚨 WEBHOOK ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        return web.Response(text="ok")
 
 async def on_startup(app):
     pool = await asyncpg.create_pool(
