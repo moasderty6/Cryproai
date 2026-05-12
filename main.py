@@ -6001,23 +6001,24 @@ async def nowpayments_ipn(req: web.Request):
 async def handle_webhook(req: web.Request):
     try:
         data = await req.json()
-        
-        # 🟢 التعديل الأول: استخدام model_validate بدلاً من **data 
-        # هذا يضمن فك تشفير بيانات الأزرار المعقدة (CallbackQuery) بشكل صحيح 100%
-        update = types.Update.model_validate(data, context={"bot": bot})
-        
-        # 🟢 التعديل الأهم: استخدمنا await بدلاً من رميها في الخلفية كـ task
-        # هذا يجبر السيرفر على "حبس" الطلب وعدم إغلاقه حتى يكتمل تنفيذ أمر الزر تماماً
-        await dp.feed_update(bot, update)
-        
-        return web.Response(text="ok")
-    except Exception as e:
-        # الآن إذا كان هناك أي خطأ، سيظهر لك هنا فورا ولن يختفي في العدم
-        print(f"🚨 [CRITICAL] خطأ مميت في الـ Webhook: {e}")
-        traceback.print_exc()
-        # يجب دائماً إرجاع ok حتى لو فشل البوت، لكي لا يعيد تيليجرام إرسال الحدث وتجميد السيرفر
-        return web.Response(text="ok") 
 
+        update = types.Update.model_validate(
+            data,
+            context={"bot": bot}
+        )
+
+        # 🔥 لا تحبس السيرفر
+        asyncio.create_task(
+            dp.feed_update(bot, update)
+        )
+
+        return web.Response(text="ok")
+
+    except Exception as e:
+        print(f"🚨 WEBHOOK ERROR: {e}")
+        traceback.print_exc()
+
+        return web.Response(text="ok")
 async def on_startup(app):
     pool = await asyncpg.create_pool(
         DATABASE_URL,
