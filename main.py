@@ -146,6 +146,7 @@ async def is_user_paid(db, user_id: int):
     return bool(res)
 
 async def has_trial(db, user_id: int):
+    print(f"🔍 [Trial Check] User: {user_id}")
     res = await db.fetchval("SELECT 1 FROM trial_users WHERE user_id = $1", user_id)
     return not bool(res)
 
