@@ -16,6 +16,18 @@ import numpy as np
 import datetime
 import websockets
 import math
+import logging
+
+# إعداد اللوغس ليطبع الوقت، نوع الخطأ، والرسالة
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("bot_errors.log"), # سيحفظ الأخطاء في ملف
+        logging.StreamHandler() # سيطبع الأخطاء في الشاشة أمامك
+    ]
+)
+logger = logging.getLogger(__name__)
 
 def quant_cdf_score(z_value, limit=100.0):
     """
@@ -5956,8 +5968,8 @@ async def handle_webhook(req: web.Request):
 async def on_startup(app):
     pool = await asyncpg.create_pool(
         DATABASE_URL,
-        min_size=1,
-        max_size=10,
+        min_size=5,
+        max_size=30,
         command_timeout=60,
         timeout=60,
         max_inactive_connection_lifetime=60
