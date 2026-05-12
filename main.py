@@ -16,18 +16,6 @@ import numpy as np
 import datetime
 import websockets
 import math
-import logging
-
-# إعداد اللوغس ليطبع الوقت، نوع الخطأ، والرسالة
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("bot_errors.log"), # سيحفظ الأخطاء في ملف
-        logging.StreamHandler() # سيطبع الأخطاء في الشاشة أمامك
-    ]
-)
-logger = logging.getLogger(__name__)
 
 def quant_cdf_score(z_value, limit=100.0):
     """
@@ -6087,15 +6075,15 @@ async def on_startup(app):
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
 
-    asyncio.create_task(smart_radar_watchdog(pool))
-    asyncio.create_task(silent_data_harvester_worker(pool))
-    asyncio.create_task(macro_data_worker()) # 🌍 تشغيل عامل الماكرو
-    asyncio.create_task(radar_worker_process(pool))
-    asyncio.create_task(institutional_incubator_worker(pool))
-    asyncio.create_task(institutional_vanguard_worker())
-    asyncio.create_task(moe_hot_swap_worker())
-    asyncio.create_task(ai_trainer_worker(pool)) # 🧠 تشغيل مدرب الذكاء الاصطناعي
-    asyncio.create_task(ml_inspector_worker(pool)) # 🧠 تشغيل محقق الذكاء الاصطناعي
+    #asyncio.create_task(smart_radar_watchdog(pool))
+    #asyncio.create_task(silent_data_harvester_worker(pool))
+    #asyncio.create_task(macro_data_worker()) # 🌍 تشغيل عامل الماكرو
+    #asyncio.create_task(radar_worker_process(pool))
+    #asyncio.create_task(institutional_incubator_worker(pool))
+    #asyncio.create_task(institutional_vanguard_worker())
+    #asyncio.create_task(moe_hot_swap_worker())
+    #asyncio.create_task(ai_trainer_worker(pool)) # 🧠 تشغيل مدرب الذكاء الاصطناعي
+    #asyncio.create_task(ml_inspector_worker(pool)) # 🧠 تشغيل محقق الذكاء الاصطناعي
     await bot.set_webhook(f"{WEBHOOK_URL}/")
 
 
