@@ -60,6 +60,7 @@ def quant_fat_tail_score(z_value, tail_weight=1.5, limit=100.0):
 
 from aiohttp import web
 from dotenv import load_dotenv
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.enums import ParseMode
@@ -5958,34 +5959,6 @@ async def nowpayments_ipn(req: web.Request):
 
 # --- السيرفر ---
 # 1. 🟢 أضف هذا المتغير خارج الدالة لحفظ المهام ومنع بايثون من قتلها
-background_tasks = set()
-
-async def handle_webhook(req: web.Request):
-    try:
-        data = await req.json()
-
-        update = types.Update.model_validate(
-            data,
-            context={"bot": bot}
-        )
-
-        # 🔥 2. التعديل الجذري: إنشاء المهمة وحمايتها بمرجع قوي
-        task = asyncio.create_task(dp.feed_update(bot, update))
-        
-        # إضافتها للسلة لحمايتها
-        background_tasks.add(task)
-        
-        # إخبار بايثون بحذفها من السلة فقط "بعد" أن تنتهي من تنفيذ كود الزر
-        task.add_done_callback(background_tasks.discard)
-
-        return web.Response(text="ok")
-
-    except Exception as e:
-        print(f"🚨 WEBHOOK ERROR: {e}")
-        import traceback
-        traceback.print_exc()
-        return web.Response(text="ok")
-
 async def on_startup(app):
     pool = await asyncpg.create_pool(
         DATABASE_URL,
@@ -6116,14 +6089,31 @@ async def on_startup(app):
     asyncio.create_task(moe_hot_swap_worker())
     asyncio.create_task(ai_trainer_worker(pool)) # 🧠 تشغيل مدرب الذكاء الاصطناعي
     asyncio.create_task(ml_inspector_worker(pool)) # 🧠 تشغيل محقق الذكاء الاصطناعي
-    await bot.set_webhook(f"{WEBHOOK_URL}/")
+        # مسح أي تحديثات معلقة تسبب تعليق السيرفر
+    await bot.delete_webhook(drop_pending_updates=True)
+    # تعيين الويب هوك مع طلب صريح بقبول الأزرار
+    await bot.set_webhook(f"{WEBHOOK_URL}/", allowed_updates=["message", "callback_query", "pre_checkout_query", "successful_payment"])
 
+
+# 🗑️ احذف دالة handle_webhook القديمة بالكامل
 
 app = web.Application()
-app.router.add_post("/", handle_webhook)
+
+# 🚀 المحرك الرسمي من Aiogram (يمنع تعليق الأزرار ويظهر الأخطاء المخفية)
+webhook_handler = SimpleRequestHandler(
+    dispatcher=dp,
+    bot=bot,
+)
+# توجيه الطلبات القادمة من تيليجرام إلى المحرك الرسمي
+webhook_handler.register(app, path="/")
+
+# مساراتك الأخرى تبقى كما هي
 app.router.add_post("/webhook/nowpayments", nowpayments_ipn)
 app.router.add_get("/health", lambda r: web.Response(text="ok"))
 app.on_startup.append(on_startup)
+
+# 🛡️ إعداد التطبيق لربط دورة حياة البوت بالسيرفر بشكل سليم
+setup_application(app, dp, bot=bot)
 
 if __name__ == "__main__":
     web.run_app(app, host="0.0.0.0", port=PORT)
