@@ -171,10 +171,14 @@ async def create_nowpayments_invoice(user_id: int):
         "success_url": f"https://t.me/{(await bot.get_me()).username}",
     }
     try:
-        async with httpx.AsyncClient() as client:
+        # 🟢 التعديل الجراحي: إضافة timeout بـ 10 ثواني لقتل الطلب المعلق
+        async with httpx.AsyncClient(timeout=10.0) as client:
             res = await client.post(url, headers=headers, json=data)
             return res.json().get("invoice_url")
-    except: return None
+    except Exception as e: 
+        print(f"⚠️ خطأ في إنشاء فاتورة الدفع: {e}")
+        return None
+
 
 async def send_stars_invoice(chat_id: int, lang="ar"):
     prices = [LabeledPrice(label="اشتراك البوت بـ 500 شهرياً ⭐" if lang=="ar" else "Subscribe Now with 500 ⭐ Monthly", amount=500)]
@@ -5810,6 +5814,7 @@ RSI: {safe_rsi:.1f} | MACD: {macd_fmt} | ADX: {adx_val:.1f}
 # --- الدفع الكريبتو ---
 @dp.callback_query(F.data == "pay_crypto")
 async def crypto_pay(cb: types.CallbackQuery):
+    await cb.answer() # 🟢 التعديل: إضافة هذا السطر لإيقاف دوران الزر
     uid, pool = cb.from_user.id, dp['db_pool']
     user = await pool.fetchrow("SELECT lang FROM users_info WHERE user_id = $1", uid)
     lang = user['lang'] if user else "ar"
@@ -5817,6 +5822,7 @@ async def crypto_pay(cb: types.CallbackQuery):
     await cb.message.edit_text(
         "⏳ يتم إنشاء رابط الدفع، يرجى الانتظار..." if lang == "ar" else "⏳ Generating payment link, please wait..."
     )
+    # ... باقي الدالة كما هي ...
 
     invoice_url = await create_nowpayments_invoice(cb.from_user.id)
     if invoice_url:
@@ -5948,11 +5954,12 @@ async def nowpayments_ipn(req: web.Request):
 async def handle_webhook(req: web.Request):
     try:
         data = await req.json()
-        asyncio.create_task(dp.feed_update(bot, types.Update(**data)))
+        # 🟢 التعديل الجراحي: استبدال create_task بـ await لكشف الأخطاء المخفية
+        await dp.feed_update(bot, types.Update(**data))
         return web.Response(text="ok")
     except Exception as e:
         print(f"🚨 [CRITICAL] خطأ مميت في الـ Webhook:")
-        traceback.print_exc() # 👈 هذا السطر سيفضح لك مسار الخطأ والسطر بالضبط
+        traceback.print_exc() 
         return web.Response(text="error", status=500)
 
 async def on_startup(app):
