@@ -3979,43 +3979,35 @@ async def start_cmd(m: types.Message):
 
 @dp.callback_query(F.data.startswith("lang_"))
 async def set_lang(cb: types.CallbackQuery):
-    # 1. إرسال تأكيد فوري لتيليجرام لقتل أيقونة التحميل المزعجة (The Fix)
     await cb.answer() 
-    
     lang = cb.data.split("_")[1]
 
     try:
-        # 2. تحديث قاعدة البيانات
+        print(f"🔍 [LOG] المستخدم {cb.from_user.id} ضغط على زر اللغة. جاري تحديث DB...")
         async with dp['db_pool'].acquire() as conn:
-            await conn.execute(
-                "UPDATE users_info SET lang = $1 WHERE user_id = $2",
-                lang,
-                cb.from_user.id
-            )
-    except Exception as e:
-        print(f"DB Error in set_lang: {e}")
-        # إذا حدث خطأ، نظهر رسالة منبثقة للمستخدم
-        return await cb.answer("Server busy, try again...", show_alert=True)
-    print(f"DEBUG | User: {cb.from_user.id} | Checking sub for lang: {lang}...")
-    # 3. فحص حالة السيولة والاشتراك للمستخدم
-    is_paid = await is_user_paid(dp['db_pool'], cb.from_user.id)
-    has_tr = await has_trial(dp['db_pool'], cb.from_user.id)
+            await conn.execute("UPDATE users_info SET lang = $1 WHERE user_id = $2", lang, cb.from_user.id)
+        
+        print(f"🔍 [LOG] جاري التحقق من حالة اشتراك {cb.from_user.id}...")
+        # المشكلة غالباً تضرب هنا في هذه الدالتين
+        is_paid = await is_user_paid(dp['db_pool'], cb.from_user.id)
+        has_tr = await has_trial(dp['db_pool'], cb.from_user.id)
+        
+        print(f"🔍 [LOG] النتيجة: VIP: {is_paid} | Trial: {has_tr}")
 
-    # 4. توجيه المستخدم (Routing)
-    # ... الكود السابق ...
-    if is_paid:
-        msg = "✅ أهلاً بك مجدداً! اشتراكك مفعل.\nأرسل رمز العملة للتحليل." if lang == "ar" else "✅ Welcome back! Your subscription is active.\nSend a coin symbol to analyze."
-    elif has_tr:
-        msg = "🎁 لديك تجربة مجانية واحدة! أرسل رمز العملة للتحليل." if lang == "ar" else "🎁 You have one free trial! Send a coin symbol for analysis."
-    else:
-        msg = "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ شهرياً." if lang == "ar" else "⚠️ Your free trial has ended. For full access, please subscribe."
-    
-    try:
+        if is_paid:
+            msg = "✅ أهلاً بك مجدداً! اشتراكك مفعل.\nأرسل رمز العملة للتحليل." if lang == "ar" else "✅ Welcome back! Your subscription is active.\nSend a coin symbol to analyze."
+        elif has_tr:
+            msg = "🎁 لديك تجربة مجانية واحدة! أرسل رمز العملة للتحليل." if lang == "ar" else "🎁 You have one free trial! Send a coin symbol for analysis."
+        else:
+            msg = "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ شهرياً." if lang == "ar" else "⚠️ Your free trial has ended. For full access, please subscribe."
+        
         await cb.message.edit_text(msg, reply_markup=None if (is_paid or has_tr) else get_payment_kb(lang))
-    except Exception:
-        pass
-    
-    await cb.answer() # إنهاء دوران زر اللغة
+        print(f"✅ [LOG] تمت العملية بنجاح للمستخدم {cb.from_user.id}")
+
+    except Exception as e:
+        print(f"🚨 [CRITICAL ERROR] انهيار داخل زر اللغة / الاشتراك للمستخدم {cb.from_user.id}:")
+        traceback.print_exc() # 👈 سيكشف لك اسم المتغير أو دالة الـ DB التي تسببت بالكراش
+ # إنهاء دوران زر اللغة
 async def search_dex_coin(symbol: str, retries: int = 3):
     """تبحث عن العملة وتجلب السيولة وعنوان العقد الحقيقي لفحص الأمان"""
     url = f"https://api.dexscreener.com/latest/dex/search?q={symbol}"
@@ -5951,7 +5943,8 @@ async def handle_webhook(req: web.Request):
         asyncio.create_task(dp.feed_update(bot, types.Update(**data)))
         return web.Response(text="ok")
     except Exception as e:
-        print(f"Webhook error: {e}")
+        print(f"🚨 [CRITICAL] خطأ مميت في الـ Webhook:")
+        traceback.print_exc() # 👈 هذا السطر سيفضح لك مسار الخطأ والسطر بالضبط
         return web.Response(text="error", status=500)
 
 async def on_startup(app):
