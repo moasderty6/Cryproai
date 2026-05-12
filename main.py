@@ -139,50 +139,36 @@ GREATEST(
 
 import traceback
 
-async def is_user_paid(db, user_id: int):
+asyncasync def is_user_paid(db_or_conn, user_id: int):
     try:
-        print(f"🔥 CHECKING SUB FOR {user_id}")
-
-        query = """
-            SELECT 1
-            FROM paid_users
-            WHERE user_id = $1
-            AND (
-                expiry_date IS NULL
-                OR expiry_date > NOW()
-            )
-        """
-
-        res = await db.fetchval(query, user_id)
-
-        print(f"✅ SUB RESULT = {res}")
-
+        # نختبر إذا كان المدخل هو Pool أو Connection
+        if hasattr(db_or_conn, 'acquire'):
+            async with db_or_conn.acquire() as conn:
+                res = await conn.fetchval("""
+                    SELECT 1 FROM paid_users 
+                    WHERE user_id = $1 AND (expiry_date IS NULL OR expiry_date > NOW())
+                """, user_id)
+        else:
+            res = await db_or_conn.fetchval("""
+                SELECT 1 FROM paid_users 
+                WHERE user_id = $1 AND (expiry_date IS NULL OR expiry_date > NOW())
+            """, user_id)
         return bool(res)
-
     except Exception as e:
-        print("🚨 ERROR INSIDE is_user_paid")
-        traceback.print_exc()
-
+        print(f"🚨 Error checking sub for {user_id}: {e}")
         return False
 
-async def has_trial(db, user_id: int):
+async def has_trial(db_or_conn, user_id: int):
     try:
-        print(f"🔥 TRIAL CHECK {user_id}")
-
-        res = await db.fetchval(
-            "SELECT 1 FROM trial_users WHERE user_id = $1",
-            user_id
-        )
-
-        print(f"✅ TRIAL RESULT = {res}")
-
-        return not bool(res)
-
+        if hasattr(db_or_conn, 'acquire'):
+            async with db_or_conn.acquire() as conn:
+                res = await conn.fetchval("SELECT 1 FROM trial_users WHERE user_id = $1", user_id)
+        else:
+            res = await db_or_conn.fetchval("SELECT 1 FROM trial_users WHERE user_id = $1", user_id)
+        return not bool(res) # يعيد True إذا لم يستخدم التجربة بعد
     except Exception:
-        print("🚨 ERROR INSIDE has_trial")
-        traceback.print_exc()
-
         return False
+
 
 def format_price(price):
     if price is None:
@@ -4040,32 +4026,29 @@ async def start_cmd(m: types.Message):
 async def set_lang(cb: types.CallbackQuery):
     await cb.answer() 
     lang = cb.data.split("_")[1]
+    uid = cb.from_user.id
 
     try:
-        print(f"🔍 [LOG] المستخدم {cb.from_user.id} ضغط على زر اللغة. جاري تحديث DB...")
+        # استخدام اتصال واحد فقط لجميع العمليات
         async with dp['db_pool'].acquire() as conn:
-            await conn.execute("UPDATE users_info SET lang = $1 WHERE user_id = $2", lang, cb.from_user.id)
-        
-        print(f"🔍 [LOG] جاري التحقق من حالة اشتراك {cb.from_user.id}...")
-        # المشكلة غالباً تضرب هنا في هذه الدالتين
-        is_paid = await is_user_paid(dp['db_pool'], cb.from_user.id)
-        has_tr = await has_trial(dp['db_pool'], cb.from_user.id)
-        
-        print(f"🔍 [LOG] النتيجة: VIP: {is_paid} | Trial: {has_tr}")
-
-        if is_paid:
-            msg = "✅ أهلاً بك مجدداً! اشتراكك مفعل.\nأرسل رمز العملة للتحليل." if lang == "ar" else "✅ Welcome back! Your subscription is active.\nSend a coin symbol to analyze."
-        elif has_tr:
-            msg = "🎁 لديك تجربة مجانية واحدة! أرسل رمز العملة للتحليل." if lang == "ar" else "🎁 You have one free trial! Send a coin symbol for analysis."
-        else:
-            msg = "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك مقابل 10 USDT أو 500 ⭐ شهرياً." if lang == "ar" else "⚠️ Your free trial has ended. For full access, please subscribe."
-        
-        await cb.message.edit_text(msg, reply_markup=None if (is_paid or has_tr) else get_payment_kb(lang))
-        print(f"✅ [LOG] تمت العملية بنجاح للمستخدم {cb.from_user.id}")
+            # تحديث اللغة
+            await conn.execute("UPDATE users_info SET lang = $1 WHERE user_id = $2", lang, uid)
+            
+            # فحص الاشتراك والتجربة باستخدام نفس الـ conn
+            is_paid = await is_user_paid(conn, uid)
+            has_tr = await has_trial(conn, uid)
+            
+            if is_paid:
+                msg = "✅ أهلاً بك مجدداً! اشتراكك مفعل.\nأرسل رمز العملة للتحليل." if lang == "ar" else "✅ Welcome back! Your subscription is active.\nSend a coin symbol to analyze."
+            elif has_tr:
+                msg = "🎁 لديك تجربة مجانية واحدة! أرسل رمز العملة للتحليل." if lang == "ar" else "🎁 You have one free trial! Send a coin symbol for analysis."
+            else:
+                msg = "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك." if lang == "ar" else "⚠️ Your free trial has ended. For full access, please subscribe."
+            
+            await cb.message.edit_text(msg, reply_markup=None if (is_paid or has_tr) else get_payment_kb(lang))
 
     except Exception as e:
-        print(f"🚨 [CRITICAL ERROR] انهيار داخل زر اللغة / الاشتراك للمستخدم {cb.from_user.id}:")
-        traceback.print_exc() # 👈 سيكشف لك اسم المتغير أو دالة الـ DB التي تسببت بالكراش
+        print(f"🚨 Error in set_lang for {uid}: {e}")
  # إنهاء دوران زر اللغة
 async def search_dex_coin(symbol: str, retries: int = 3):
     """تبحث عن العملة وتجلب السيولة وعنوان العقد الحقيقي لفحص الأمان"""
@@ -5255,38 +5238,44 @@ def calculate_institutional_vpvr_confluence(candles_4h, candles_1d, current_pric
 
 @dp.callback_query(F.data.startswith("tf_"))
 async def run_analysis(cb: types.CallbackQuery):
+    # 1. أول خطوة: جاوب الـ Callback عشان الزر يوقف لف عند المستخدم
+    await cb.answer() 
+
     uid, pool = cb.from_user.id, dp['db_pool']
     data = user_session_data.get(uid)
     
     if not data:
-        return await cb.answer("⚠️ انتهت الجلسة، يرجى إرسال الرمز من جديد.", show_alert=True)
+        return await cb.message.answer("⚠️ انتهت الجلسة، يرجى إرسال الرمز من جديد.")
 
     lang = data.get('lang', 'ar')
     sym = data.get('sym')
     price = data.get('price')
-    volume_24h = data.get('volume_24h', 0)
     tf = cb.data.replace("tf_", "")
-    
-    if not (await is_user_paid(pool, uid)) and not (await has_trial(pool, uid)):
-        try:
-            await cb.message.edit_text(
-                "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك." if lang=="ar" else "⚠️ Trial ended. Please subscribe.",
-                reply_markup=get_payment_kb(lang)
-            )
-        except Exception:
-            pass # تجاهل خطأ عدم تعديل الرسالة
-        return await cb.answer("⚠️ انتهى الاشتراك / Subscription Ended", show_alert=True)
 
-    # 🟢 التعديل الجذري هنا: أضف هذا السطر لإيقاف دوران الزر ومنع السبام
-    await cb.answer()
+    # 2. التعديل الجوهري: فتح اتصال واحد (conn) واستخدامه لكل الفحوصات
+    try:
+        async with pool.acquire() as conn:
+            # بنمرر الـ conn للدوال بدل الـ pool عشان ما نفتح مواسير جديدة
+            paid = await is_user_paid(conn, uid)
+            trial = await has_trial(conn, uid)
+            
+            if not paid and not trial:
+                return await cb.message.edit_text(
+                    "⚠️ انتهت تجربتك المجانية. للوصول الكامل، يرجى الاشتراك." if lang=="ar" else "⚠️ Trial ended. Please subscribe.",
+                    reply_markup=get_payment_kb(lang)
+                )
 
+            # 3. إذا المستخدم مسموح له يحلل، بنكمل باقي الكود باستخدام نفس الـ conn إذا لزم الأمر
+            # لكن حالياً سنكمل تحليل العملة
+    except Exception as e:
+        print(f"DB Error in Analysis Check: {e}")
+        return
+
+    # باقي كود التحليل (Analyzing...)
     try:
         await cb.message.edit_text("🤖 جاري التحليل..." if lang=="ar" else "🤖 Analyzing...")
-    except Exception as e:
-        if "message is not modified" in str(e):
-            pass  
-        else:
-            print(f"Edit msg error in analysis: {e}")
+    except Exception:
+        pass
 
 
     clean_sym = sym.replace("USDT", "").strip().upper()
