@@ -196,6 +196,59 @@ def get_payment_kb(lang):
 ON_CHAIN_CACHE = {"usdt_inflow_score": 0.0, "last_updated": 0}
 # الذاكرة الاستباقية للمحرك المؤسساتي (مفصولة تماماً عن الرادار)
 VANGUARD_MEMORY = {}
+from collections import deque
+import json
+import websockets
+
+# ====================================================================
+# 🏦 THE INSTITUTIONAL LOCAL ORDERBOOK (LOB) MEMORY
+# ====================================================================
+# يخزن حالة الأوردر بوك اللحظية والـ OFI التراكمي لآخر 60 ثانية (600 إطار)
+INSTITUTIONAL_LOB = {}
+
+def update_dynamic_ofi(symbol, new_bids, new_asks):
+    """
+    [C-Level Optimized] محرك حساب الـ OFI اللحظي (True Order Flow Imbalance)
+    يعمل بكفاءة خارقة دون استهلاك الـ CPU.
+    """
+    if symbol not in INSTITUTIONAL_LOB:
+        INSTITUTIONAL_LOB[symbol] = {
+            "best_bid": 0.0, "bid_vol": 0.0,
+            "best_ask": float('inf'), "ask_vol": 0.0,
+            "ofi_window": deque(maxlen=600), # نحتفظ بـ 600 لقطة (دقيقة كاملة من ضجيج الخوارزميات)
+            "bid_vols": deque(maxlen=60),    # لحساب التلاعب (Spoofing)
+            "ask_vols": deque(maxlen=60)
+        }
+    
+    mem = INSTITUTIONAL_LOB[symbol]
+    
+    # تحويل القوائم إلى أفضل سعر وحجم إجمالي (أسرع من Numpy للمصفوفات الصغيرة)
+    curr_best_bid = float(new_bids[0][0]) if new_bids else 0.0
+    curr_bid_vol = sum(float(v) for p, v in new_bids)
+    
+    curr_best_ask = float(new_asks[0][0]) if new_asks else float('inf')
+    curr_ask_vol = sum(float(v) for p, v in new_asks)
+    
+    ofi = 0.0
+    
+    # 🧠 معادلة True OFI (تأخذ تغير السعر والحجم في الاعتبار)
+    # BIDS
+    if curr_best_bid > mem["best_bid"]: ofi += curr_bid_vol
+    elif curr_best_bid == mem["best_bid"]: ofi += (curr_bid_vol - mem["bid_vol"])
+    else: ofi -= mem["bid_vol"]
+    
+    # ASKS
+    if curr_best_ask < mem["best_ask"]: ofi -= curr_ask_vol
+    elif curr_best_ask == mem["best_ask"]: ofi -= (curr_ask_vol - mem["ask_vol"])
+    else: ofi += mem["ask_vol"]
+    
+    # تحديث الذاكرة
+    mem["ofi_window"].append(ofi)
+    mem["bid_vols"].append(curr_bid_vol)
+    mem["ask_vols"].append(curr_ask_vol)
+    mem["best_bid"], mem["bid_vol"] = curr_best_bid, curr_bid_vol
+    mem["best_ask"], mem["ask_vol"] = curr_best_ask, curr_ask_vol
+
 async def get_whale_inflow_score():
     """
     قراءة توجه الحيتان الحقيقي من منصة Binance مباشرة.
@@ -4838,66 +4891,88 @@ async def analyze_macro_derivatives_divergence(symbol: str, client: httpx.AsyncC
 
     except Exception as e:
         return None
+async def institutional_lob_worker(pool):
+    """
+    [The Market Maker Matrix] 🕸️
+    يفتح تياراً مجمعاً (Combined Stream) لأهم 300 عملة.
+    يحدث الأوردر بوك المحلي كل 100 ملي ثانية بدون أي API Call.
+    """
+    await asyncio.sleep(30) # انتظر السيرفر حتى يستقر
+    print("🕸️ [LOB Engine] Local Orderbook Shadowing is Online...")
 
-# --- دالة التحليل المعدلة ---
+    while True:
+        try:
+            # 1. جلب العملات النشطة من الرادار (لمراقبتها لحظياً)
+            async with pool.acquire() as conn:
+                records = await conn.fetch("SELECT symbol FROM radar_history ORDER BY last_signaled DESC LIMIT 300")
+                symbols = [r['symbol'].lower() for r in records]
+            
+            # إذا كانت الداتابيز فارغة في البداية، راقب البيتكوين والإيثيريوم
+            if not symbols: symbols = ["btc", "eth"]
+
+            # تجهيز رابط الـ Combined Stream (عمق 10 مستويات يكفي جداً للـ OFI وخفيف على الـ RAM)
+            streams = "/".join([f"{sym}usdt@depth10@100ms" for sym in symbols[:300]])
+            ws_url = f"wss://stream.binance.com:9443/stream?streams={streams}"
+            
+            async with websockets.connect(ws_url, ping_interval=20, ping_timeout=20, max_size=10_000_000) as ws:
+                print(f"✅ [LOB Engine] Connected to {len(symbols)} coins. Absorbing microstructure...")
+                
+                while True:
+                    msg = await ws.recv()
+                    data = json.loads(msg)
+                    
+                    if "data" in data and "stream" in data:
+                        sym = data["stream"].split("@")[0].upper() # استخراج اسم العملة (مثال: BTCUSDT)
+                        payload = data["data"]
+                        
+                        # تحديث الـ OFI والذاكرة بسرعة البرق
+                        if "bids" in payload and "asks" in payload:
+                            update_dynamic_ofi(sym, payload["bids"], payload["asks"])
+                            
+        except Exception as e:
+            print(f"⚠️ [LOB Engine] Stream disconnected. Reconnecting in 5s... Error: {e}")
+            await asyncio.sleep(5)
 async def analyze_orderbook_advanced_manual(symbol: str, client: httpx.AsyncClient, current_price: float, recent_vol_usd: float = 15000.0):
     """
     [Institutional Upgrade] True Order Flow Imbalance (OFI) & Flash Spoofing Detection
-    يستخدم WebSocket لالتقاط 20 إطاراً في ثانيتين (100ms interval) لكشف الخوارزميات، 
-    مع وجود Fallback لـ REST API في حال فشل الاتصال لضمان استقرار البوت.
+    (Zero Latency Memory Read) - تقرأ من ذاكرة الـ LOB اللحظية لـ 60 ثانية بدلاً من الانتظار.
     """
-    clean_symbol = symbol.replace("USDT", "").lower() + "usdt"
-    ws_url = f"wss://stream.binance.com:9443/ws/{clean_symbol}@depth10@100ms"
-
-    frames = []
-    try:
-        # فتح اتصال سريع لالتقاط التلاعب اللحظي (Microseconds manipulation)
-        async with websockets.connect(ws_url, ping_interval=None, close_timeout=1) as ws:
-            start_time = time.time()
-            while time.time() - start_time < 2.0: # ثانيتين تكفي لاستخراج الـ OFI
-                try:
-                    msg = await asyncio.wait_for(ws.recv(), timeout=0.5)
-                    data = json.loads(msg)
-                    if data.get('bids') and data.get('asks'):
-                        frames.append(data)
-                except asyncio.TimeoutError:
-                    continue
-    except Exception as e:
-        # Fallback أمني: إذا فشل الـ WS (بسبب ليمت أو جدار حماية)، نعود للنسخة الأصلية
-        return await analyze_orderbook_spoofing_instant(symbol, client, current_price)
-
-    # إذا لم نجمع بيانات كافية، نلجأ للطريقة الآمنة
-    if len(frames) < 5:
-        return await analyze_orderbook_spoofing_instant(symbol, client, current_price)
-
-    # --- 🧠 Advanced OFI Engine ---
-    ofi_scores = []
-    bid_vols = []
-    ask_vols = []
-
-    for i in range(1, len(frames)):
-        prev_bids = {float(p): float(v) for p, v in frames[i-1].get('bids', [])}
-        curr_bids = {float(p): float(v) for p, v in frames[i].get('bids', [])}
-        prev_asks = {float(p): float(v) for p, v in frames[i-1].get('asks', [])}
-        curr_asks = {float(p): float(v) for p, v in frames[i].get('asks', [])}
-
-        # Delta Calculation: من يضخ سيولة ومن يسحبها؟
-        bid_vol_change = sum(curr_bids.values()) - sum(prev_bids.values())
-        ask_vol_change = sum(curr_asks.values()) - sum(prev_asks.values())
-
-        ofi_scores.append(bid_vol_change - ask_vol_change)
-        bid_vols.append(sum(curr_bids.values()))
-        ask_vols.append(sum(curr_asks.values()))
-
-    # معامل الاختلاف (Coefficient of Variation) لكشف الـ Flash Spoofing
-    bid_cv = np.std(bid_vols) / (np.mean(bid_vols) + 1e-8)
-    ask_cv = np.std(ask_vols) / (np.mean(ask_vols) + 1e-8)
-
-    # شروط التلاعب المؤسساتي (الجدران تظهر وتختفي بتذبذب عالي)    # شروط التلاعب المؤسساتي (الجدران تظهر وتختفي بتذبذب عالي)    # 🧠 شروط التلاعب المؤسساتي (Algorithmic Spoofing & Replenishment)
-    is_spoofed = (bid_cv > 0.6 or ask_cv > 0.6)
+    import numpy as np # لضمان عدم وجود أخطاء في الـ Math
     
+    # تجهيز مفتاح الذاكرة ليطابق ما يتم تخزينه في INSTITUTIONAL_LOB (مثال: BTCUSDT)
+    mem_key = symbol.replace("USDT", "").upper() + "USDT"
+
+    # ====================================================================
+    # 🛡️ نظام الحماية (Fallback Security)
+    # إذا كانت العملة جديدة جداً ولم يجمع لها الـ Worker بيانات تكفي (أقل من 10 لقطات)
+    # أو كانت عملة DEX، نعود فوراً لدالتك الاحتياطية لضمان عدم توقف البوت.
+    # ====================================================================
+    if mem_key not in INSTITUTIONAL_LOB or len(INSTITUTIONAL_LOB[mem_key]["ofi_window"]) < 10:
+        return await analyze_orderbook_spoofing_instant(symbol, client, current_price)
+
+    # ====================================================================
+    # ⚡ سحب البيانات من الذاكرة اللحظية (Microsecond Extraction)
+    # ====================================================================
+    mem = INSTITUTIONAL_LOB[mem_key]
+    
+    # تحويل قوائم الـ Deque إلى List لتسهيل العمليات الحسابية
+    ofi_scores = list(mem["ofi_window"])
+    bid_vols = list(mem["bid_vols"])
+    ask_vols = list(mem["ask_vols"])
+    
+    mean_bid_vol = np.mean(bid_vols)
+    mean_ask_vol = np.mean(ask_vols)
+    avg_ofi = np.mean(ofi_scores)
+
+    # ====================================================================
+    # 🧠 1. محرك التلاعب وإعادة التعبئة (Spoofing & Iceberg Replenishment)
+    # ====================================================================
+    # معامل الاختلاف (Coefficient of Variation) لكشف الـ Flash Spoofing
+    bid_cv = np.std(bid_vols) / (mean_bid_vol + 1e-8)
+    ask_cv = np.std(ask_vols) / (mean_ask_vol + 1e-8)
+
     # محرك إعادة التعبئة (Iceberg Replenishment Rate):
-    # إذا تم سحب/تنفيذ أكثر من 10% من سيولة البيع (Asks)، وعادت للارتفاع في الإطار التالي (خلال 100 ملي ثانية) فهذا جدار مخفي
+    # نختبر ما إذا كانت السيولة تُسحب ثم تتجدد فجأة في غضون أجزاء من الثانية
     is_ask_replenished = False
     is_bid_replenished = False
     for i in range(1, len(ask_vols)-1):
@@ -4906,56 +4981,48 @@ async def analyze_orderbook_advanced_manual(symbol: str, client: httpx.AsyncClie
         if bid_vols[i] < bid_vols[i-1] * 0.9 and bid_vols[i+1] > bid_vols[i] * 1.05:
             is_bid_replenished = True
 
-    # دمج Spoofing مع Replenishment
-    is_spoofed = is_spoofed or is_ask_replenished or is_bid_replenished
-  
+    # القرار: هل يوجد تلاعب خوارزمي؟
+    is_spoofed = bool((bid_cv > 0.6 or ask_cv > 0.6) or is_ask_replenished or is_bid_replenished)
+
     # ====================================================================
-    # 🧠 محرك "هشاشة السيولة" (Orderbook Slippage Vulnerability - OSV)
-    # نختبر قدرة الأوردر بوك على تحمل ضربة "ماركت" بناءً على السيولة الفعلية للعملة
+    # 🧠 2. محرك "هشاشة السيولة" (Orderbook Slippage Vulnerability - OSV)
     # ====================================================================
-    mean_bid_vol_usd = np.mean(bid_vols) * current_price
+    mean_bid_vol_usd = mean_bid_vol * current_price
     
-    # 1. اختبار الصدمة (Shock Absorption Test):
-    # هل أعلى 10 مستويات في الأوردر بوك قادرة على تحمل 2% فقط من الفوليوم المعتاد للعملة؟
-    # إذا كانت السيولة الداعمة أقل من 2% من سيولة الشمعة العادية، فالجدار من ورق.
+    # أ. اختبار الصدمة (Shock Absorption Test):
     is_fragile_vs_volume = mean_bid_vol_usd < (recent_vol_usd * 0.02)
 
-    # 2. اختبار تشتت السيولة (Density & Spread Test):
-    try:
-        best_bid = float(frames[-1]['bids'][0][0])
-        worst_bid = float(frames[-1]['bids'][-1][0])
-        spread_depth_pct = (best_bid - worst_bid) / best_bid
-    except:
-        spread_depth_pct = 0.001 
-        
-    # إذا كانت المسافة بين أفضل طلب (Level 1) وعاشر طلب (Level 10) واسعة جداً (أكثر من 0.3%) 
-    # والسيولة داخل هذا النطاق أقل من 5% من حجم التداول، فهذا أوردر بوك "مثقوب" (Swiss Cheese).
-    is_hollow_spread = spread_depth_pct > 0.003 and mean_bid_vol_usd < (recent_vol_usd * 0.05)
+    # ب. اختبار تشتت السيولة (Spread Risk):
+    best_bid = mem["best_bid"]
+    best_ask = mem["best_ask"]
+    spread_pct = (best_ask - best_bid) / (best_bid + 1e-8)
+    
+    # الجدار وهمي ومثقوب إذا كان السبريد واسعاً والسيولة أقل من 5% من الفوليوم المعتاد
+    is_hollow_spread = spread_pct > 0.002 and mean_bid_vol_usd < (recent_vol_usd * 0.05)
 
-    # القرار الحاسم: الجدار وهمي (Hollow) إذا فشل في تحمل الصدمة أو كان مثقوباً ومشتتاً
+    # القرار: هل الأوردر بوك فارغ وسينزلق؟
     is_hollow = bool(is_fragile_vs_volume or is_hollow_spread)
-    # ====================================================================
-    
-    avg_ofi = np.mean(ofi_scores)
-    total_vol_mean = np.mean(bid_vols) + np.mean(ask_vols) + 1e-8
 
-    
+    # ====================================================================
+    # 🧠 3. محرك الاتجاه اللحظي (OFI & Skewness Regime)
+    # ====================================================================
     # تطبيع الخلل ليكون قيمة بين -1 و 1
+    total_vol_mean = mean_bid_vol + mean_ask_vol + 1e-8
     imbalance = avg_ofi / total_vol_mean
 
-    # 🧠 نظام انحراف الأوردر بوك (Orderbook Skewness Regime):
-    # حساب الضغط الحقيقي لأقرب 1% (النسبة بين متوسط الطلبات الحية والعروض)
-    bid_pressure = float(np.mean(bid_vols) / (np.mean(ask_vols) + 1e-8))
+    # ضغط الأوردر بوك الحقيقي (النسبة بين متوسط الطلبات الحية والعروض)
+    bid_pressure = float(mean_bid_vol / (mean_ask_vol + 1e-8))
     
     # النظام الصاعد يتطلب أن تكون الطلبات أثقل بـ 1.5 مرة من العروض
     is_bull_regime = bid_pressure > 1.5
 
+    # إرجاع نفس هيكل البيانات القديم بالضبط لكي لا ينكسر الرادار
     return {
-        "is_hollow": bool(is_hollow),
+        "is_hollow": is_hollow,
         "imbalance": round(float(max(-1.0, min(1.0, imbalance))), 2),
-        "is_spoofed": bool(is_spoofed),
+        "is_spoofed": is_spoofed,
         "bid_pressure_ratio": bid_pressure,
-        "is_bull_regime": is_bull_regime  # إضافة للإشارات الداخلية دون تدمير قاموس ML
+        "is_bull_regime": is_bull_regime
     }
 
 
@@ -6081,6 +6148,7 @@ async def on_startup(app):
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
 
     asyncio.create_task(smart_radar_watchdog(pool))
+    asyncio.create_task(institutional_lob_worker(pool))
     asyncio.create_task(silent_data_harvester_worker(pool))
     asyncio.create_task(macro_data_worker()) # 🌍 تشغيل عامل الماكرو
     asyncio.create_task(radar_worker_process(pool))
