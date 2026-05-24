@@ -1929,7 +1929,18 @@ async def silent_data_harvester_worker(pool):
                                 
                                 tech_ar = f"ADX: {adx:.1f} | RSI: {rsi:.1f}"
 
+                                # 🧲 حساب النطاقات من الأصغر للأكبر
+                                xgb_opt_entry = price * (1 - (xgb_drop / 100))
+                                deep_opt_entry = price * (1 - (deep_drop / 100))
+                                
+                                min_entry = min(xgb_opt_entry, deep_opt_entry)
+                                max_entry = max(xgb_opt_entry, deep_opt_entry)
+                                min_time = min(xgb_time, deep_time)
+                                max_time = max(xgb_time, deep_time)
+
                                 insight_ar = (
+                                    f"🧲 <b>نطاق الشراء:</b> <code>{format_price(min_entry)}$</code> - <code>{format_price(max_entry)}$</code>\n"
+                                    f"⏱️ <b>الزمن المقدر للصعود:</b> <code>{min_time:.1f}h</code> - <code>{max_time:.1f}h</code>\n"
                                     f"• <b>السيولة:</b> {vol_ar}\n"
                                     f"• <b>التدفق:</b> {cvd_ar} {ob_ar}\n"
                                     f"• <b>المشتقات:</b> {fund_ar}\n"
@@ -1950,11 +1961,14 @@ async def silent_data_harvester_worker(pool):
                                 tech_en = f"ADX: {adx:.1f} | RSI: {rsi:.1f}"
 
                                 insight_en = (
+                                    f"🧲 <b>Buying Range:</b> <code>${format_price(min_entry)}</code> - <code>${format_price(max_entry)}</code>\n"
+                                    f"⏱️ <b>Estimated Surge Time:</b> <code>{min_time:.1f}h</code> - <code>{max_time:.1f}h</code>\n"
                                     f"• <b>Liquidity:</b> {vol_en}\n"
                                     f"• <b>Orderflow:</b> {cvd_en} {ob_en}\n"
                                     f"• <b>Derivatives:</b> {fund_en}\n"
                                     f"• <b>Structure:</b> {tech_en}"
                                 )
+
 
                                 # ====================================================================
                                 # 🚨 صدمة العرض المؤسساتية (للأدمن فقط - لا تحفظ في إشارة المستخدمين)
@@ -3061,7 +3075,6 @@ async def analyze_radar_coin(c, client, market_regime, sem):
 
                 # نمرر كلا الحالتين لطباعتهما
                 ai_status = f"{xgb_status}\n🤖 {deep_status}"
-
                 # 🛡️ إجبار البوت على استخدام سكور الرادار الكلاسيكي فقط دون أي تغيير
                 final_score = score 
                 
@@ -3075,10 +3088,13 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     "confluence": confluence_count,
                     "ml_features": ml_features, 
                     "ai_status": ai_status,
-                    "cvd_usd": float(current_cvd) # 👈 القيمة الدولارية الحقيقية جاهزة للطباعة بالرسالة
+                    "cvd_usd": float(current_cvd),
+                    # 🟢 تمرير النطاقات الزمنية والسعرية للرادار
+                    "xgb_drop": xgb_drop, "xgb_time": xgb_time,
+                    "deep_drop": deep_drop, "deep_time": deep_time
                 }
-            return None
-  
+            return None  
+
   
         except Exception as e:
             print(f"Error in analyze_radar_coin: {e}")
@@ -3591,25 +3607,37 @@ async def ai_opportunity_radar(pool):
                 confluence = int(best_meta.get('confluence', 0))
                 adx = float(best_meta.get('adx', 0.0))
                 rsi = float(best_meta.get('rsi', 0.0))
-
                 # ==========================================
                 # 🇸🇦 بناء التحليل الكمي باللغة العربية
                 # ==========================================
-                vol_ar = f"شذوذ فوليوم مؤسساتي (Z-Score: {z_val:.2f}) مع ضخ سيولة حاد ({vol_ratio:.2f}x)." if z_val > 2 else f"انضغاط سيولة صامت (Z-Score: {z_val:.2f})."
+                # 🧲 استخراج وترتيب النطاقات من الأصغر للأكبر
+                xgb_drop = float(best_meta.get('xgb_drop', 0.0))
+                xgb_time = float(best_meta.get('xgb_time', 0.0))
+                deep_drop = float(best_meta.get('deep_drop', 0.0))
+                deep_time = float(best_meta.get('deep_time', 0.0))
+
+                xgb_opt_entry = price * (1 - (xgb_drop / 100))
+                deep_opt_entry = price * (1 - (deep_drop / 100))
+
+                min_entry = min(xgb_opt_entry, deep_opt_entry)
+                max_entry = max(xgb_opt_entry, deep_opt_entry)
                 
+                min_time = min(xgb_time, deep_time)
+                max_time = max(xgb_time, deep_time)
+
+                vol_ar = f"شذوذ فوليوم مؤسساتي (Z-Score: {z_val:.2f}) مع ضخ سيولة حاد ({vol_ratio:.2f}x)." if z_val > 2 else f"انضغاط سيولة صامت (Z-Score: {z_val:.2f})."
                 cvd_ar = f"امتصاص شرائي خفي (CVD: +${cvd_val:,.0f})" if cvd_val > 0 else f"ضغط بيعي وتصريف (CVD: ${cvd_val:,.0f})"
                 ob_ar = f"مع تكدس طلبات هجومي (OB: {ob_val:.2f}x)." if ob_val > 1 else f"مع سيطرة وتكدس لعروض البيع (OB: {ob_val:.2f}x)."
                 
-                if funding < -0.0005:
-                    fund_ar = "تمركز بيعي قوي مع احتمالية لتصفية البائعين (Short Squeeze)."
-                elif funding > 0.0005:
-                    fund_ar = "طمع شرائي ومعدل تمويل إيجابي ينذر بخطر تصفية المشترين (Long Squeeze)."
-                else:
-                    fund_ar = "استقرار وتوازن في معدلات تمويل عقود المشتقات."
+                if funding < -0.0005: fund_ar = "تمركز بيعي قوي مع احتمالية لتصفية البائعين (Short Squeeze)."
+                elif funding > 0.0005: fund_ar = "طمع شرائي ومعدل تمويل إيجابي ينذر بخطر تصفية المشترين (Long Squeeze)."
+                else: fund_ar = "استقرار وتوازن في معدلات تمويل عقود المشتقات."
                 
                 tech_ar = f"إجماع فني ({confluence}/6) | ADX: {adx:.1f} | RSI: {rsi:.1f}"
 
                 insight_ar = (
+                    f"🧲 <b>نطاق الشراء:</b> <code>{format_price(min_entry)}$</code> - <code>{format_price(max_entry)}$</code>\n"
+                    f"⏱️ <b>الزمن المقدر للصعود:</b> <code>{min_time:.1f}h</code> - <code>{max_time:.1f}h</code>\n"
                     f"• <b>السيولة:</b> {vol_ar}\n"
                     f"• <b>التدفق:</b> {cvd_ar} {ob_ar}\n"
                     f"• <b>المشتقات:</b> {fund_ar}\n"
@@ -3619,21 +3647,19 @@ async def ai_opportunity_radar(pool):
                 # ==========================================
                 # 🇺🇸 بناء التحليل الكمي باللغة الإنجليزية
                 # ==========================================
-                vol_en = f"Institutional volume anomaly (Z-Score: {z_val:.2f}) with aggressive inflow ({vol_ratio:.2f}x)." if z_val > 2 else f"Silent liquidity compression (Z-Score: {z_val:.2f})."
-                
+                vol_en = f"Institutional anomaly (Z-Score: {z_val:.2f}) with aggressive inflow ({vol_ratio:.2f}x)." if z_val > 2 else f"Silent liquidity compression (Z-Score: {z_val:.2f})."
                 cvd_en = f"Hidden buy absorption (CVD: +${cvd_val:,.0f})" if cvd_val > 0 else f"Selling pressure & distribution (CVD: ${cvd_val:,.0f})"
                 ob_en = f"with aggressive bid stacking (OB: {ob_val:.2f}x)." if ob_val > 1 else f"with heavy ask supply dominance (OB: {ob_val:.2f}x)."
                 
-                if funding < -0.0005:
-                    fund_en = "Heavy short positioning with high (Short Squeeze) probability."
-                elif funding > 0.0005:
-                    fund_en = "Overleveraged longs with high (Long Squeeze/Correction) risk."
-                else:
-                    fund_en = "Stable futures open interest and neutral funding rates."
+                if funding < -0.0005: fund_en = "Heavy short positioning with high (Short Squeeze) probability."
+                elif funding > 0.0005: fund_en = "Overleveraged longs with high (Long Squeeze/Correction) risk."
+                else: fund_en = "Stable futures open interest and neutral funding rates."
                 
                 tech_en = f"Technical confluence ({confluence}/6) | ADX: {adx:.1f} | RSI: {rsi:.1f}"
 
                 insight_en = (
+                    f"🧲 <b>Buying Range:</b> <code>${format_price(min_entry)}</code> - <code>${format_price(max_entry)}</code>\n"
+                    f"⏱️ <b>Estimated Surge Time:</b> <code>{min_time:.1f}h</code> - <code>{max_time:.1f}h</code>\n"
                     f"• <b>Liquidity:</b> {vol_en}\n"
                     f"• <b>Orderflow:</b> {cvd_en} {ob_en}\n"
                     f"• <b>Derivatives:</b> {fund_en}\n"
