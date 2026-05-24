@@ -276,8 +276,10 @@ async def get_whale_inflow_score():
 
     return 5.0
 import xgboost as xgb
+from sklearn.multioutput import MultiOutputRegressor
 import pandas as pd
 import numpy as np
+import math
 
 # تخزين النموذج في الذاكرة الحية
 AI_QUANT_MODEL = None
@@ -285,8 +287,7 @@ MIN_TRAINING_SAMPLES = 100 # أقل عدد صفقات مطلوب لتدريب ا
 
 def train_xgboost_sync(records):
     """
-    [Institutional Level] تدريب النموذج على التنبؤ بـ (Trade Quality Score)
-    بدلاً من مجرد 0 أو 1، ليعرف البوت "مدى جودة" الإشارة.
+    [Institutional Level] تدريب النموذج ليتوقع 3 أهداف: جودة الصفقة، نسبة الانعكاس للدخول، ووقت الانفجار.
     """
     global AI_QUANT_MODEL
     df = pd.DataFrame(records)
@@ -294,7 +295,25 @@ def train_xgboost_sync(records):
     # 1. تنظيف البيانات من القيم المفقودة
     df = df.dropna(subset=['trade_quality_score'])
     
-    # 2. تحديد المدخلات المؤسساتية (15 بُعداً)    # 2. تحديد المدخلات المؤسساتية (أصبحت 17 بُعداً الآن)
+    # 🛡️ حماية: التأكد من وجود أعمدة الانعكاس، ووضع صفر في حال كانت فارغة
+    if 'max_adverse_excursion' in df.columns:
+        df['max_adverse_excursion'] = df['max_adverse_excursion'].fillna(0.0)
+    else:
+        df['max_adverse_excursion'] = 0.0
+
+    # ⏱️ هندسة الوقت لـ XGBoost من الصفقات التاريخية
+    def derive_time(row):
+        mfe = row.get('max_favorable_excursion', 0)
+        if pd.isna(mfe) or mfe <= 0: return 336.0 # صفقة خاسرة = 14 يوماً
+        thresh = mfe * 0.5
+        for col, t in zip(['ret_1h', 'ret_4h', 'ret_24h', 'ret_3d', 'ret_7d'], [1.0, 4.0, 24.0, 72.0, 168.0]):
+            val = row.get(col, 0)
+            if not pd.isna(val) and val >= thresh: return t
+        return 336.0
+        
+    df['time_to_surge'] = df.apply(derive_time, axis=1)
+
+    # 2. تحديد المدخلات المؤسساتية (أصبحت 17 بُعداً الآن)
     X = df[['market_regime', 'sp500_trend_pct', 'sentiment_score', 
             'vol_z_score', 'cvd_to_vol_ratio', 'imbalance_ratio', 
             'ob_skewness', 'whale_dominance_pct', 'adx', 'rsi', 
@@ -302,22 +321,24 @@ def train_xgboost_sync(records):
             'weekly_liquidity_void', 'macro_z_score_30d', 
             'htf_whale_accumulation', 'days_since_last_expansion']]
 
-    # 3. الهدف هو التنبؤ بجودة الصفقة (Regression)
-    y = df['trade_quality_score']
+    # 3. الأهداف الثلاثة (Multi-Target Regression)
+    Y = df[['trade_quality_score', 'max_adverse_excursion', 'time_to_surge']]
     
-    import xgboost as xgb
     # إعدادات متقدمة جداً لمنع الـ Overfitting (حفظ البيانات بدلاً من فهمها)
-    model = xgb.XGBRegressor(
+    base_model = xgb.XGBRegressor(
         n_estimators=400,
         max_depth=5,
         learning_rate=0.03,
         subsample=0.8,
         colsample_bytree=0.8,
-        objective='reg:squarederror' # التنبؤ برقم مستمر من -1 إلى 1
+        objective='reg:squarederror' 
     )
     
-    model.fit(X, y)
-    AI_QUANT_MODEL = model
+    # تغليف النموذج ليدعم المخرجات الثلاثة معاً
+    multi_model = MultiOutputRegressor(base_model)
+    multi_model.fit(X, Y)
+    
+    AI_QUANT_MODEL = multi_model
     return True
 
 async def ai_trainer_worker(pool):
@@ -326,7 +347,7 @@ async def ai_trainer_worker(pool):
     while True:
         try:
             async with pool.acquire() as conn:
-                # 🟢 التعديل الجراحي: إضافة متغيرات الماكرو الـ 4 الجديدة للاستعلام
+                # 🟢 التعديل الجراحي الأهم: جلب أعمدة العوائد والانعكاس من الداتابيز لكي لا يحدث خطأ (KeyError)
                 records = await conn.fetch("""
                     SELECT market_regime, sp500_trend_pct, sentiment_score, 
                            vol_z_score, cvd_to_vol_ratio, imbalance_ratio, 
@@ -334,7 +355,9 @@ async def ai_trainer_worker(pool):
                            micro_volatility_pct, cvd_divergence, funding_rate,
                            weekly_liquidity_void, macro_z_score_30d, 
                            htf_whale_accumulation, days_since_last_expansion,
-                           trade_quality_score
+                           trade_quality_score,
+                           max_adverse_excursion, max_favorable_excursion,
+                           ret_1h, ret_4h, ret_24h, ret_3d, ret_7d
                     FROM ml_training_data 
                     WHERE is_processed = 1
                 """)
@@ -343,7 +366,7 @@ async def ai_trainer_worker(pool):
                     print(f"🧠 [AI Trainer] Mass training on {len(records)} samples...")
                     records_dict = [dict(r) for r in records]
                     await asyncio.to_thread(train_xgboost_sync, records_dict)
-                    print("✅ [AI Trainer] Engine Optimized to Hedge Fund Level.")
+                    print("✅ [AI Trainer] Engine Optimized to Hedge Fund Level (Multi-Target).")
                 else:
                     print(f"⏳ [AI Trainer] Collecting data... ({len(records)}/100)")
                     
@@ -351,10 +374,10 @@ async def ai_trainer_worker(pool):
             print(f"⚠️ AI Trainer Error: {e}")
         await asyncio.sleep(43200) # 12 ساعة
 
-def predict_signal_sync(features: dict) -> float:
-    """يتوقع جودة الصفقة بناءً على النموذج المدرب"""
+def predict_signal_sync(features: dict):
+    """يتوقع 3 قيم: جودة الصفقة، نسبة الهبوط لأفضل دخول، ووقت الانفجار المتوقع"""
     if AI_QUANT_MODEL is None:
-        return -1.0 
+        return -1.0, 0.0, 0.0 
         
     input_data = pd.DataFrame([{
         'market_regime': int(features.get('market_regime', 0)),
@@ -377,13 +400,17 @@ def predict_signal_sync(features: dict) -> float:
         'days_since_last_expansion': float(features.get('days_since_last_expansion', 0.0))
     }])
 
-
-    # التنبؤ بسكور الجودة المتوقع
-    predicted_quality = AI_QUANT_MODEL.predict(input_data)[0]
+    # 🎯 استخراج الأهداف الثلاثة
+    prediction = AI_QUANT_MODEL.predict(input_data)[0]
     
+    predicted_quality = float(prediction[0])
     # تحويل السكور (من -1 إلى 1) إلى نسبة مئوية (0% إلى 100%) لسهولة القراءة
-    confidence_pct = ((predicted_quality + 1) / 2) * 100
-    return float(confidence_pct)
+    confidence_pct = round(((predicted_quality + 1) / 2) * 100, 1)
+    
+    entry_drop_pct = float(prediction[1])
+    time_to_surge_hours = float(prediction[2])
+    
+    return float(confidence_pct), entry_drop_pct, time_to_surge_hours
 
 # --- دوال الرادار المساعدة (ضعها فوق دالة الرادار) ---
 async def get_recent_orderflow_delta(symbol, client, limit=500):
@@ -1852,15 +1879,16 @@ async def silent_data_harvester_worker(pool):
                         # ==========================================
                         # 🎯 The Apex Trigger: فحص تقييم الذكاء الاصطناعي
                         # ==========================================
-                        ai_confidence = await asyncio.to_thread(predict_signal_sync, ml_features)
+                        ai_confidence, xgb_drop, xgb_time = await asyncio.to_thread(predict_signal_sync, ml_features)
                         ai_confidence = round(ai_confidence, 1) # 👈 هذا السطر سيجبر السكور على أن يكون برقم عشري واحد فقط (مثال: 84.2)
 
                         # 🧠 إضافة: تقييم الذكاء العميق (MoE)
-                        ai_confidence_deep = await asyncio.to_thread(predict_deep_moe, ml_features)
+                        ai_confidence_deep, deep_drop, deep_time = await asyncio.to_thread(predict_deep_moe, ml_features)
                         ai_confidence_deep = round(ai_confidence_deep, 1) if ai_confidence_deep != -1.0 else -1.0
 
                         # 🛑 الشرط الصارم: يجب أن يكون كلا النموذجين 75% فما فوق
                         if ai_confidence >= 75.0 and ai_confidence_deep >= 75.0:
+
                             # التحقق مما إذا تم إرسال هذه العملة مؤخراً لتجنب الإزعاج
                             async with pool.acquire() as conn:
                                 is_signaled = await conn.fetchval("""
@@ -1962,16 +1990,24 @@ async def silent_data_harvester_worker(pool):
                                 ])
 
                                 # 🎯 حقن رسالة الحوت هنا فقط، لكي تظهر في شاشة الأدمن ولا تصل للمستخدم
+                               xgb_opt_entry = price * (1 - (xgb_drop / 100))
+                                deep_opt_entry = price * (1 - (deep_drop / 100))
+
+                                # 🎯 حقن رسالة الحوت هنا فقط، لكي تظهر في شاشة الأدمن ولا تصل للمستخدم
                                 admin_text = (
                                     f"🦅 <b>تنبيه طوارئ: قناص الذكاء الاصطناعي (Apex) التقط جوهرة!</b>\n"
                                     f"🏆 <b>العملة:</b> #{sym}\n"
-                                    f"💵 السعر: ${format_price(price)}\n"
+                                    f"💵 السعر الحالي: ${format_price(price)}\n"
                                     f"⚡ نوع التجميع: {signal_type}\n"
-                                    f"🤖 <b>التقييم:</b> XGB: <b>{ai_confidence:.1f}%</b> | العميق (MoE): <b>{ai_confidence_deep:.1f}%</b> 🧠\n\n"
-                                    f"{supply_shock_msg_ar}"  # <--- ستظهر لك هنا فقط إذا تجاوز الحوت 5%
+                                    f"🤖 <b>الذكاء الكلاسيكي (XGB):</b>\n"
+                                    f"📊 جودة: <b>{ai_confidence:.1f}%</b> | ⏱️ الانفجار: {xgb_time:.1f} ساعة | 🧲 أفضل دخول: ${format_price(xgb_opt_entry)}\n"
+                                    f"🧠 <b>الذكاء العميق (MoE):</b>\n"
+                                    f"📊 جودة: <b>{ai_confidence_deep:.1f}%</b> | ⏱️ الانفجار: {deep_time:.1f} ساعة | 🧲 أفضل دخول: ${format_price(deep_opt_entry)}\n\n"
+                                    f"{supply_shock_msg_ar}"  
                                     f"📝 <b>التحليل:</b>\n{insight_ar}\n\n"
                                     f"هل تريد الموافقة على نشرها؟"
                                 )
+
 
                                 await bot.send_message(ADMIN_USER_ID, admin_text, reply_markup=admin_kb, parse_mode=ParseMode.HTML)
                                 print(f"🎯 [Apex Sniper] {sym} fired with AI score {ai_confidence:.1f}%!")
@@ -2362,17 +2398,17 @@ def load_deep_experts():
 
 load_deep_experts()
 
-def predict_deep_moe(features: dict) -> float:
-    if not DEEP_EXPERTS: return -1.0 # لا يوجد ملفات، إذن المودل نائم
+def predict_deep_moe(features: dict):
+    if not DEEP_EXPERTS: return -1.0, 0.0, 0.0 # لا يوجد ملفات، إذن المودل نائم
     
     try:
         regime = int(features.get('market_regime', 0))
         expert_id = regime if regime in DEEP_EXPERTS else 3 
-        if expert_id not in DEEP_EXPERTS: return -1.0
+        if expert_id not in DEEP_EXPERTS: return -1.0, 0.0, 0.0
 
         expert_model = DEEP_EXPERTS[expert_id]
         
-        # تجهيز البيانات        # تجهيز البيانات (16 متغيراً مطابقاً تماماً لما تدرب عليه النموذج)
+        # تجهيز البيانات (16 متغيراً مطابقاً تماماً لما تدرب عليه النموذج)
         input_vector = np.array([[
             float(features.get('sp500_trend', 0.0)), float(features.get('sentiment_score', 50.0)),
             float(features.get('z_score', 0.0)), float(features.get('cvd_to_vol_ratio', 0.0)),
@@ -2387,15 +2423,27 @@ def predict_deep_moe(features: dict) -> float:
             float(features.get('days_since_last_expansion', 0.0))
         ]], dtype=np.float32)
 
-
         input_name = expert_model.get_inputs()[0].name
         output_name = expert_model.get_outputs()[0].name
         
         prediction = expert_model.run([output_name], {input_name: input_vector})[0]
-        raw_score = float(prediction[0][0]) if prediction.ndim > 1 else float(prediction[0])
-        return round(max(0.0, min(100.0, ((raw_score + 1.0) / 2.0) * 100.0)), 1)
+        
+        # 🧠 التعديل هنا فقط: استخراج الرؤوس الثلاثة مع الحفاظ على حماية الأبعاد (ndim) الأصلية الخاصة بك
+        if prediction.ndim > 1:
+            raw_score = float(prediction[0][0])
+            entry_drop_pct = float(prediction[0][1])
+            time_to_surge_hours = float(prediction[0][2])
+        else:
+            raw_score = float(prediction[0])
+            entry_drop_pct = float(prediction[1])
+            time_to_surge_hours = float(prediction[2])
+            
+        quality_score = round(max(0.0, min(100.0, ((raw_score + 1.0) / 2.0) * 100.0)), 1)
+        
+        return quality_score, entry_drop_pct, time_to_surge_hours
     except:
-        return -1.0
+        return -1.0, 0.0, 0.0
+
 import os
 import asyncio
 import onnxruntime as ort
@@ -2990,23 +3038,24 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     'htf_whale_accumulation': float(htf_accum),
                     'days_since_last_expansion': float(days_exp)
                 }
-
                 # 1. الذكاء الكلاسيكي (XGBoost) - يعمل كما كان تماماً
-                ai_confidence = await asyncio.to_thread(predict_signal_sync, ml_features)
+                ai_confidence, xgb_drop, xgb_time = await asyncio.to_thread(predict_signal_sync, ml_features)
 
                 # 2. الذكاء العميق (MoE) - يعمل بجانبه دون تداخل
-                ai_confidence_deep = await asyncio.to_thread(predict_deep_moe, ml_features)
+                ai_confidence_deep, deep_drop, deep_time = await asyncio.to_thread(predict_deep_moe, ml_features)
 
                 # صياغة النتائج للأدمن
                 if ai_confidence != -1.0:
-                    xgb_status = f"الكلاسيكي (XGB): {ai_confidence:.1f}%"
+                    xgb_opt_entry = price * (1 - (xgb_drop / 100))
+                    xgb_status = f"الكلاسيكي (XGB): {ai_confidence:.1f}% | ⏱️ الانفجار: {xgb_time:.1f}h | 🧲 دخول: ${format_price(xgb_opt_entry)}"
                 else:
                     xgb_status = "الكلاسيكي (XGB): قيد التدريب ⏳"
 
                 if ai_confidence_deep != -1.0:
+                    deep_opt_entry = price * (1 - (deep_drop / 100))
                     regime_names = {1: "Bull 🐂", 2: "Bear 🐻", 3: "Chop ⚖️"}
                     active_expert = regime_names.get(ml_features.get('market_regime', 0), "Unknown")
-                    deep_status = f"العميق (MoE): {ai_confidence_deep:.1f}% | خبير: {active_expert}"
+                    deep_status = f"العميق (MoE): {ai_confidence_deep:.1f}% | خبير: {active_expert} | ⏱️ {deep_time:.1f}h | 🧲 دخول: ${format_price(deep_opt_entry)}"
                 else:
                     deep_status = "العميق (MoE): لم يتم رفع النماذج بعد 📥"
 
@@ -3028,7 +3077,8 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     "ai_status": ai_status,
                     "cvd_usd": float(current_cvd) # 👈 القيمة الدولارية الحقيقية جاهزة للطباعة بالرسالة
                 }
-            return None  
+            return None
+  
   
         except Exception as e:
             print(f"Error in analyze_radar_coin: {e}")
