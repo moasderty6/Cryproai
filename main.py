@@ -1990,7 +1990,7 @@ async def silent_data_harvester_worker(pool):
                                 ])
 
                                 # 🎯 حقن رسالة الحوت هنا فقط، لكي تظهر في شاشة الأدمن ولا تصل للمستخدم
-                               xgb_opt_entry = price * (1 - (xgb_drop / 100))
+                                xgb_opt_entry = price * (1 - (xgb_drop / 100))
                                 deep_opt_entry = price * (1 - (deep_drop / 100))
 
                                 # 🎯 حقن رسالة الحوت هنا فقط، لكي تظهر في شاشة الأدمن ولا تصل للمستخدم
