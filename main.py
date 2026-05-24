@@ -5758,7 +5758,7 @@ async def run_analysis(cb: types.CallbackQuery):
             'cvd_divergence': 1.0 if (price > df['close'].ewm(span=200).mean().iloc[-1] and delta_usd < 0) else 0.0,
             'funding_rate': float(funding_val)
         }
-        ai_conviction = await asyncio.to_thread(predict_signal_sync, ml_features)
+        ai_conviction, _, _ = await asyncio.to_thread(predict_signal_sync, ml_features)
     except: ai_conviction = -1.0
 
     final_conviction_score = ai_conviction if ai_conviction != -1.0 else conviction_score
