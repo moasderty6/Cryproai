@@ -1793,10 +1793,11 @@ async def silent_data_harvester_worker(pool):
                         ema200_val = df["close"].ewm(span=200).mean().iloc[-1] if len(df) >= 200 else df["close"].ewm(span=50).mean().iloc[-1]
                         cvd_divergence = 1.0 if (price > ema200_val and cvd_trend < 0) else -1.0 if (price < ema200_val and cvd_trend > 0) else 0.0
                         micro_volatility = df['close'].tail(20).pct_change().std() * 100
-                                                # ====================================================================
+                        # ====================================================================
                         # 🧬 محرك مصفوفة التجميع الصامت (Stealth Accumulation Matrix)
                         # ====================================================================
-                        current_cvd_usd = cvd_trend * price
+                        # استخدام tick_delta (تدفق حقيقي) وإذا لم يتوفر نستخدم CVD لضمان عدم التكرار الوهمي
+                        current_cvd_usd = tick_delta if tick_delta != 0 else (cvd_trend * price)
                         
                         # حساب متوسط السيولة اليومية لآخر 30 يوم من الشموع المتوفرة
                         df_1d_macro = pd.DataFrame(candles_1d).iloc[:, :6]
@@ -1805,7 +1806,6 @@ async def silent_data_harvester_worker(pool):
                         adv_30d_usd = df_1d_macro['volume'].tail(30).mean() * price
                         
                         async with pool.acquire() as conn:
-                            # فحص الذاكرة التاريخية للعملة
                             matrix_row = await conn.fetchrow("""
                                 SELECT start_price, adv_30d_usd, accumulated_cvd_usd, 
                                 EXTRACT(EPOCH FROM start_time) as start_ts 
@@ -1813,24 +1813,24 @@ async def silent_data_harvester_worker(pool):
                             """, sym)
                             
                             if matrix_row:
-                                # 🔄 المرحلة الثانية: التراكم (Stateful Aggregation)
-                                new_accum = matrix_row['accumulated_cvd_usd'] + current_cvd_usd
+                                # 🔄 المرحلة الثانية: التحديث اللحظي (بدون جمع وهمي)
+                                new_accum = current_cvd_usd
                                 start_price_db = matrix_row['start_price']
                                 days_elapsed = (time.time() - matrix_row['start_ts']) / 86400.0
                                 
-                                # 🗑️ المرحلة الرابعة: التدمير الذاتي (Garbage Collection)
-                                # إذا هبط السعر 3% تحت بداية التجميع (الحوت ينزف) أو مر 7 أيام دون انفجار
-                                if price < (start_price_db * 0.97) or days_elapsed > 7.0:
+                                # 🗑️ التدمير الذاتي: الحيتان تقوم بـ Shakeouts حتى 15%، وإعطاء مهلة 14 يوماً للانفجار
+                                if price < (start_price_db * 0.85) or days_elapsed > 14.0:
                                     await conn.execute("DELETE FROM stealth_accumulation_matrix WHERE symbol = $1", sym)
-                                    print(f"🗑️ [Matrix] {sym} Removed (Invalidated by Drop or Time-Decay).")
                                 else:
-                                    # تحديث المخزون
+                                    # تحديث المخزون الحقيقي
                                     await conn.execute("UPDATE stealth_accumulation_matrix SET accumulated_cvd_usd = $1, last_updated = CURRENT_TIMESTAMP WHERE symbol = $2", new_accum, sym)
                             else:
                                 # 🎯 المرحلة الأولى: نقطة الصفر (Node Zero Trigger)
-                                # شروط الدخول للذاكرة: شذوذ فوليوم + تدفق شرائي + السعر ليس في قمة
-                                recent_high = df['high'].tail(20).max()
-                                if current_z > 1.8 and current_cvd_usd > 0 and price < (recent_high * 0.93):
+                                # البحث عن تصحيح 10% من أعلى قمة في آخر 7 أيام (وليست آخر 5 ساعات)
+                                recent_high = df['high'].max() 
+                                
+                                # شروط الدخول: شذوذ مقبول (Z>1.2) + سيولة إيجابية + السعر صحح 10%
+                                if current_z > 1.2 and current_cvd_usd > 0 and price < (recent_high * 0.90):
                                     await conn.execute("""
                                         INSERT INTO stealth_accumulation_matrix 
                                         (symbol, start_price, adv_30d_usd, accumulated_cvd_usd) 
