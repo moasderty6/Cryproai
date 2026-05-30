@@ -6274,16 +6274,16 @@ async def on_startup(app):
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
 
-    #asyncio.create_task(smart_radar_watchdog(pool))
+    asyncio.create_task(smart_radar_watchdog(pool))
     asyncio.create_task(institutional_lob_worker(pool))
-    #asyncio.create_task(silent_data_harvester_worker(pool))
+    asyncio.create_task(silent_data_harvester_worker(pool))
     asyncio.create_task(macro_data_worker()) # 🌍 تشغيل عامل الماكرو
-    #asyncio.create_task(radar_worker_process(pool))
-    #asyncio.create_task(institutional_incubator_worker(pool))
-    #asyncio.create_task(institutional_vanguard_worker())
+    asyncio.create_task(radar_worker_process(pool))
+    asyncio.create_task(institutional_incubator_worker(pool))
+    asyncio.create_task(institutional_vanguard_worker())
     asyncio.create_task(moe_hot_swap_worker())
-    #asyncio.create_task(ai_trainer_worker(pool)) # 🧠 تشغيل مدرب الذكاء الاصطناعي
-    #asyncio.create_task(ml_inspector_worker(pool)) # 🧠 تشغيل محقق الذكاء الاصطناعي
+    asyncio.create_task(ai_trainer_worker(pool)) # 🧠 تشغيل مدرب الذكاء الاصطناعي
+    asyncio.create_task(ml_inspector_worker(pool)) # 🧠 تشغيل محقق الذكاء الاصطناعي
         # مسح أي تحديثات معلقة تسبب تعليق السيرفر
     await bot.delete_webhook(drop_pending_updates=True)
     # تعيين الويب هوك مع طلب صريح بقبول الأزرار
