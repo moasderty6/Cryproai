@@ -79,7 +79,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CMC_KEY = os.getenv("CMC_API_KEY")
 BINANCE_API_KEY = "rvApoDI6XRYcki1r2QTnPUBs3QwESzrpTVKohgjbK1zxSzlvrFPxAbZKr94xA2Lx"
 # 🚀 استبدال القائمة المحظورة بالرابط المحمي عبر Cloudflare
-BINANCE_BASES = ["https://binance-sain.mo-dahoh.workers.dev"]
+# 🚀 توزيع الحمل بين اثنين Workers لتفادي حدود كلاود فلير
+BINANCE_BASES = [
+    "https://binance-sain.mo-dahoh.workers.dev",  # الووركر الأول
+    "https://binance.mor-aghyad6.workers.dev"     # الووركر الثاني الجديد
+]
 
 def get_random_binance_base():
     return random.choice(BINANCE_BASES)
