@@ -80,9 +80,11 @@ CMC_KEY = os.getenv("CMC_API_KEY")
 BINANCE_API_KEY = "rvApoDI6XRYcki1r2QTnPUBs3QwESzrpTVKohgjbK1zxSzlvrFPxAbZKr94xA2Lx"
 # 🚀 استبدال القائمة المحظورة بالرابط المحمي عبر Cloudflare
 # 🚀 توزيع الحمل بين اثنين Workers لتفادي حدود كلاود فلير
+# 🚀 توزيع الحمل (Load Balancing) بين 3 سيرفرات لتفادي حدود كلاود فلير (300 ألف طلب يومياً)
 BINANCE_BASES = [
     "https://binance-sain.mo-dahoh.workers.dev",  # الووركر الأول
-    "https://binance.mor-aghyad6.workers.dev"     # الووركر الثاني الجديد
+    "https://binance.mor-aghyad6.workers.dev",    # الووركر الثاني
+    "https://binani.gsmyr800.workers.dev"         # الووركر الثالث (الجديد)
 ]
 
 def get_random_binance_base():
