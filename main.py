@@ -4051,6 +4051,67 @@ async def status_cmd(m: types.Message):
     except Exception as e:
         print(f"Status Error: {e}")
     
+@dp.message(Command("send"))
+async def broadcast_investment_cmd(m: types.Message):
+    # التأكد من أن الأمر للأدمن فقط
+    if m.from_user.id != ADMIN_USER_ID:
+        return await m.answer("❌ لا تملك صلاحية استخدام هذا الأمر.")
+
+    # النص المطلوب إرساله محاط بوسوم <b> لجعله بخط غامق بالكامل
+    broadcast_text = (
+        "<b>📢 إعلان فتح باب الاستثمار\n\n"
+        "نعلن عن فتح باب الاستثمار بعائد 15% شهرياً من رأس المال.\n\n"
+        "قيمة الاستثمار:\n"
+        "من 1000$ إلى 100000$.\n\n"
+        "مدة الاستثمار:\n"
+        "يتم احتساب الأرباح بشكل شهري، مع إمكانية سحب رأس المال بعد الشهر الأول.\n\n"
+        "المزايا الإضافية:\n"
+        "- إشارات خاصة للعملات المتوقع صعودها بأكثر من 100%.\n"
+        "- رادار خاص لتتبع حركة البتكوين لمعرفة حالة السوق وتوقيت الدخول الصحيح في السوق.\n\n"
+        "⚠️ تطبق النسبة والمزايا الاضافية على المستثمرين القدامى.\n\n"
+        "📩 للاشتراك أو الاستفسار:\n"
+        "@AiCrAdmin</b>"
+    )
+
+    pool = dp['db_pool']
+    sent_count = 0
+    failed_count = 0
+
+    # إشعار الأدمن ببدء العملية
+    status_msg = await m.answer("⏳ جاري إرسال الإعلان لجميع المستخدمين، يرجى الانتظار...")
+
+    try:
+        async with pool.acquire() as conn:
+            # جلب جميع المستخدمين المسجلين في البوت
+            users = await conn.fetch("SELECT user_id FROM users_info")
+            
+        for row in users:
+            uid = row["user_id"]
+            try:
+                await bot.send_message(
+                    chat_id=uid,
+                    text=broadcast_text,
+                    parse_mode=ParseMode.HTML
+                )
+                sent_count += 1
+                # استراحة 0.05 ثانية لتجنب تجاوز حدود تيليجرام (Flood Control)
+                await asyncio.sleep(0.05) 
+            except Exception:
+                # إذا قام المستخدم بحظر البوت أو حذف حسابه
+                failed_count += 1
+                continue
+
+        # تحديث الرسالة بالنتيجة النهائية
+        await status_msg.edit_text(
+            f"✅ <b>اكتمل الإرسال!</b>\n\n"
+            f"📨 تم الإرسال بنجاح إلى: <code>{sent_count}</code> مستخدم.\n"
+            f"❌ فشل الإرسال لـ: <code>{failed_count}</code> مستخدم (حظروا البوت)."
+        )
+
+    except Exception as e:
+        print(f"Broadcast Error: {e}")
+        await status_msg.edit_text("⚠️ حدث خطأ أثناء محاولة جلب المستخدمين من قاعدة البيانات.")
+
 @dp.message(Command("admin"))
 async def admin_cmd(m: types.Message):
     await m.answer(
