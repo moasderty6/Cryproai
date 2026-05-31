@@ -4058,7 +4058,6 @@ async def clear_radar_memory_cmd(m: types.Message):
     await m.answer("🧹 <b>تم تنظيف ذاكرة الرادار بنجاح!</b>\nالرادار الآن جاهز لاصطياد أي عملة قوية حتى لو قام بإرسالها مسبقاً في الأيام الماضية.", parse_mode=ParseMode.HTML)
 @dp.message(Command("btc"))
 async def btc_vanguard_prediction_command(message: types.Message):
-    # 🛑 1. جدار الحماية: مسموح فقط للمستثمرين النخبة (Vanguard Investors)
     # 🛑 1. جدار الحماية: مسموح فقط للمستثمرين النخبة
     ALLOWED_IDS = [565965404, 7146339698]
     
@@ -4069,65 +4068,62 @@ async def btc_vanguard_prediction_command(message: types.Message):
             parse_mode=ParseMode.HTML
         )
         return # هذا الأمر يوقف الكود فوراً ولن يكمل باقي الخطوات
- 
 
-    # 🌐 2. تحديد لغة المستخدم (استناداً إلى إعدادات جهازه)
-    lang = message.from_user.language_code if message.from_user.language_code in ['ar', 'en'] else 'ar'
-
-    # رسالة التحميل الفخمة
-    loading_text = (
-        "📡 <i>يتم الآن تشغيل محرك الكوانت العميق...\nاستخراج بيانات LOB المؤسساتية وتدفق الذكاء الاصطناعي للبيتكوين...</i> 🦅" 
-        if lang == 'ar' else 
-        "📡 <i>Initiating Deep Quant Engine...\nFetching Institutional LOB & AI Flow for Bitcoin...</i> 🦅"
-    )
+    # رسالة التحميل الفخمة (بالعربية فقط)
+    loading_text = "📡 <i>يتم الآن تشغيل محرك الكوانت العميق...\nاستخراج بيانات LOB المؤسساتية وتدفق الذكاء الاصطناعي للبيتكوين...</i> 🦅"
     processing_msg = await message.reply(loading_text, parse_mode=ParseMode.HTML)
 
     try:
-        # 📊 3. جلب بيانات السعر اللحظي للبيتكوين
+        # 📊 2. جلب بيانات السعر اللحظي للبيتكوين
         async with httpx.AsyncClient() as client:
             base_url = get_random_binance_base()
             res = await client.get(f"{base_url}/api/v3/ticker/price", params={"symbol": "BTCUSDT"})
             current_price = float(res.json()["price"])
 
-            # 🐋 4. استدعاء تدفق الحيتان الفعلي (Whale Inflow)
+            # 🐋 3. استدعاء تدفق الحيتان الفعلي (Whale Inflow)
             whale_inflow = await get_whale_inflow_score()
             
-            # ⚖️ 5. استخراج اختلال سجل الأوامر الفعلي من الذاكرة اللحظية (OFI)
+            # ⚖️ 4. استخراج اختلال سجل الأوامر الفعلي من الذاكرة اللحظية (OFI)
             ofi_score = 0.0
             if "BTCUSDT" in INSTITUTIONAL_LOB:
                 ofi_window = INSTITUTIONAL_LOB["BTCUSDT"]["ofi_window"]
                 ofi_score = sum(ofi_window) / max(1, len(ofi_window))
 
-            # 🧠 6. تغذية محرك الذكاء الاصطناعي المتقدم (AI Quant Model)
+            # 🧠 5. تغذية محرك الذكاء الاصطناعي المتقدم (AI Quant Model)
             features = {
-                'market_regime': 1,               # افتراض سيطرة الثيران كبداية
+                'market_regime': 1,               
                 'sp500_trend': 1.5,
                 'sentiment_score': 70.0,
-                'z_score': 2.8,                   # شذوذ فوليوم قوي
+                'z_score': 2.8,                   
                 'cvd_to_vol_ratio': 1.2,
-                'ofi_imbalance': ofi_score,       # تدفق الأوامر اللحظي
+                'ofi_imbalance': ofi_score,       
                 'whale_inflow': whale_inflow,
                 'funding_rate': 0.005,
             }
 
             # استخدام محرك الـ MoE العميق إن توفر، أو محرك التوقعات القياسي
             try:
-                confidence_pct, entry_drop_pct, time_to_surge_hours, expected_pump_pct = predict_deep_moe(features)
+                confidence_pct, entry_drop_pct, time_to_surge_hours, expected_move_pct = predict_deep_moe(features)
                 if confidence_pct <= 0: raise ValueError
             except:
-                confidence_pct, entry_drop_pct, time_to_surge_hours, expected_pump_pct = predict_signal_sync(features)
+                # غيرنا المتغير لـ expected_move_pct ليعبر عن حركة السعر سواء صعود أو هبوط
+                confidence_pct, entry_drop_pct, time_to_surge_hours, expected_move_pct = predict_signal_sync(features)
 
-            # في حال لم يتدرب النموذج بعد، نعطي قيماً تقديرية بناءً على الزخم
+            # في حال لم يتدرب النموذج بعد، نعطي قيماً تقديرية
             if confidence_pct <= 0:
-                confidence_pct, entry_drop_pct, time_to_surge_hours, expected_pump_pct = 85.5, 1.2, 4.0, 3.5
+                confidence_pct, entry_drop_pct, time_to_surge_hours, expected_move_pct = 85.5, 1.2, 4.0, 3.5
 
-            # 🎯 7. حساب الأسعار الخوارزمية الدقيقة
+            # 🎯 6. حساب الأسعار الخوارزمية الدقيقة والاتجاه
             drop_price = current_price * (1 - (entry_drop_pct / 100))
-            target_price = current_price * (1 + (expected_pump_pct / 100))
+            target_price = current_price * (1 + (expected_move_pct / 100))
+            
+            # تحديد الاتجاه والكلمات بناءً على ما إذا كانت النسبة موجبة (صعود) أو سالبة (هبوط)
+            move_direction = "صعود" if expected_move_pct >= 0 else "هبوط"
+            move_icon = "🚀" if expected_move_pct >= 0 else "📉"
+            entry_type = "هبوط ارتدادي" if expected_move_pct >= 0 else "صعود اختباري"
 
-            # 💎 8. صياغة التقرير الاحترافي الفخم
-            if lang == "ar":
-                 final_report = f"""
+            # 💎 7. صياغة التقرير الاحترافي الفخم (عربي فقط وبدون الجملة الأخيرة)
+            final_report = f"""
 🏛 <b>غرفة العمليات المؤسساتية | النظرة الاستباقية للبيتكوين (BTC)</b> 🏛
 ━━━━━━━━━━━━━━━━━━
 💰 <b>السعر اللحظي:</b> <code>${format_price(current_price)}</code>
@@ -4136,36 +4132,18 @@ async def btc_vanguard_prediction_command(message: types.Message):
 
 🤖 <b>قرارات الذكاء الاصطناعي (Vanguard AI Engine):</b>
 • <b>درجة الثقة:</b> <code>{confidence_pct:.1f}%</code> 🟢
-• <b>منطقة صيد السيولة (القاع القادم):</b> <code>${format_price(drop_price)}</code> (هبوط {entry_drop_pct:.1f}%)
-• <b>الهدف الخوارزمي لانفجار السعر:</b> <code>${format_price(target_price)}</code> (صعود {expected_pump_pct:.1f}%)
+• <b>منطقة صيد السيولة (القاع/القمة):</b> <code>${format_price(drop_price)}</code> ({entry_type} {abs(entry_drop_pct):.1f}%)
+• <b>الهدف الخوارزمي {move_icon}:</b> <code>${format_price(target_price)}</code> ({move_direction} {abs(expected_move_pct):.1f}%)
 • <b>الزمن المقدر:</b> خلال <code>{time_to_surge_hours:.1f}</code> ساعة ⏳
-
-<i>"نحن لا نتنبأ بالسوق، بل نقرأ السيولة قبل أن تتحرك."</i> - <b>Hedge Fund Vanguard</b> 🦅
-"""
-            else:
-                 final_report = f"""
-🏛 <b>Institutional Vanguard | BTC Predictive Radar</b> 🏛
-━━━━━━━━━━━━━━━━━━
-💰 <b>Live Price:</b> <code>${format_price(current_price)}</code>
-🌊 <b>Whale Inflow Ratio:</b> <code>{whale_inflow:.2f}</code>
-⚖️ <b>Orderbook Pressure (OFI):</b> <code>{ofi_score:,.0f}</code>
-
-🤖 <b>Vanguard AI Engine Execution:</b>
-• <b>AI Conviction:</b> <code>{confidence_pct:.1f}%</code> 🟢
-• <b>Liquidity Sweep (Next Bottom):</b> <code>${format_price(drop_price)}</code> (-{entry_drop_pct:.1f}%)
-• <b>Algorithmic Surge Target (TP):</b> <code>${format_price(target_price)}</code> (+{expected_pump_pct:.1f}%)
-• <b>Expected Surge Time:</b> Within <code>{time_to_surge_hours:.1f}</code> Hours ⏳
-
-<i>"We don't predict the market, we see liquidity before it moves."</i> - <b>Hedge Fund Vanguard</b> 🦅
 """
             
-            # 🚀 9. إرسال النتيجة بكل فخامة
+            # 🚀 8. إرسال النتيجة بكل فخامة
             await processing_msg.edit_text(final_report, parse_mode=ParseMode.HTML)
             
     except Exception as e:
-        error_msg = f"⚠️ <b>Quantum Engine Fault:</b> {e}" if lang == 'en' else f"⚠️ <b>خلل في محرك الكوانت:</b> {e}"
+        error_msg = f"⚠️ <b>خلل في محرك الكوانت:</b> {e}"
         await processing_msg.edit_text(error_msg, parse_mode=ParseMode.HTML)
- 
+
 @dp.message(Command("sendphoto"))
 async def send_photo_to_trials(m: types.Message):
     if m.from_user.id != ADMIN_USER_ID:
