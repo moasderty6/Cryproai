@@ -16,6 +16,53 @@ import numpy as np
 import datetime
 import websockets
 import math
+import httpx
+import random
+from urllib.parse import urlparse
+
+# 🚀 قائمة الووركرز المصفحة (300 ألف طلب يومياً)
+BINANCE_BASES = [
+    "https://binance-sain.mo-dahoh.workers.dev",
+    "https://binance.mor-aghyad6.workers.dev",
+    "https://binani.gsmyr800.workers.dev"
+]
+
+# 1. نحفظ النسخة الأصلية والأساسية من دالة get الخاصة بمكتبة httpx
+_original_httpx_get = httpx.AsyncClient.get
+
+# 2. نصنع دالة "الفلتر الذكي"
+async def _patched_binance_get(self, url, *args, **kwargs):
+    url_str = str(url)
+    
+    # 🛑 فلتر الأمان: إذا الطلب لـ Bybit، أو DEX، أو أي موقع آخر، مشّيه فوراً بالدالة الأصلية
+    if "binance" not in url_str and "workers.dev" not in url_str:
+        return await _original_httpx_get(self, url, *args, **kwargs)
+
+    # 🟢 إذا الطلب لـ Binance، شغل نظام التبديل التلقائي (Failover)
+    endpoint = urlparse(url_str).path
+    bases = BINANCE_BASES.copy()
+    random.shuffle(bases) # توزيع الحمل
+
+    last_response = None
+    for base in bases:
+        try:
+            new_url = f"{base}{endpoint}"
+            # نرسل الطلب مع كل البارامترات والهيدرز الأصلية
+            res = await _original_httpx_get(self, new_url, *args, **kwargs)
+            
+            if res.status_code == 200:
+                return res # ✅ نجاح
+                
+            print(f"⚠️ الرابط {base} أعطى خطأ {res.status_code}، جاري التبديل...")
+            last_response = res
+        except Exception as e:
+            print(f"⚠️ خطأ شبكة في {base}: {e}، جاري التبديل...")
+            continue
+            
+    return last_response # إذا فشلت الروابط الثلاثة (نادر جداً)
+
+# 3. 💉 الحقن السحري: نستبدل دالة get في المكتبة بالدالة الذكية الخاصة بنا
+httpx.AsyncClient.get = _patched_binance_get
 
 def quant_cdf_score(z_value, limit=100.0):
     """
@@ -81,11 +128,6 @@ BINANCE_API_KEY = "rvApoDI6XRYcki1r2QTnPUBs3QwESzrpTVKohgjbK1zxSzlvrFPxAbZKr94xA
 # 🚀 استبدال القائمة المحظورة بالرابط المحمي عبر Cloudflare
 # 🚀 توزيع الحمل بين اثنين Workers لتفادي حدود كلاود فلير
 # 🚀 توزيع الحمل (Load Balancing) بين 3 سيرفرات لتفادي حدود كلاود فلير (300 ألف طلب يومياً)
-BINANCE_BASES = [
-    "https://binance-sain.mo-dahoh.workers.dev",  # الووركر الأول
-    "https://binance.mor-aghyad6.workers.dev",    # الووركر الثاني
-    "https://binani.gsmyr800.workers.dev"         # الووركر الثالث (الجديد)
-]
 
 def get_random_binance_base():
     return random.choice(BINANCE_BASES)
