@@ -67,7 +67,8 @@ async def _patched_binance_get(self, url, *args, **kwargs):
             ))
             
             print(f"🔀 [Network] جاري محاولة الاتصال عبر: {new_url}")
-            
+            print(f"DEBUG URL: {new_url}")
+            print(f"DEBUG PARAMS: {kwargs.get('params')}") 
             # إرسال الطلب
             res = await _original_httpx_get(self, new_url, *args, **kwargs)
             
@@ -5670,9 +5671,7 @@ async def run_analysis(cb: types.CallbackQuery):
                 if current_tf["macro_flow"]:
                     flow_task = None # يتم حسابه محلياً من بيانات الشموع الطويلة
                 else:
-                    # التدفق اللحظي للفريمات الصغيرة (Limit_Absorption)# تم تقليص الوقت إلى 60 دقيقة كحد أقصى لاحترام شروط بايننس ومنع الخطأ 400
-                    flow_task = get_institutional_orderflow(f"{clean_sym}USDT", client, minutes=60)
-
+                    flow_task = get_institutional_orderflow(f"{clean_sym}USDT", client, minutes=240)
                 # 4. توافق الفريم لعقود المشتقات
                 # [إصلاح صانع السوق]: استدعاء الدالة الكاملة لضمان جلب الـ OI والـ Funding معاً
                 await binance_rate_limit_event.wait()
