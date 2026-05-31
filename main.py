@@ -22,12 +22,10 @@ from urllib.parse import urlparse, urlunparse
 
 # 🚀 قائمة الووركرز أو سيرفرات بايننس البديلة
 BINANCE_BASES = [
-    "https://api.binance.com",
-    "https://api1.binance.com",
-    "https://api2.binance.com",
-    "https://api3.binance.com"
+    "https://binance-sain.mo-dahoh.workers.dev",
+    "https://binance.mor-aghyad6.workers.dev",
+    "https://binani.gsmyr800.workers.dev"
 ]
-
 # 1. نحفظ النسخة الأصلية والأساسية من دالة get الخاصة بمكتبة httpx
 _original_httpx_get = httpx.AsyncClient.get
 
