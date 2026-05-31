@@ -18,9 +18,9 @@ import websockets
 import math
 import httpx
 import random
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
-# 🚀 قائمة الووركرز المصفحة (300 ألف طلب يومياً)
+# 🚀 قائمة الووركرز أو سيرفرات بايننس البديلة
 BINANCE_BASES = [
     "https://api.binance.com",
     "https://api1.binance.com",
@@ -28,40 +28,72 @@ BINANCE_BASES = [
     "https://api3.binance.com"
 ]
 
-
 # 1. نحفظ النسخة الأصلية والأساسية من دالة get الخاصة بمكتبة httpx
 _original_httpx_get = httpx.AsyncClient.get
 
 # 2. نصنع دالة "الفلتر الذكي"
 async def _patched_binance_get(self, url, *args, **kwargs):
     url_str = str(url)
+    parsed_url = urlparse(url_str)
     
-    # 🛑 فلتر الأمان: إذا الطلب لـ Bybit، أو DEX، أو أي موقع آخر، مشّيه فوراً بالدالة الأصلية
-    if "binance" not in url_str and "workers.dev" not in url_str:
+    # 📝 [اللوغ] طباعة الطلب الأصلي قبل أي تعديل
+    # print(f"🔄 [Network] اعتراض طلب GET موجه إلى: {parsed_url.netloc}{parsed_url.path}")
+
+    # 🛑 فلتر الأمان 1: إذا الطلب لـ Bybit، أو منصات أخرى، مشّيه فوراً
+    if "binance" not in parsed_url.netloc and "workers.dev" not in parsed_url.netloc:
+        print(f"⏩ [Network] تمرير طلب خارجي مباشرة إلى: {parsed_url.netloc}")
         return await _original_httpx_get(self, url, *args, **kwargs)
 
-    # 🟢 إذا الطلب لـ Binance، شغل نظام التبديل التلقائي (Failover)
-    endpoint = urlparse(url_str).path
+    # 🛑 فلتر الأمان 2: حماية طلبات الفيوتشرز (fapi) لكي لا تختلط مع السبوت
+    if "fapi" in parsed_url.netloc or "dapi" in parsed_url.netloc:
+        print(f"⏩ [Network] تمرير طلب فيوتشرز مباشرة إلى: {parsed_url.netloc}")
+        return await _original_httpx_get(self, url, *args, **kwargs)
+
+    # 🟢 المعالجة الذكية لطلبات Binance Spot:
     bases = BINANCE_BASES.copy()
-    random.shuffle(bases) # توزيع الحمل
+    random.shuffle(bases) # توزيع الحمل العشوائي
 
     last_response = None
     for base in bases:
         try:
-            new_url = f"{base}{endpoint}"
-            # نرسل الطلب مع كل البارامترات والهيدرز الأصلية
+            base_parsed = urlparse(base)
+            
+            # 🛠️ دمج الرابط الصحيح: نحافظ على المسار (path) والمتغيرات (query) كما هي تماماً!
+            new_url = urlunparse((
+                base_parsed.scheme,
+                base_parsed.netloc,
+                parsed_url.path,
+                parsed_url.params,
+                parsed_url.query,  # 👈 هذا السطر يعيد (symbol=BTCUSDT) ويحل مشكلة 400
+                parsed_url.fragment
+            ))
+            
+            print(f"🔀 [Network] جاري محاولة الاتصال عبر: {new_url}")
+            
+            # إرسال الطلب
             res = await _original_httpx_get(self, new_url, *args, **kwargs)
             
             if res.status_code == 200:
-                return res # ✅ نجاح
+                print(f"✅ [Network] نجاح الاتصال! (الرد: 200) من السيرفر: {base_parsed.netloc}")
+                return res
                 
-            print(f"⚠️ الرابط {base} أعطى خطأ {res.status_code}، جاري التبديل...")
+            print(f"⚠️ [Network] السيرفر {base_parsed.netloc} رفض الطلب بخطأ {res.status_code}، جاري التبديل...")
             last_response = res
+            
         except Exception as e:
-            print(f"⚠️ خطأ شبكة في {base}: {e}، جاري التبديل...")
+            print(f"❌ [Network] خطأ انقطاع اتصال/شبكة في {base_parsed.netloc}: {str(e)}")
             continue
             
-    return last_response # إذا فشلت الروابط الثلاثة (نادر جداً)
+    # 🚨 إذا وصلنا هنا، يعني أن جميع الروابط الـ 4 فشلت!
+    print(f"🚨 [Network-Critical] فشلت جميع سيرفرات Binance الأساسية في الاستجابة للمسار: {parsed_url.path}")
+    
+    # 🛡️ جدار حماية أخير لمنع كراش البوت (AttributeError: 'NoneType' has no attribute 'status_code')
+    if last_response is None:
+        print("🛡️ [Network] إرجاع استجابة وهمية (500) لمنع انهيار الرادار.")
+        # نعيد كائن استجابة وهمي يحتوي على كود 500 لكي تتخطاه دوال التحليل لديك بأمان
+        return httpx.Response(500, request=httpx.Request("GET", url_str))
+        
+    return last_response 
 
 # 3. 💉 الحقن السحري: نستبدل دالة get في المكتبة بالدالة الذكية الخاصة بنا
 httpx.AsyncClient.get = _patched_binance_get
