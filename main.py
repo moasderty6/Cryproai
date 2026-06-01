@@ -24,7 +24,10 @@ from urllib.parse import urlparse, urlunparse
 BINANCE_BASES = [
     "https://binance-sain.mo-dahoh.workers.dev",
     "https://binance.mor-aghyad6.workers.dev",
-    "https://binani.gsmyr800.workers.dev"
+    "https://binani.gsmyr800.workers.dev",
+    "https://old-recipe-c34d.m-aldahooh.workers.dev",
+    "https://steep-art-7164.dahoohh1.workers.dev",
+    "https://lucky-base-6c70.abedelqader02.workers.dev"
 ]
 # 1. نحفظ النسخة الأصلية والأساسية من دالة get الخاصة بمكتبة httpx
 _original_httpx_get = httpx.AsyncClient.get
