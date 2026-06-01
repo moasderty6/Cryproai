@@ -182,7 +182,11 @@ NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY")
 NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_USER_ID = 6172153716
-
+# ====================================================================
+# 🐋 THE ELITE INVESTORS CLUB 
+# ====================================================================
+INVESTOR_IDS = [7146339698, 565965404] # أرقام المستثمرين النخبة
+investor_pending_approvals = {} # ذاكرة مؤقتة لانتظار موافقة الأدمن على الانفجارات الكبرى
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
 # --- إعداد البوت ---
@@ -1974,6 +1978,62 @@ async def silent_data_harvester_worker(pool):
                         # 🧠 تقييم الذكاء العميق (MoE)
                         ai_confidence_deep, deep_drop, deep_time, deep_pump = await asyncio.to_thread(predict_deep_moe, ml_features)
                         ai_confidence_deep = round(ai_confidence_deep, 1) if ai_confidence_deep != -1.0 else -1.0
+              
+                        best_pump = max(xgb_pump, deep_pump)
+                        model_name = "العميق (MoE) 🧠" if deep_pump >= xgb_pump else "الكلاسيكي (XGB) ⚙️"
+                        best_confidence = ai_confidence_deep if deep_pump >= xgb_pump else ai_confidence
+                        
+                        if best_pump >= 60.0 and best_confidence >= 65.0:
+                            
+                            # نمنع تكرار إرسال نفس الجوهرة الاستثمارية خلال 48 ساعة
+                            async with pool.acquire() as conn:
+                                is_investor_signaled = await conn.fetchval("""
+                                    SELECT 1 FROM radar_history 
+                                    WHERE symbol = $1 AND last_signaled > CURRENT_TIMESTAMP - INTERVAL '48 hours'
+                                """, sym)
+                                
+                            if not is_investor_signaled:
+                                signal_id = str(uuid.uuid4())[:8]
+                                
+                                # حساب سعر الدخول والهدف
+                                target_drop = deep_drop if deep_pump >= xgb_pump else xgb_drop
+                                target_time = deep_time if deep_pump >= xgb_pump else xgb_time
+                                opt_entry = price * (1 - (target_drop / 100))
+                                target_price = price * (1 + (best_pump / 100))
+                                
+                                # حفظ البيانات في الذاكرة المؤقتة للأدمن
+                                investor_pending_approvals[signal_id] = {
+                                    "symbol": sym, 
+                                    "price": price, 
+                                    "entry": opt_entry,
+                                    "target": target_price,
+                                    "pump_pct": best_pump,
+                                    "time_hrs": target_time,
+                                    "model": model_name,
+                                    "score": best_confidence
+                                }
+
+                                admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+                                    [InlineKeyboardButton(text="💎 إرسال كـ (استثمار نخبة) 🐋", callback_data=f"inv_app_{signal_id}")],
+                                    [InlineKeyboardButton(text="❌ تجاهل", callback_data=f"inv_rej_{signal_id}")]
+                                ])
+
+                                admin_text = (
+                                    f"🐋 <b>رادار المستثمرين النخبة | إنذار انفجار!</b> 🐋\n"
+                                    f"━━━━━━━━━━━━━━\n"
+                                    f"💎 <b>العملة:</b> #{sym}\n"
+                                    f"💵 السعر الحالي: ${format_price(price)}\n"
+                                    f"🚀 <b>الصعود المتوقع: +{best_pump:.1f}%</b>\n"
+                                    f"🎯 الهدف: ${format_price(target_price)}\n"
+                                    f"🧲 أفضل دخول: ${format_price(opt_entry)}\n"
+                                    f"🤖 النموذج المكتشف: {model_name} (دقة {best_confidence:.1f}%)\n"
+                                    f"⏱️ الزمن المقدر: {target_time:.1f} ساعة\n\n"
+                                    f"هل توافق على إرسالها كإشارة استثمارية كبرى؟"
+                                )
+                                
+                                await bot.send_message(ADMIN_USER_ID, admin_text, reply_markup=admin_kb, parse_mode=ParseMode.HTML)
+                                print(f"🐋 [Investor Radar] Caught {sym} for a {best_pump:.1f}% pump!")
+                        # ====================================================================
 
                         # 🛑 الشرط الصارم
                         if ai_confidence >= 75.0 and ai_confidence_deep >= 75.0:
@@ -3983,6 +4043,127 @@ async def reject_radar_signal(cb: types.CallbackQuery):
 # --- إعداد حالة الانتظار ---
 class ManageSub(StatesGroup):
     waiting_for_user_id = State()
+# ====================================================================
+# 🐋 أزرار موافقة رادار المستثمرين (Investor Radar Callbacks)
+# ====================================================================
+@dp.callback_query(F.data.startswith("inv_app_"))
+async def approve_investor_signal(cb: types.CallbackQuery):
+    if cb.from_user.id != ADMIN_USER_ID:
+        return await cb.answer("❌ هذا الزر للأدمن فقط.", show_alert=True)
+
+    await cb.answer() 
+    signal_id = cb.data.replace("inv_app_", "")
+    data = investor_pending_approvals.get(signal_id)
+
+    if not data:
+        return await cb.message.edit_text("❌ انتهت صلاحية هذه الإشارة أو تم اتخاذ قرار مسبقاً.")
+
+    await cb.message.edit_text(f"✅ تمت الموافقة! جاري إرسال الإشارة {data['symbol']} لجميع المستخدمين...")
+
+    # توثيق الإرسال لمنع التكرار
+    pool = dp['db_pool']
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO radar_history (symbol, last_signaled)
+            VALUES ($1, CURRENT_TIMESTAMP)
+            ON CONFLICT (symbol) DO UPDATE SET last_signaled = CURRENT_TIMESTAMP
+        """, data['symbol'])
+
+        # جلب جميع المستخدمين من قاعدة البيانات
+        users_data = await conn.fetch("SELECT user_id, lang FROM users_info")
+
+    # إرسال الرسالة للجميع (مكشوفة للمستثمرين، ومخفية للبقية)
+    for row in users_data:
+        uid = row["user_id"]
+        lang = row["lang"] or "ar"
+        
+        # الفحص: هل هذا المستخدم ضمن قائمة المستثمرين؟
+        is_investor = uid in INVESTOR_IDS
+
+        # ---------- رسالة المستثمرين (مكشوفة بالكامل) ----------
+        if is_investor:
+            if lang == "ar":
+                text = (
+                    f"📡 <b>رادار المستثمرين</b>\n"
+                    f"━━━━━━━━━━━━━━\n"
+                    f"💎 <b>العملة:</b> #{data['symbol']}\n"
+                    f"💵 <b>السعر الحالي:</b> ${format_price(data['price'])}\n"
+                    f"🧲 <b>منطقة الدخول:</b> ${format_price(data['entry'])}\n\n"
+                    f"🚀 <b>نسبة الصعود المتوقعة: +{data['pump_pct']:.1f}%</b>\n"
+                    f"🎯 <b>الهدف:</b> ${format_price(data['target'])}\n\n"
+                    f"🤖 <b>المحرك:</b> {data['model']}\n"
+                    f"⏱️ <b>الزمن المقدر:</b> {data['time_hrs']:.1f} ساعة\n"
+                    f"━━━━━━━━━━━━━━"
+                )
+            else:
+                text = (
+                    f"📡 <b>Investors Radar</b>\n"
+                    f"━━━━━━━━━━━━━━\n"
+                    f"💎 <b>Asset:</b> #{data['symbol']}\n"
+                    f"💵 <b>Current Price:</b> ${format_price(data['price'])}\n"
+                    f"🧲 <b>Entry Zone:</b> ${format_price(data['entry'])}\n\n"
+                    f"🚀 <b>Expected Surge: +{data['pump_pct']:.1f}%</b>\n"
+                    f"🎯 <b>Target:</b> ${format_price(data['target'])}\n\n"
+                    f"🤖 <b>Engine:</b> {data['model']}\n"
+                    f"⏱️ <b>Est. Time:</b> {data['time_hrs']:.1f} Hours\n"
+                    f"━━━━━━━━━━━━━━"
+                )
+        # ---------- رسالة باقي المستخدمين (مخفية) ----------
+        else:
+            if lang == "ar":
+                text = (
+                    f"📡 <b>رادار المستثمرين</b>\n"
+                    f"━━━━━━━━━━━━━━\n"
+                    f"💎 <b>العملة:</b> •••• 🔒\n"
+                    f"💵 <b>السعر الحالي:</b> •••• 🔒\n"
+                    f"🧲 <b>منطقة الدخول:</b> •••• 🔒\n\n"
+                    f"🚀 <b>نسبة الصعود المتوقعة: +{data['pump_pct']:.1f}%</b>\n"
+                    f"🎯 <b>الهدف:</b> •••• 🔒\n\n"
+                    f"🤖 <b>المحرك:</b> {data['model']}\n"
+                    f"⏱️ <b>الزمن المقدر:</b> {data['time_hrs']:.1f} ساعة\n"
+                    f"━━━━━━━━━━━━━━\n"
+                    f"📌 <i>هذه الإشارة مخصصة وحصرية للمستثمرين.</i>"
+                )
+            else:
+                text = (
+                    f"📡 <b>Investors Radar</b>\n"
+                    f"━━━━━━━━━━━━━━\n"
+                    f"💎 <b>Asset:</b> •••• 🔒\n"
+                    f"💵 <b>Current Price:</b> •••• 🔒\n"
+                    f"🧲 <b>Entry Zone:</b> •••• 🔒\n\n"
+                    f"🚀 <b>Expected Surge: +{data['pump_pct']:.1f}%</b>\n"
+                    f"🎯 <b>Target:</b> •••• 🔒\n\n"
+                    f"🤖 <b>Engine:</b> {data['model']}\n"
+                    f"⏱️ <b>Est. Time:</b> {data['time_hrs']:.1f} Hours\n"
+                    f"━━━━━━━━━━━━━━\n"
+                    f"📌 <i>This signal is exclusively for elite investors.</i>"
+                )
+
+        try:
+            # إرسال بدون أي أزرار (reply_markup=None) للجميع
+            await bot.send_message(
+                uid,
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=None
+            )
+            await asyncio.sleep(0.05) # حماية من الحظر
+        except Exception:
+            continue
+            
+    # تنظيف الذاكرة بعد الإرسال
+    del investor_pending_approvals[signal_id]
+
+@dp.callback_query(F.data.startswith("inv_rej_"))
+async def reject_investor_signal(cb: types.CallbackQuery):
+    if cb.from_user.id != ADMIN_USER_ID:
+        return await cb.answer("❌ هذا الزر للأدمن فقط.", show_alert=True)
+
+    signal_id = cb.data.replace("inv_rej_", "")
+    if signal_id in investor_pending_approvals:
+        del investor_pending_approvals[signal_id]
+
+    await cb.message.edit_text("❌ تم تجاهل الإشارة ولن يتم إرسالها.")
 
 # 1. أمر طلب الـ ID
 @dp.message(Command("manage"))
