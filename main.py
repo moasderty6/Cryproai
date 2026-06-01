@@ -383,11 +383,25 @@ def train_xgboost_sync(records):
     def derive_time(row):
         mfe = row.get('max_favorable_excursion', 0)
         if pd.isna(mfe) or mfe <= 0: return 336.0 
+        
         thresh = mfe * 0.5
-        for col, t in zip(['ret_1h', 'ret_4h', 'ret_24h', 'ret_3d', 'ret_7d'], [1.0, 4.0, 24.0, 72.0, 168.0]):
-            val = row.get(col, 0)
-            if not pd.isna(val) and val >= thresh: return t
+        time_points = [1.0, 4.0, 24.0, 72.0, 168.0, 336.0]
+        return_cols = ['ret_1h', 'ret_4h', 'ret_24h', 'ret_3d', 'ret_7d', 'ret_14d']
+        
+        prev_t, prev_r = 0.0, 0.0 
+        
+        for t, col in zip(time_points, return_cols):
+            r = row.get(col, 0)
+            if pd.isna(r): r = prev_r
+            if r >= thresh:
+                if r == prev_r: return t
+                fraction = (thresh - prev_r) / (r - prev_r + 1e-8)
+                exact_time = prev_t + (fraction * (t - prev_t))
+                return max(0.1, min(exact_time, t))
+            prev_t, prev_r = t, r
+            
         return 336.0
+
         
     df['time_to_surge'] = df.apply(derive_time, axis=1)
 
@@ -401,9 +415,17 @@ def train_xgboost_sync(records):
     # 🎯 الأهداف الأربعة
     Y = df[['trade_quality_score', 'max_adverse_excursion', 'time_to_surge', 'max_favorable_excursion']]
     
+        # 🧠 استخدام Pseudo-Huber Error يعطي مقاومة حديدية لشذوذ السوق (Pumps & Dumps)
+    # وفصل صارم (Decoupling) لتوقع الجودة دون التأثر بتشوه أسعار الدخول/الصعود
     base_model = xgb.XGBRegressor(
-        n_estimators=400, max_depth=5, learning_rate=0.03, 
-        subsample=0.8, colsample_bytree=0.8, objective='reg:squarederror' 
+        n_estimators=400, 
+        max_depth=5, 
+        learning_rate=0.03, 
+        subsample=0.8, 
+        colsample_bytree=0.8, 
+        objective='reg:pseudohubererror', # 👈 التعديل الجوهري هنا
+        tree_method='hist',               # لتسريع التدريب الكثيف
+        monotone_constraints="(1, 0, 0, 0)" # (اختياري) إجبار الجودة على الارتباط الطردي مع المؤشرات القوية
     )
     
     multi_model = MultiOutputRegressor(base_model)
