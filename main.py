@@ -1463,60 +1463,72 @@ import time
 
 async def detect_flash_spoofing_ws(symbol: str, duration: float = 12.0):
     """
-    [UPGRADED] True Order Flow Imbalance (OFI) & Delta Tracking
+    [Tier-1 HFT Upgrade] True OFI via AggTrade + Depth Fusion
+    يصطاد السيولة الحقيقية ويتجاهل الجدران الوهمية (Ghost Spoofing) التي تُسحب قبل التنفيذ.
     """
     clean_symbol = symbol.replace("USDT", "").lower() + "usdt"
-    ws_url = f"wss://stream.binance.com:9443/ws/{clean_symbol}@depth20@250ms"
+    # دمج تيار الأوردر بوك السريع مع تيار التنفيذ الفعلي
+    ws_url = f"wss://stream.binance.com:9443/stream?streams={clean_symbol}@depth5@100ms/{clean_symbol}@aggTrade"
     
-    frames = []
+    bid_vols, ask_vols = [], []
+    taker_buy_vol, taker_sell_vol = 0.0, 0.0
+    ofi_trend = 0.0
+
     try:
         async with websockets.connect(ws_url, ping_interval=None, close_timeout=1) as ws:
             start_time = time.time()
             while time.time() - start_time < duration:
                 try:
-                    msg = await asyncio.wait_for(ws.recv(), timeout=1.5)
+                    msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
                     data = json.loads(msg)
-                    if not data.get('bids') or not data.get('asks'): continue
-                    
-                    bids = np.array([[float(p), float(v)] for p, v in data['bids'][:5]]) # Focus on top 5 levels for true OFI
-                    asks = np.array([[float(p), float(v)] for p, v in data['asks'][:5]])
-                    frames.append({'bids': bids, 'asks': asks})
-                except: break
-    except: return None
+                    stream = data.get('stream', '')
+                    payload = data.get('data', {})
 
-    if len(frames) < 5: return None
+                    if 'aggTrade' in stream:
+                        trade_vol = float(payload.get('p', 0)) * float(payload.get('q', 0))
+                        if payload.get('m', False): # Taker Sell
+                            taker_sell_vol += trade_vol
+                        else: # Taker Buy
+                            taker_buy_vol += trade_vol
 
-    # --- Advanced OFI Engine ---
-    ofi_score = 0
-    for i in range(1, len(frames)):
-        prev_bid_vol = np.sum(frames[i-1]['bids'][:, 1])
-        curr_bid_vol = np.sum(frames[i]['bids'][:, 1])
-        prev_ask_vol = np.sum(frames[i-1]['asks'][:, 1])
-        curr_ask_vol = np.sum(frames[i]['asks'][:, 1])
-        
-        # OFI Logic: Bid additions or Ask consumptions add to positive OFI
-        delta_bid = curr_bid_vol - prev_bid_vol
-        delta_ask = curr_ask_vol - prev_ask_vol
-        
-        if delta_bid > 0: ofi_score += 1
-        if delta_ask < 0: ofi_score += 1
-        if delta_bid < 0: ofi_score -= 1
-        if delta_ask > 0: ofi_score -= 1
+                    elif 'depth' in stream:
+                        if not payload.get('bids') or not payload.get('asks'): continue
+                        current_bids = sum(float(p) * float(v) for p, v in payload['bids'])
+                        current_asks = sum(float(p) * float(v) for p, v in payload['asks'])
+                        
+                        bid_vols.append(current_bids)
+                        ask_vols.append(current_asks)
 
-    bid_vols = [np.sum(f['bids'][:, 1]) for f in frames]
-    ask_vols = [np.sum(f['asks'][:, 1]) for f in frames]
-    
-    bid_std = np.std(bid_vols) / (np.mean(bid_vols) + 1e-6)
-    ask_std = np.std(ask_vols) / (np.mean(ask_vols) + 1e-6)
+                        if len(bid_vols) > 1:
+                            delta_bid = bid_vols[-1] - bid_vols[-2]
+                            delta_ask = ask_vols[-1] - ask_vols[-2]
+                            
+                            # 🧠 True OFI Logic: السيولة تضاف + تنفيذ حقيقي في نفس اللحظة = حوت
+                            if delta_bid > 0 and taker_buy_vol > 0: ofi_trend += 1.0
+                            if delta_ask > 0 and taker_sell_vol > 0: ofi_trend -= 1.0
+                            
+                            # تصفير عداد التنفيذ اللحظي للدورة القادمة
+                            taker_buy_vol, taker_sell_vol = 0.0, 0.0
+
+                except asyncio.TimeoutError:
+                    continue
+    except Exception:
+        return None
+
+    if len(bid_vols) < 5: return None
+
+    mean_bids = np.mean(bid_vols)
+    mean_asks = np.mean(ask_vols)
+    bid_std = np.std(bid_vols) / (mean_bids + 1e-6)
+    ask_std = np.std(ask_vols) / (mean_asks + 1e-6)
 
     return {
-        "imbalance": round((np.mean(bid_vols) - np.mean(ask_vols)) / (np.mean(bid_vols) + np.mean(ask_vols) + 1e-6), 2),
-        "ofi_trend": ofi_score, # + Score = Bulls adding liquidity, - Score = Bears adding liquidity
+        "imbalance": round((mean_bids - mean_asks) / (mean_bids + mean_asks + 1e-6), 2),
+        "ofi_trend": ofi_trend,
         "is_bid_spoof": bid_std > 0.8,
         "is_ask_spoof": ask_std > 0.8,
-        "is_iceberg_buying": bid_std < 0.1 and np.mean(bid_vols) > np.mean(ask_vols)
+        "is_iceberg_buying": bid_std < 0.15 and mean_bids > mean_asks and ofi_trend > 0
     }
-
 
 async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
     """
@@ -1753,39 +1765,33 @@ async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_
 
 def calculate_volume_zscore(df, window=720):
     """
-    محرك شذوذ الفوليوم المؤسساتي (Robust Z-Score) باستخدام Winsorized Std
-    سريع جداً (Vectorized) ومضاد للتشوه: يحجم الشموع العملاقة السابقة لسرعة المعالجة.
+    [Tier-1 Quant Upgrade] Log-Normal Volume Z-Score
+    يحول الفوليوم إلى توزيع لوغاريتمي لمنع الشموع المتطرفة من تدمير الانحراف المعياري،
+    مما يعطي قراءة إحصائية حقيقية محصنة ضد الشذوذ.
     """
     df["volume"] = pd.to_numeric(df["volume"], errors='coerce')
     
-    # 1. حساب الوسيط المتحرك (Median) وهو مدعوم ومُحسّن بـ C-level
-    rolling_median = df["volume"].rolling(window=window, min_periods=100).median()
+    # التحويل اللوغاريتمي الآمن (log(1 + x)) لحماية الفوليوم الصفري
+    log_vol = np.log1p(df["volume"])
     
-    # 2 & 3. التصحيح الكمي: Winsorization (تقليم الأطراف) بدلاً من حلقة MAD البطيئة
-    # نكبح القيم المتطرفة للفوليوم عند 4 أضعاف الوسيط لحماية الانحراف المعياري.
-    # هذا يمنع شمعة انفجارية واحدة من تدمير الانحراف لـ 720 شمعة قادمة.
-    clipped_volume = df["volume"].clip(upper=rolling_median * 4)
+    # حساب المتوسط والانحراف المعياري على المقياس اللوغاريتمي
+    rolling_mean_log = log_vol.rolling(window=window, min_periods=100).mean()
+    rolling_std_log = log_vol.rolling(window=window, min_periods=100).std(ddof=0)
     
-    # حساب الانحراف المعياري السريع جداً على الفوليوم المكبّح
-    rolling_std = clipped_volume.rolling(window=window, min_periods=100).std(ddof=0)
+    # حساب Z-Score اللوغاريتمي
+    df["z_score"] = (log_vol - rolling_mean_log) / (rolling_std_log + 1e-8)
     
-    # 4. حساب Z-Score اللحظي
-    # البسط: الفوليوم الحقيقي الحالي (غير المكبوت) لكي نلتقط الانفجار الحالي بقوة!
-    # المقام: الانحراف المعياري المحمي (لا نحتاج لضرب بـ 1.4826 لأنه Std فعلي)
-    df["z_score"] = (df["volume"] - rolling_median) / (rolling_std + 1e-8)
+    current_z = float(df["z_score"].iloc[-1])
     
-    current_z = df["z_score"].iloc[-1]
-    last_median = rolling_median.iloc[-1]
+    # حسابات توافقية للحفاظ على استقرار الكود القديم (Backward Compatibility)
+    last_median = float(df["volume"].rolling(window=window, min_periods=100).median().iloc[-1])
+    last_mad = float(df["volume"].rolling(window=window, min_periods=100).std().iloc[-1])
     
-    # نحتفظ باسم المتغير last_mad لتوافق مخرجات الدالة مع باقي الكود دون أي كسر
-    last_mad = rolling_std.iloc[-1] 
-    
-    # حماية من القسمة على صفر في العملات الميتة جداً
     if pd.isna(current_z) or current_z == float('inf'):
         current_z = 0.0
 
-    # إرجاع 3 قيم تماماً كما يتوقع باقي الكود
-    return float(current_z), float(last_median), float(last_mad)
+    return current_z, last_median, last_mad
+
 
 async def silent_data_harvester_worker(pool):
     """
@@ -2575,24 +2581,35 @@ def predict_deep_moe(features: dict):
 
         expert_model = DEEP_EXPERTS[expert_id]
         
-        input_vector = np.array([[
-            float(features.get('sp500_trend', 0.0)), float(features.get('sentiment_score', 50.0)),
-            float(features.get('z_score', 0.0)), float(features.get('cvd_to_vol_ratio', 0.0)),
-            float(features.get('ofi_imbalance', 0.0)), float(features.get('ob_skewness', 1.0)),
-            float(features.get('whale_inflow', 0.0)), float(features.get('adx', 0.0)),
-            float(features.get('rsi', 50.0)), float(features.get('micro_volatility', 0.0)),
-            float(features.get('cvd_divergence', 0.0)), float(features.get('funding_rate', 0.0)),
-            float(features.get('weekly_liquidity_void', 0.0)),
-            float(features.get('macro_z_score_30d', 0.0)),
-            float(features.get('htf_whale_accumulation', 0.0)),
-            float(features.get('days_since_last_expansion', 0.0))
-        ]], dtype=np.float32)
+        # 🧠 [Quant Scaling]: تثبيت البيانات وإجبارها على أن تكون Stationary & Bounded
+        # الدالة tanh تحصر الأرقام المفتوحة بين -1 و 1 بمرونة.
+        # القسمة على 100 تحصر النسب المئوية بين 0 و 1.
+        
+        scaled_features = [
+            np.tanh(float(features.get('sp500_trend', 0.0)) / 5.0),          # Tanh Scale
+            float(features.get('sentiment_score', 50.0)) / 100.0,            # MinMax (0 to 1)
+            np.tanh(float(features.get('z_score', 0.0)) / 3.0),              # Bounded Z-score
+            np.tanh(float(features.get('cvd_to_vol_ratio', 0.0)) / 20.0),    # Tanh Scale
+            np.clip(float(features.get('ofi_imbalance', 0.0)), -1.0, 1.0),   # Already -1 to 1
+            np.tanh(float(features.get('ob_skewness', 1.0)) - 1.0),          # Center at 0, bounded
+            float(features.get('whale_inflow', 0.0)) / 5.0,                  # Ratio Scale
+            float(features.get('adx', 0.0)) / 100.0,                         # MinMax (0 to 1)
+            float(features.get('rsi', 50.0)) / 100.0,                        # MinMax (0 to 1)
+            np.tanh(float(features.get('micro_volatility', 0.0)) / 10.0),    # Volatility bounds
+            np.clip(float(features.get('cvd_divergence', 0.0)), -1.0, 1.0),  # Categorical/Bounded
+            np.tanh(float(features.get('funding_rate', 0.0)) * 1000.0),      # Amplify tiny floats then bound
+            np.tanh(float(features.get('weekly_liquidity_void', 0.0)) / 10.0),
+            np.tanh(float(features.get('macro_z_score_30d', 0.0)) / 3.0),
+            float(features.get('htf_whale_accumulation', 0.0)) / 100.0,
+            np.tanh(float(features.get('days_since_last_expansion', 0.0)) / 30.0)
+        ]
+
+        input_vector = np.array([scaled_features], dtype=np.float32)
 
         input_name = expert_model.get_inputs()[0].name
         output_name = expert_model.get_outputs()[0].name
         
         prediction = expert_model.run([output_name], {input_name: input_vector})[0]
-        
         # 🧠 استخراج الرؤوس الأربعة
         if prediction.ndim > 1:
             raw_score = float(prediction[0][0])
