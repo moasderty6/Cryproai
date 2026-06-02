@@ -1103,7 +1103,10 @@ async def detect_spot_perp_divergence(symbol: str, client: httpx.AsyncClient):
             client.get(fapi_url, timeout=5.0)
         )
         
-        if spot_res.status_code != 200 or fapi_res.status_code != 200: return 0.0
+        if spot_res.status_code != 200 or fapi_res.status_code != 200: 
+            if fapi_res.status_code != 200:
+                print(f"⚠️ [Binance FAPI Direct] {clean_sym} | رفض كود {fapi_res.status_code} في Spot-Perp Divergence")
+            return 0.0
 
         spot_df = pd.DataFrame(spot_res.json(), columns=["t","o","h","l","c","v","ct","qv","trades","tbv","tqav","ignore"])
         fapi_df = pd.DataFrame(fapi_res.json(), columns=["t","o","h","l","c","v","ct","qv","trades","tbv","tqav","ignore"])
@@ -1149,7 +1152,8 @@ async def detect_spot_perp_divergence(symbol: str, client: httpx.AsyncClient):
             
         return 0.0
 
-    except Exception:
+    except Exception as e:
+        print(f"🚨 [Binance FAPI Direct] خطأ في detect_spot_perp_divergence لـ {clean_sym}: {str(e)}")
         return 0.0
 
 async def detect_market_regime(client):
@@ -1223,7 +1227,10 @@ async def build_liquidation_heatmap(symbol: str, client: httpx.AsyncClient):
             client.get(klines_url, timeout=5.0)
         )
         
-        if res_oi.status_code != 200 or res_klines.status_code != 200: return None
+        if res_oi.status_code != 200 or res_klines.status_code != 200: 
+            if res_oi.status_code != 200:
+                print(f"⚠️ [Binance FAPI Direct] {clean_sym} | رفض كود {res_oi.status_code} في خريطة التصفية (Heatmap)")
+            return None
         
         oi_data = res_oi.json()
         klines_data = res_klines.json()
@@ -1268,9 +1275,9 @@ async def build_liquidation_heatmap(symbol: str, client: httpx.AsyncClient):
             "type": type_liq, 
             "distance_pct": abs(current_price - liq_target)/current_price
         }
-    except Exception:
+    except Exception as e:
+        print(f"🚨 [Binance FAPI Direct] خطأ في build_liquidation_heatmap لـ {clean_sym}: {str(e)}")
         return None
-
 
 async def track_orderbook_center_of_mass(symbol: str, client: httpx.AsyncClient, current_price: float):
     """
@@ -1351,7 +1358,10 @@ async def detect_global_derivatives_frontrunning(symbol: str, client: httpx.Asyn
             client.get(fapi_url, timeout=5.0)
         )
         
-        if spot_res.status_code != 200 or fapi_res.status_code != 200: return None
+        if spot_res.status_code != 200 or fapi_res.status_code != 200: 
+            if fapi_res.status_code != 200:
+                print(f"⚠️ [Binance FAPI Direct] {clean_sym} | كود {fapi_res.status_code} في Frontrunning")
+            return None
         
         spot_df = pd.DataFrame(spot_res.json(), columns=["t","o","h","l","c","v","ct","qv","trades","tbv","tqav","ignore"])
         fapi_df = pd.DataFrame(fapi_res.json(), columns=["t","o","h","l","c","v","ct","qv","trades","tbv","tqav","ignore"])
@@ -1386,7 +1396,8 @@ async def detect_global_derivatives_frontrunning(symbol: str, client: httpx.Asyn
             return {"type": "Derivatives Distribution 📉", "divergence": divergence * 100}
             
         return None
-    except Exception:
+    except Exception as e:
+        print(f"🚨 [Binance FAPI Direct] خطأ في Frontrunning لـ {clean_sym}: {str(e)}")
         return None
 
 async def institutional_vanguard_worker():
@@ -1753,15 +1764,16 @@ async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_
             # Z-Score > 1.5 يعني التمويل إيجابي مبالغ فيه (خطر تصفية Long Squeeze)
             elif funding_z_score > 1.5:
                 score_modifier -= 10.0
-
             # نرجع current_funding_rate الخامة للـ AI لتدريبه، ونعتمد على الـ Z-Score في التقييم الداخلي
             return score_modifier, futures_signal, current_funding_rate, oi_change_pct 
+        else:
+            print(f"⚠️ [Binance FAPI Direct] {symbol} | رفض الاتصال: OI({oi_res.status_code}), Fund({live_fund_res.status_code})")
             
-    except Exception: pass
+    except Exception as e: 
+        print(f"🚨 [Binance FAPI Direct] خطأ برمجي/شبكة في get_futures_liquidity لـ {symbol}: {str(e)}")
     
     # إرجاع 4 قيم أصفار في حال الخطأ
-    return 0.0, None, 0.0, 0.0 
-
+    return 0.0, None, 0.0, 0.0  
 
 def calculate_volume_zscore(df, window=720):
     """
@@ -5355,6 +5367,7 @@ async def analyze_macro_derivatives_divergence(symbol: str, client: httpx.AsyncC
     try:
         res = await client.get(oi_url, timeout=5.0)
         if res.status_code != 200:
+            print(f"⚠️ [Binance FAPI Direct] {clean_sym} | رفض كود {res.status_code} في Macro Derivatives")
             return None
             
         oi_data = res.json()
@@ -5412,6 +5425,7 @@ async def analyze_macro_derivatives_divergence(symbol: str, client: httpx.AsyncC
             }
 
     except Exception as e:
+        print(f"🚨 [Binance FAPI Direct] خطأ في analyze_macro_derivatives_divergence لـ {clean_sym}: {str(e)}")
         return None
 async def institutional_lob_worker(pool):
     """
