@@ -2578,21 +2578,22 @@ async def get_institutional_vpin(symbol: str, client: httpx.AsyncClient, volume_
         import numpy as np
         trade_vols = np.array([float(t['q']) * float(t['p']) for t in trades])
         taker_sell_flags = np.array([t['m'] for t in trades])
-        
         total_sample_vol = np.sum(trade_vols)
         if total_sample_vol == 0: return 0.5
         
-        # 🧠 الحل المؤسساتي (Easley et al. Model):
-        # ربط حجم الدلو بالسيولة اليومية للعملة بدلاً من العينة المأخوذة
-        # نقسم فوليوم 24 ساعة على 50 ليمثل كل دلو 2% من السيولة اليومية الثابتة
-        bucket_size = max(volume_24h / 50.0, 1000.0) # حماية من الفوليوم الصفري
+        # 🧠 الحل المؤسساتي المحدث (Dynamic Micro-Bucketing):
+        # بدلاً من ربط السلة بالسيولة اليومية (ما يسبب انهيار السلال للعملات الكبيرة)،
+        # نقوم بتقسيم إجمالي فوليوم العينة المتاحة بدقة إلى 50 سلة متساوية.
+        # هذا يعزل سمية التدفق اللحظي (Micro-Toxicity) عن الماكرو.
         
-        # كم عدد الدلاء التي تمتلئ بهذه العينة اللحظية؟
-        num_filled_buckets = int(total_sample_vol // bucket_size)
+        NUM_BUCKETS = 50
+        bucket_size = total_sample_vol / NUM_BUCKETS
         
-        # 🛡️ الفلتر السحري: إذا كانت العينة لا تملأ حتى دلواً واحداً، فهذا ضجيج أفراد (Retail Noise)
-        if num_filled_buckets < 1:
+        # 🛡️ الفلتر السحري: حماية من العينات الميتة تماماً (غبار الأفراد)
+        if bucket_size < 500.0: # إذا كانت السلة الواحدة لا تحتوي حتى على 500 دولار
             return 0.5
+            
+        num_filled_buckets = NUM_BUCKETS
             
         buckets_buy = np.zeros(num_filled_buckets)
         buckets_sell = np.zeros(num_filled_buckets)
@@ -2676,23 +2677,25 @@ def predict_deep_moe(features: dict):
         # الدالة tanh تحصر الأرقام المفتوحة بين -1 و 1 بمرونة.
         # القسمة على 100 تحصر النسب المئوية بين 0 و 1.
         
+        # 🧠 الحل المؤسساتي (Winsorization & Safe Activation):
+        # حصر القيم المتطرفة (Clipping) قبل إدخالها لدالة tanh لمنع العمى الرياضي للنموذج
         scaled_features = [
-            np.tanh(float(features.get('sp500_trend', 0.0)) / 5.0),          # Tanh Scale
-            float(features.get('sentiment_score', 50.0)) / 100.0,            # MinMax (0 to 1)
-            np.tanh(float(features.get('z_score', 0.0)) / 3.0),              # Bounded Z-score
-            np.tanh(float(features.get('cvd_to_vol_ratio', 0.0)) / 20.0),    # Tanh Scale
-            np.clip(float(features.get('ofi_imbalance', 0.0)), -1.0, 1.0),   # Already -1 to 1
-            np.tanh(float(features.get('ob_skewness', 1.0)) - 1.0),          # Center at 0, bounded
-            float(features.get('whale_inflow', 0.0)) / 5.0,                  # Ratio Scale
-            float(features.get('adx', 0.0)) / 100.0,                         # MinMax (0 to 1)
-            float(features.get('rsi', 50.0)) / 100.0,                        # MinMax (0 to 1)
-            np.tanh(float(features.get('micro_volatility', 0.0)) / 10.0),    # Volatility bounds
-            np.clip(float(features.get('cvd_divergence', 0.0)), -1.0, 1.0),  # Categorical/Bounded
-            np.tanh(float(features.get('funding_rate', 0.0)) * 1000.0),      # Amplify tiny floats then bound
-            np.tanh(float(features.get('weekly_liquidity_void', 0.0)) / 10.0),
-            np.tanh(float(features.get('macro_z_score_30d', 0.0)) / 3.0),
-            float(features.get('htf_whale_accumulation', 0.0)) / 100.0,
-            np.tanh(float(features.get('days_since_last_expansion', 0.0)) / 30.0)
+            np.tanh(np.clip(float(features.get('sp500_trend', 0.0)), -15.0, 15.0) / 5.0), 
+            float(features.get('sentiment_score', 50.0)) / 100.0,
+            np.tanh(np.clip(float(features.get('z_score', 0.0)), -15.0, 15.0) / 3.0),               # 👈 حماية من الـ Wash Trading
+            np.tanh(np.clip(float(features.get('cvd_to_vol_ratio', 0.0)), -100.0, 100.0) / 20.0),   # 👈 حماية من طفرات السيولة الوهمية
+            np.clip(float(features.get('ofi_imbalance', 0.0)), -1.0, 1.0),
+            np.tanh(np.clip(float(features.get('ob_skewness', 1.0)) - 1.0, -5.0, 5.0)),
+            np.clip(float(features.get('whale_inflow', 0.0)) / 5.0, 0.0, 2.0),                      # 👈 حماية من أرقام الحيتان الفلكية
+            np.clip(float(features.get('adx', 0.0)) / 100.0, 0.0, 1.0),
+            np.clip(float(features.get('rsi', 50.0)) / 100.0, 0.0, 1.0),
+            np.tanh(np.clip(float(features.get('micro_volatility', 0.0)), 0.0, 50.0) / 10.0),
+            np.clip(float(features.get('cvd_divergence', 0.0)), -1.0, 1.0),
+            np.tanh(np.clip(float(features.get('funding_rate', 0.0)), -0.05, 0.05) * 1000.0),       # 👈 حماية من أخطاء عقود المشتقات
+            np.tanh(np.clip(float(features.get('weekly_liquidity_void', 0.0)), -50.0, 50.0) / 10.0),
+            np.tanh(np.clip(float(features.get('macro_z_score_30d', 0.0)), -15.0, 15.0) / 3.0),
+            np.clip(float(features.get('htf_whale_accumulation', 0.0)) / 100.0, -1.0, 1.0),
+            np.tanh(np.clip(float(features.get('days_since_last_expansion', 0.0)), 0.0, 100.0) / 30.0)
         ]
 
         input_vector = np.array([scaled_features], dtype=np.float32)
@@ -3551,7 +3554,6 @@ async def ml_inspector_worker(pool):
                         btc_return_14d = ((btc_exit - btc_entry) / btc_entry) * 100
                         alpha_14d = ret_14d - btc_return_14d
 
-                        
                         # --- 2. محرك التسامح والانفجار متعدد الآفاق (Multi-Horizon MFE/MAE) ---
                         klines_3d = klines[:72]   
                         klines_7d = klines[:168]  
@@ -3559,7 +3561,12 @@ async def ml_inspector_worker(pool):
 
                         def calculate_excursions(k_list, entry_price):
                             mfe, mae = 0.0, 0.0
-                            for k in k_list:
+                            # 🧠 الحل المؤسساتي (Execution Bar Discarding & Forward Slicing):
+                            # نتجاهل الشمعة الأولى (شمعة التنفيذ) لأن القمة/القاع فيها ربما حدثت قبل لحظة الإشارة!
+                            # استخدامها يعتبر "تسريب للمستقبل" (Look-Ahead Bias) ويدمر واقعية التدريب.
+                            safe_list = k_list[1:] if len(k_list) > 1 else []
+                            
+                            for k in safe_list:
                                 high, low = float(k[2]), float(k[3])
                                 profit = ((high - entry_price) / entry_price) * 100
                                 drawdown = ((entry_price - low) / entry_price) * 100
@@ -3568,6 +3575,7 @@ async def ml_inspector_worker(pool):
                             return mfe, mae
 
                         mfe_3d, mae_3d = calculate_excursions(klines_3d, entry)
+
                         mfe_7d, mae_7d = calculate_excursions(klines_7d, entry)
                         mfe_14d, mae_14d = calculate_excursions(klines_14d, entry)
 
