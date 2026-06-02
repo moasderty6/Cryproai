@@ -291,46 +291,58 @@ INSTITUTIONAL_LOB = {}
 
 def update_dynamic_ofi(symbol, new_bids, new_asks):
     """
-    [C-Level Optimized] محرك حساب الـ OFI اللحظي (True Order Flow Imbalance)
-    يعمل بكفاءة خارقة دون استهلاك الـ CPU.
+    [Hedge Fund Level] True Order Flow Imbalance (Top of Book)
+    يعزل ضجيج انزياح نافذة الأسعار (Window Shift) عن سيولة صناع السوق الحقيقية.
     """
     if symbol not in INSTITUTIONAL_LOB:
         INSTITUTIONAL_LOB[symbol] = {
-            "best_bid": 0.0, "bid_vol": 0.0,
-            "best_ask": float('inf'), "ask_vol": 0.0,
-            "ofi_window": deque(maxlen=600), # نحتفظ بـ 600 لقطة (دقيقة كاملة من ضجيج الخوارزميات)
-            "bid_vols": deque(maxlen=60),    # لحساب التلاعب (Spoofing)
+            "best_bid": 0.0, "best_bid_vol": 0.0, # 👈 أضفنا حجم المستوى الأول للطلبات
+            "best_ask": float('inf'), "best_ask_vol": 0.0, # 👈 أضفنا حجم المستوى الأول للعروض
+            "ofi_window": deque(maxlen=600), 
+            "bid_vols": deque(maxlen=60),    
             "ask_vols": deque(maxlen=60)
         }
     
     mem = INSTITUTIONAL_LOB[symbol]
     
-    # تحويل القوائم إلى أفضل سعر وحجم إجمالي (أسرع من Numpy للمصفوفات الصغيرة)
+    # 🧠 الفصل المؤسساتي: حجم المستوى الأول (للـ OFI) والحجم الكلي (لقياس الضغط العميق)
     curr_best_bid = float(new_bids[0][0]) if new_bids else 0.0
-    curr_bid_vol = sum(float(v) for p, v in new_bids)
+    curr_best_bid_vol = float(new_bids[0][1]) if new_bids else 0.0 # 👈 الحجم الفعلي عند أفضل سعر فقط
+    curr_total_bid_vol = sum(float(v) for p, v in new_bids)        # 👈 الحجم الكلي للحفاظ على استقرار الكود
     
     curr_best_ask = float(new_asks[0][0]) if new_asks else float('inf')
-    curr_ask_vol = sum(float(v) for p, v in new_asks)
+    curr_best_ask_vol = float(new_asks[0][1]) if new_asks else 0.0
+    curr_total_ask_vol = sum(float(v) for p, v in new_asks)
     
     ofi = 0.0
     
-    # 🧠 معادلة True OFI (تأخذ تغير السعر والحجم في الاعتبار)
+    # 🧠 معادلة True OFI (تُطبّق حصراً على المستوى الأول Top of Book)
     # BIDS
-    if curr_best_bid > mem["best_bid"]: ofi += curr_bid_vol
-    elif curr_best_bid == mem["best_bid"]: ofi += (curr_bid_vol - mem["bid_vol"])
-    else: ofi -= mem["bid_vol"]
+    if curr_best_bid > mem["best_bid"]: 
+        ofi += curr_best_bid_vol
+    elif curr_best_bid == mem["best_bid"]: 
+        ofi += (curr_best_bid_vol - mem["best_bid_vol"])
+    else: 
+        ofi -= mem["best_bid_vol"]
     
     # ASKS
-    if curr_best_ask < mem["best_ask"]: ofi -= curr_ask_vol
-    elif curr_best_ask == mem["best_ask"]: ofi -= (curr_ask_vol - mem["ask_vol"])
-    else: ofi += mem["ask_vol"]
+    if curr_best_ask < mem["best_ask"]: 
+        ofi -= curr_best_ask_vol
+    elif curr_best_ask == mem["best_ask"]: 
+        ofi -= (curr_best_ask_vol - mem["best_ask_vol"])
+    else: 
+        ofi += mem["best_ask_vol"]
     
     # تحديث الذاكرة
     mem["ofi_window"].append(ofi)
-    mem["bid_vols"].append(curr_bid_vol)
-    mem["ask_vols"].append(curr_ask_vol)
-    mem["best_bid"], mem["bid_vol"] = curr_best_bid, curr_bid_vol
-    mem["best_ask"], mem["ask_vol"] = curr_best_ask, curr_ask_vol
+    mem["bid_vols"].append(curr_total_bid_vol) # 👈 نحتفظ بإجمالي العمق للدوال الأخرى
+    mem["ask_vols"].append(curr_total_ask_vol)
+    
+    mem["best_bid"] = curr_best_bid
+    mem["best_bid_vol"] = curr_best_bid_vol # 👈 تحديث ذاكرة المستوى الأول
+    
+    mem["best_ask"] = curr_best_ask
+    mem["best_ask_vol"] = curr_best_ask_vol
 
 async def get_whale_inflow_score():
     """
@@ -417,26 +429,34 @@ def train_xgboost_sync(records):
             'htf_whale_accumulation', 'days_since_last_expansion']]
 
     # 🎯 الأهداف الأربعة
+    from sklearn.preprocessing import StandardScaler # أضف هذا الاستدعاء في أعلى الملف أو داخل الدالة
+
+    # 🎯 الأهداف الأربعة
     Y = df[['trade_quality_score', 'max_adverse_excursion', 'time_to_surge', 'max_favorable_excursion']]
     
-        # 🧠 استخدام Pseudo-Huber Error يعطي مقاومة حديدية لشذوذ السوق (Pumps & Dumps)
-    # وفصل صارم (Decoupling) لتوقع الجودة دون التأثر بتشوه أسعار الدخول/الصعود
+    # 🧠 الحل المؤسساتي: توحيد المقياس (Target Scaling) لمنع طغيان متغير الوقت/السعر على الجودة
+    scaler_y = StandardScaler()
+    Y_scaled = scaler_y.fit_transform(Y)
+    
     base_model = xgb.XGBRegressor(
         n_estimators=400, 
         max_depth=5, 
         learning_rate=0.03, 
         subsample=0.8, 
         colsample_bytree=0.8, 
-        objective='reg:pseudohubererror', # 👈 التعديل الجوهري هنا
-        tree_method='hist',               # لتسريع التدريب الكثيف
-        monotone_constraints="(1, 0, 0, 0)" # (اختياري) إجبار الجودة على الارتباط الطردي مع المؤشرات القوية
+        objective='reg:pseudohubererror',
+        tree_method='hist',
+        monotone_constraints="(1, 0, 0, 0)" 
     )
     
     multi_model = MultiOutputRegressor(base_model)
-    multi_model.fit(X, Y)
+    multi_model.fit(X, Y_scaled) # 👈 نمرر البيانات الموزونة بدلاً من الخام
     
-    AI_QUANT_MODEL = multi_model
+    global AI_QUANT_MODEL
+    # نحفظ النموذج والمُحوّل معاً في قاموس (Dictionary) لتتمكن دالة التوقع من استرجاعهما
+    AI_QUANT_MODEL = {"model": multi_model, "scaler": scaler_y} 
     return True
+
 
 async def ai_trainer_worker(pool):
     """عامل التدريب: يستيقظ كل 12 ساعة لتطوير عقل البوت"""
@@ -496,14 +516,26 @@ def predict_signal_sync(features: dict):
         'days_since_last_expansion': float(features.get('days_since_last_expansion', 0.0))
     }])
 
-    prediction = AI_QUANT_MODEL.predict(input_data)[0]
+    # 🧠 استخراج النموذج والمُحوّل من الذاكرة
+    if isinstance(AI_QUANT_MODEL, dict):
+        multi_model = AI_QUANT_MODEL["model"]
+        scaler_y = AI_QUANT_MODEL["scaler"]
+        
+        # التوقع يعطينا أرقاماً موحدة (Scaled)
+        scaled_prediction = multi_model.predict(input_data)
+        
+        # فك التوحيد وعكسه لنحصل على الأرقام الحقيقية (ساعات، نسب)
+        prediction = scaler_y.inverse_transform(scaled_prediction)[0]
+    else:
+        # 🛡️ حماية للتوافقية (Backward Compatibility) في حال كان هناك نموذج قديم في الذاكرة
+        prediction = AI_QUANT_MODEL.predict(input_data)[0]
     
     predicted_quality = float(prediction[0])
     confidence_pct = round(((predicted_quality + 1) / 2) * 100, 1)
     
     entry_drop_pct = float(prediction[1])
     time_to_surge_hours = float(prediction[2])
-    expected_pump_pct = float(prediction[3]) # 🚀 الصعود
+    expected_pump_pct = float(prediction[3])
     
     return float(confidence_pct), entry_drop_pct, time_to_surge_hours, expected_pump_pct
 
@@ -1736,15 +1768,19 @@ async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_
             hist_rates = [float(item["fundingRate"]) for item in hist_fund_data]
             mean_funding = sum(hist_rates) / len(hist_rates)
             
-            # حساب الانحراف المعياري للتمويل
+            # حساب الانحراف المعياري للتمويل            # حساب الانحراف المعياري للتمويل
             variance = sum((x - mean_funding) ** 2 for x in hist_rates) / len(hist_rates)
             std_funding = variance ** 0.5
             
-            # حماية رياضية من القسمة على صفر (إذا كانت العملة مستقرة جداً ولا تتغير)
-            if std_funding == 0: std_funding = 1e-8
+            # 🧠 الحل المؤسساتي: (Volatility Floor)
+            # أقل تذبذب مالي معتبر لمعدل التمويل هو 0.01% (0.0001)
+            # إذا كان التذبذب الفعلي أقل من ذلك، نثبته عند هذا الحد لمنع جنون الـ Z-Score
+            MIN_FUNDING_STD = 0.0001
+            std_funding = max(std_funding, MIN_FUNDING_STD) # 👈 الحماية الحقيقية
             
             # كم انحرافاً معيارياً يبتعد التمويل اللحظي عن متوسط أسبوع كامل؟
             funding_z_score = (current_funding_rate - mean_funding) / std_funding
+
 
             score_modifier = 0.0
             futures_signal = None
@@ -1777,25 +1813,53 @@ async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_
 
 def calculate_volume_zscore(df, window=720):
     """
-    [Tier-1 Quant Upgrade] Log-Normal Volume Z-Score
-    يحول الفوليوم إلى توزيع لوغاريتمي لمنع الشموع المتطرفة من تدمير الانحراف المعياري،
-    مما يعطي قراءة إحصائية حقيقية محصنة ضد الشذوذ.
+    [Tier-1 Quant Upgrade] Time-of-Day Seasonality Z-Score
+    يقارن فوليوم الشمعة الحالية بمتوسط الفوليوم لنفس التوقيت من الأيام السابقة، 
+    مما يعزل ضجيج افتتاح الجلسات العالمية (الأمريكية والآسيوية) عن نشاط الحيتان الحقيقي.
     """
     df["volume"] = pd.to_numeric(df["volume"], errors='coerce')
     
-    # التحويل اللوغاريتمي الآمن (log(1 + x)) لحماية الفوليوم الصفري
+    # التحويل اللوغاريتمي الآمن
     log_vol = np.log1p(df["volume"])
     
-    # حساب المتوسط والانحراف المعياري على المقياس اللوغاريتمي
-    rolling_mean_log = log_vol.rolling(window=window, min_periods=100).mean()
-    rolling_std_log = log_vol.rolling(window=window, min_periods=100).std(ddof=0)
-    
-    # حساب Z-Score اللوغاريتمي
-    df["z_score"] = (log_vol - rolling_mean_log) / (rolling_std_log + 1e-8)
-    
-    current_z = float(df["z_score"].iloc[-1])
-    
-    # حسابات توافقية للحفاظ على استقرار الكود القديم (Backward Compatibility)
+    # 🧠 الحل المؤسساتي: عزل الموسمية الزمنية (Time-of-Day Grouping)
+    if "timestamp" in df.columns:
+        try:
+            # 1. استخراج "الوقت" من الشمعة (مثلاً 14:00 أو 14:15)
+            dt = pd.to_datetime(pd.to_numeric(df["timestamp"]), unit='s')
+            time_of_day = dt.dt.time
+            
+            # 2. إنشاء جدول مؤقت لجمع الفوليوم حسب الوقت
+            temp_df = pd.DataFrame({'log_vol': log_vol, 'tod': time_of_day})
+            
+            # 3. حساب المتوسط والانحراف المعياري لكل "وقت محدد" عبر التاريخ المتاح
+            tod_stats = temp_df.groupby('tod')['log_vol'].agg(['mean', 'std'])
+            
+            # 4. سحب وقت الشمعة الحالية
+            current_tod = time_of_day.iloc[-1]
+            
+            # 5. جلب المعدلات التاريخية الخاصة بهذا التوقيت تحديداً
+            current_mean = tod_stats.loc[current_tod, 'mean']
+            current_std = tod_stats.loc[current_tod, 'std']
+            
+            if pd.isna(current_std) or current_std == 0:
+                current_std = 1e-8
+                
+            # 6. حساب الـ Z-Score الدقيق الخالي من ضجيج الجلسات
+            current_z = float((log_vol.iloc[-1] - current_mean) / current_std)
+            
+        except Exception as e:
+            # 🛡️ الجدار الآمن (Fallback): إذا فشلت الحسابات، نعود لنظام Rolling الكلاسيكي
+            rolling_mean_log = log_vol.rolling(window=window, min_periods=100).mean()
+            rolling_std_log = log_vol.rolling(window=window, min_periods=100).std(ddof=0)
+            current_z = float((log_vol.iloc[-1] - rolling_mean_log.iloc[-1]) / (rolling_std_log.iloc[-1] + 1e-8))
+    else:
+        # Fallback في حال عدم تمرير عمود timestamp
+        rolling_mean_log = log_vol.rolling(window=window, min_periods=100).mean()
+        rolling_std_log = log_vol.rolling(window=window, min_periods=100).std(ddof=0)
+        current_z = float((log_vol.iloc[-1] - rolling_mean_log.iloc[-1]) / (rolling_std_log.iloc[-1] + 1e-8))
+
+    # حسابات توافقية للحفاظ على استقرار الكود القديم دون كسر الدوال الأخرى
     last_median = float(df["volume"].rolling(window=window, min_periods=100).median().iloc[-1])
     last_mad = float(df["volume"].rolling(window=window, min_periods=100).std().iloc[-1])
     
@@ -1803,7 +1867,6 @@ def calculate_volume_zscore(df, window=720):
         current_z = 0.0
 
     return current_z, last_median, last_mad
-
 
 async def silent_data_harvester_worker(pool):
     """
@@ -2483,10 +2546,10 @@ def detect_dark_pool_vca(df, current_cvd_usd, oi_change_pct, funding_rate=0.0, o
         signal_tag = "DEEP_ABSORPTION"
 
     return round(vca_score, 1), signal_tag
-async def get_institutional_vpin(symbol: str, client: httpx.AsyncClient, target_trades: int = 10000):
+async def get_institutional_vpin(symbol: str, client: httpx.AsyncClient, volume_24h: float, target_trades: int = 10000):
     """
-    [VPIN Truth Filter] Volume-Synchronized Probability of Informed Trading.
-    يسحب 10,000 صفقة ويقسمها إلى 50 دلو سيولة لكشف سمية التدفق (Toxicity).
+    [Hedge Fund Grade] ADV-Anchored VPIN Engine.
+    يربط دلاء السيولة بالحجم اليومي للعملة لضمان صحة المقارنة الإحصائية (Cross-Sectional Comparability).
     """
     clean_sym = symbol.replace("USDT", "") + "USDT"
     trades = []
@@ -2510,29 +2573,41 @@ async def get_institutional_vpin(symbol: str, client: httpx.AsyncClient, target_
             trades = batch + trades 
             last_id = batch[0]['a'] 
             
-        if len(trades) < 2000: return 0.5 
+        if len(trades) < 1000: return 0.5 
         
         import numpy as np
         trade_vols = np.array([float(t['q']) * float(t['p']) for t in trades])
         taker_sell_flags = np.array([t['m'] for t in trades])
         
-        total_vol = np.sum(trade_vols)
-        if total_vol == 0: return 0.5
+        total_sample_vol = np.sum(trade_vols)
+        if total_sample_vol == 0: return 0.5
         
-        num_buckets = 50 
-        bucket_size = total_vol / num_buckets
+        # 🧠 الحل المؤسساتي (Easley et al. Model):
+        # ربط حجم الدلو بالسيولة اليومية للعملة بدلاً من العينة المأخوذة
+        # نقسم فوليوم 24 ساعة على 50 ليمثل كل دلو 2% من السيولة اليومية الثابتة
+        bucket_size = max(volume_24h / 50.0, 1000.0) # حماية من الفوليوم الصفري
         
-        buckets_buy = np.zeros(num_buckets)
-        buckets_sell = np.zeros(num_buckets)
+        # كم عدد الدلاء التي تمتلئ بهذه العينة اللحظية؟
+        num_filled_buckets = int(total_sample_vol // bucket_size)
+        
+        # 🛡️ الفلتر السحري: إذا كانت العينة لا تملأ حتى دلواً واحداً، فهذا ضجيج أفراد (Retail Noise)
+        if num_filled_buckets < 1:
+            return 0.5
+            
+        buckets_buy = np.zeros(num_filled_buckets)
+        buckets_sell = np.zeros(num_filled_buckets)
         
         current_bucket = 0
         current_accumulated = 0.0
         
         for i in range(len(trades)):
+            if current_bucket >= num_filled_buckets:
+                break # نتوقف عند امتلاء الدلاء المطلوبة فقط
+                
             vol = trade_vols[i]
             is_sell = taker_sell_flags[i]
             
-            if current_accumulated + vol > bucket_size and current_bucket < num_buckets - 1:
+            if current_accumulated + vol > bucket_size:
                 excess = (current_accumulated + vol) - bucket_size
                 current_bucket_share = vol - excess
                 
@@ -2542,19 +2617,23 @@ async def get_institutional_vpin(symbol: str, client: httpx.AsyncClient, target_
                 current_bucket += 1
                 current_accumulated = excess
                 
-                if is_sell: buckets_sell[current_bucket] += excess
-                else: buckets_buy[current_bucket] += excess
+                if current_bucket < num_filled_buckets:
+                    if is_sell: buckets_sell[current_bucket] += excess
+                    else: buckets_buy[current_bucket] += excess
             else:
                 if is_sell: buckets_sell[current_bucket] += vol
                 else: buckets_buy[current_bucket] += vol
                 current_accumulated += vol
                 
         imbalances = np.abs(buckets_buy - buckets_sell)
-        vpin = np.sum(imbalances) / total_vol
+        
+        # حساب VPIN فقط على الدلاء الممتلئة الحقيقية
+        vpin = np.sum(imbalances) / (num_filled_buckets * bucket_size)
         return float(vpin)
         
     except Exception:
         return 0.5
+
 import numpy as np
 import onnxruntime as ort
 import os
@@ -2859,8 +2938,8 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             _, futures_signal, funding_val, oi_change_pct = await get_futures_liquidity(symbol, client, price, old_price_val)
             whale_score, phantom_tags = await detect_phantom_liquidity_ws(symbol, client, price, approx_24h_vol_usd)
             rs_score = await detect_btc_relative_strength(symbol, client)
-                        # 🚀 استدعاء فلتر الحقيقة VPIN (قراءة 10,000 صفقة)
-            vpin_score = await get_institutional_vpin(symbol, client)
+                        # 🚀 استدعاء فلتر الحقيقة VPIN (قراءة 10,000 صفقة)            # 🚀 استدعاء فلتر الحقيقة VPIN (مثبت بـ ADV لضمان الدقة)
+            vpin_score = await get_institutional_vpin(symbol, client, approx_24h_vol_usd)
             print(f"🔬 [VPIN Engine] {symbol} | Toxicity Score: {vpin_score:.2f}")
             tags.extend(phantom_tags)
             if limit_abs_signal == "Limit_Absorption": tags.append("Limit_Absorption")
@@ -5590,36 +5669,36 @@ async def evaluate_dex_risk(liquidity_usd: float, vol_24h: float):
 def calculate_mtfa_context_sync(candles_4h, candles_1d, candles_1w):
     """
     [Institutional MTFA Engine] - محرك التوافق الزمني الثلاثي
-    معزول تماماً عن الرادار. يحلل السياق الكلي ويُخرج معامل خطورة لتعديل الأهداف.
+    تم تأمينه ضد تسريب البيانات (Look-ahead Bias) والانحياز اللحظي.
     """
-    def get_trend(candles):
+    def get_trend(candles, drop_unclosed=False):
         if not candles or isinstance(candles, Exception) or len(candles) < 50:
             return "Unknown"
+        
         df = pd.DataFrame(candles).iloc[:, :6]
         df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
         
-        # 🔴 الإصلاح هنا: تحويل جميع الأعمدة المطلوبة إلى أرقام (Floats) قبل أي عملية حسابية
+        # 🧠 الحل المؤسساتي: إغلاق الارتكاز (Anchor Sealing)
+        # نحذف الشمعة الأخيرة (المفتوحة) للفريمات الكبيرة لنحصل على اتجاه حتمي لا يعيد رسم نفسه
+        if drop_unclosed and len(df) > 1:
+            df = df.iloc[:-1].copy()
+            
         df[["high", "low", "close", "volume"]] = df[["high", "low", "close", "volume"]].apply(pd.to_numeric, errors='coerce')
         
-        # 🧠 [Institutional Edge]: 1D Kalman Filter (Zero-Lag) + Volume Weighting
         df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3.0
-        
-        # 1. حساب VWAP اللحظي 
         df['vwap'] = (df['typical_price'] * df['volume']).cumsum() / (df['volume'].cumsum() + 1e-8)
         
-        # 2. مرشح كالمان (Kalman Filter) للضجيج السعري السريع
         import numpy as np
-        prices = df['close'].dropna().values # dropna للحماية الإضافية
+        prices = df['close'].dropna().values 
         if len(prices) == 0: return "Unknown"
         
         n = len(prices)
-        xhat = np.zeros(n) # التوقع
-        p = np.zeros(n)    # خطأ التوقع
+        xhat = np.zeros(n) 
+        p = np.zeros(n)    
         xhat[0], p[0] = prices[0], 1.0
-        q, r = 1e-5, 1e-4  # Q: سرعة التفاعل, R: حساسية الضجيج
+        q, r = 1e-5, 1e-4  
         
         for k in range(1, n):
-            # تحديث الزمن والمستشعر (Predict & Update)
             k_gain = (p[k-1] + q) / (p[k-1] + q + r)
             xhat[k] = xhat[k-1] + k_gain * (prices[k] - xhat[k-1])
             p[k] = (1 - k_gain) * (p[k-1] + q)
@@ -5627,25 +5706,25 @@ def calculate_mtfa_context_sync(candles_4h, candles_1d, candles_1w):
         current_kalman = xhat[-1]
         current_vwap = df['vwap'].iloc[-1]
         
-        # الاتجاه صاعد فقط إذا كان التوقع الرياضي (Kalman) والسعر فوق الـ VWAP التراكمي
         return "Bullish" if (current_kalman > current_vwap and prices[-1] > current_vwap) else "Bearish"
 
-
-
-    trend_4h = get_trend(candles_4h)
-    trend_1d = get_trend(candles_1d)
-    trend_1w = get_trend(candles_1w)
+    # ⚡ فريم التنفيذ (4H): نسمح له بقراءة الشمعة المفتوحة لاكتشاف التدفق اللحظي
+    trend_4h = get_trend(candles_4h, drop_unclosed=False)
+    
+    # ⚓ فريمات الارتكاز (1D, 1W): نمنعها من قراءة الشمعة المفتوحة لحماية الماكرو
+    trend_1d = get_trend(candles_1d, drop_unclosed=True)
+    trend_1w = get_trend(candles_1w, drop_unclosed=True)
 
     # 🧠 المنطق المؤسساتي لتحديد نوع الإشارة وحجم الأهداف
     alignment_status = "Neutral"
-    tp_modifier = 1.0 # 1.0 يعني الأهداف كما هي، 0.6 يعني أهداف قريبة (خطف)
+    tp_modifier = 1.0 
     status_ar = ""
     status_en = ""
 
     # 1. التوافق الذهبي (القطار السريع)
     if trend_4h == "Bullish" and trend_1d == "Bullish" and trend_1w == "Bullish":
         alignment_status = "Golden_Bullish"
-        tp_modifier = 1.30 # نوسع الأهداف لأن الترند الكلي يدعمنا 100%
+        tp_modifier = 1.30 
         status_ar = "<b>توافق زمني كامل (Golden Alignment):</b> سيولة الفريمات الثلاثة تضخ للأعلى. فرصة استثمارية ممتازة (Let Winners Run)."
         status_en = "<b>Golden Alignment:</b> Macro, Swing, and Execution timeframes are fully bullish. High conviction setup."
 
@@ -5658,14 +5737,14 @@ def calculate_mtfa_context_sync(candles_4h, candles_1d, candles_1w):
     # 2. ارتداد عكس الاتجاه (السكالبينج الخطير)
     elif trend_4h == "Bullish" and trend_1d == "Bearish":
         alignment_status = "Counter_Trend_Scalp"
-        tp_modifier = 0.50 # 🛡️ خنق الأهداف لـ 50% فقط للهروب السريع!
+        tp_modifier = 0.50 
         status_ar = "<b>سكالبينج عكس الاتجاه (Counter-Trend):</b> الفريم اليومي هابط بقوة والـ 4H يرتد. <b>تم تقريب الأهداف للهروب السريع (Hit & Run).</b>"
         status_en = "<b>Counter-Trend Scalp:</b> Daily is Bearish while 4H is bouncing. <b>Targets tightened for a Hit & Run.</b>"
 
     # 3. صيد التراجعات (اصطياد القيعان في ترند صاعد)
     elif trend_4h == "Bearish" and trend_1d == "Bullish":
         alignment_status = "Bullish_Pullback"
-        tp_modifier = 1.0 # أهداف طبيعية
+        tp_modifier = 1.0 
         status_ar = "<b>تراجع صحي (Pullback):</b> الفريم اليومي صاعد لكن الـ 4H يمر بتصحيح. مناطق ممتازة للتجميع (Dip Buying)."
         status_en = "<b>Healthy Pullback:</b> Macro is Bullish, execution timeframe is retracing. Prime Dip Buying zone."
 
@@ -5677,6 +5756,7 @@ def calculate_mtfa_context_sync(candles_4h, candles_1d, candles_1w):
         "macro_1w": trend_1w, "swing_1d": trend_1d, "exec_4h": trend_4h,
         "tp_modifier": tp_modifier, "ar_text": status_ar, "en_text": status_en
     }
+
 import time
 
 def extract_institutional_memory(symbol: str):
