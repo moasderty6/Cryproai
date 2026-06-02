@@ -2001,7 +2001,7 @@ async def silent_data_harvester_worker(pool):
                         model_name = "العميق (MoE) 🧠" if deep_pump >= xgb_pump else "الكلاسيكي (XGB) ⚙️"
                         best_confidence = ai_confidence_deep if deep_pump >= xgb_pump else ai_confidence
                         
-                        if best_pump >= 20.0 and best_confidence >= 20.0:
+                        if best_pump >= 60.0 and best_confidence >= 20.0:
                             
                             # نمنع تكرار إرسال نفس الجوهرة الاستثمارية خلال 48 ساعة
                             async with pool.acquire() as conn:
