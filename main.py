@@ -2161,17 +2161,24 @@ async def silent_data_harvester_worker(pool):
                                 tech_ar = f"ADX: {adx:.1f} | RSI: {rsi:.1f}"
 
                                 # 🧲 حساب النطاقات من الأصغر للأكبر
+                                # 🧲 حساب النطاقات من الأصغر للأكبر (دخول وخروج)
                                 xgb_opt_entry = price * (1 - (xgb_drop / 100))
                                 deep_opt_entry = price * (1 - (deep_drop / 100))
-                                
                                 min_entry = min(xgb_opt_entry, deep_opt_entry)
                                 max_entry = max(xgb_opt_entry, deep_opt_entry)
+                                
+                                xgb_target = price * (1 + (xgb_pump / 100))
+                                deep_target = price * (1 + (deep_pump / 100))
+                                min_target = min(xgb_target, deep_target)
+                                max_target = max(xgb_target, deep_target)
+
                                 min_time = min(xgb_time, deep_time)
                                 max_time = max(xgb_time, deep_time)
 
                                 insight_ar = (
                                     f"🧲 <b>نطاق الشراء:</b> <code>{format_price(min_entry)}$</code> - <code>{format_price(max_entry)}$</code>\n"
-                                    f"⏱️ <b>الزمن المقدر للصعود:</b> <code>{min_time:.1f}h</code> - <code>{max_time:.1f}h</code>\n"
+                                    f"🎯 <b>نطاق الهدف:</b> <code>{format_price(min_target)}$</code> - <code>{format_price(max_target)}$</code>\n"
+                                    f"⏱️ <b>الزمن المقدر:</b> <code>{min_time:.1f}h</code> - <code>{max_time:.1f}h</code>\n"
                                     f"• <b>السيولة:</b> {vol_ar}\n"
                                     f"• <b>التدفق:</b> {cvd_ar} {ob_ar}\n"
                                     f"• <b>المشتقات:</b> {fund_ar}\n"
@@ -2193,7 +2200,8 @@ async def silent_data_harvester_worker(pool):
 
                                 insight_en = (
                                     f"🧲 <b>Buying Range:</b> <code>${format_price(min_entry)}</code> - <code>${format_price(max_entry)}</code>\n"
-                                    f"⏱️ <b>Estimated Surge Time:</b> <code>{min_time:.1f}h</code> - <code>{max_time:.1f}h</code>\n"
+                                    f"🎯 <b>Target Range:</b> <code>${format_price(min_target)}</code> - <code>${format_price(max_target)}</code>\n"
+                                    f"⏱️ <b>Est. Surge Time:</b> <code>{min_time:.1f}h</code> - <code>{max_time:.1f}h</code>\n"
                                     f"• <b>Liquidity:</b> {vol_en}\n"
                                     f"• <b>Orderflow:</b> {cvd_en} {ob_en}\n"
                                     f"• <b>Derivatives:</b> {fund_en}\n"
@@ -3357,10 +3365,10 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     "ai_status": ai_status,
                     "cvd_usd": float(current_cvd),
                     # 🟢 تمرير النطاقات الزمنية والسعرية للرادار
-                    "xgb_drop": xgb_drop, "xgb_time": xgb_time,
-                    "deep_drop": deep_drop, "deep_time": deep_time
+                    "xgb_drop": xgb_drop, "xgb_time": xgb_time, "xgb_pump": xgb_pump,
+                    "deep_drop": deep_drop, "deep_time": deep_time, "deep_pump": deep_pump
                 }
-            return None  
+            return None    
 
   
         except Exception as e:
@@ -3883,16 +3891,29 @@ async def ai_opportunity_radar(pool):
                 # 🇸🇦 بناء التحليل الكمي باللغة العربية
                 # ==========================================
                 # 🧲 استخراج وترتيب النطاقات من الأصغر للأكبر
+                # ==========================================
+                # 🇸🇦 بناء التحليل الكمي باللغة العربية
+                # ==========================================
+                # 🧲 استخراج وترتيب النطاقات من الأصغر للأكبر
                 xgb_drop = float(best_meta.get('xgb_drop', 0.0))
                 xgb_time = float(best_meta.get('xgb_time', 0.0))
+                xgb_pump = float(best_meta.get('xgb_pump', 0.0))
+                
                 deep_drop = float(best_meta.get('deep_drop', 0.0))
                 deep_time = float(best_meta.get('deep_time', 0.0))
+                deep_pump = float(best_meta.get('deep_pump', 0.0))
 
+                # حساب مناطق الدخول
                 xgb_opt_entry = price * (1 - (xgb_drop / 100))
                 deep_opt_entry = price * (1 - (deep_drop / 100))
-
                 min_entry = min(xgb_opt_entry, deep_opt_entry)
                 max_entry = max(xgb_opt_entry, deep_opt_entry)
+                
+                # حساب مناطق الخروج (الأهداف)
+                xgb_target = price * (1 + (xgb_pump / 100))
+                deep_target = price * (1 + (deep_pump / 100))
+                min_target = min(xgb_target, deep_target)
+                max_target = max(xgb_target, deep_target)
                 
                 min_time = min(xgb_time, deep_time)
                 max_time = max(xgb_time, deep_time)
@@ -3909,7 +3930,8 @@ async def ai_opportunity_radar(pool):
 
                 insight_ar = (
                     f"🧲 <b>نطاق الشراء:</b> <code>{format_price(min_entry)}$</code> - <code>{format_price(max_entry)}$</code>\n"
-                    f"⏱️ <b>الزمن المقدر للصعود:</b> <code>{min_time:.1f}h</code> - <code>{max_time:.1f}h</code>\n"
+                    f"🎯 <b>نطاق الهدف:</b> <code>{format_price(min_target)}$</code> - <code>{format_price(max_target)}$</code>\n"
+                    f"⏱️ <b>الزمن المقدر:</b> <code>{min_time:.1f}h</code> - <code>{max_time:.1f}h</code>\n"
                     f"• <b>السيولة:</b> {vol_ar}\n"
                     f"• <b>التدفق:</b> {cvd_ar} {ob_ar}\n"
                     f"• <b>المشتقات:</b> {fund_ar}\n"
@@ -3931,12 +3953,14 @@ async def ai_opportunity_radar(pool):
 
                 insight_en = (
                     f"🧲 <b>Buying Range:</b> <code>${format_price(min_entry)}</code> - <code>${format_price(max_entry)}</code>\n"
-                    f"⏱️ <b>Estimated Surge Time:</b> <code>{min_time:.1f}h</code> - <code>{max_time:.1f}h</code>\n"
+                    f"🎯 <b>Target Range:</b> <code>${format_price(min_target)}</code> - <code>${format_price(max_target)}</code>\n"
+                    f"⏱️ <b>Est. Surge Time:</b> <code>{min_time:.1f}h</code> - <code>{max_time:.1f}h</code>\n"
                     f"• <b>Liquidity:</b> {vol_en}\n"
                     f"• <b>Orderflow:</b> {cvd_en} {ob_en}\n"
                     f"• <b>Derivatives:</b> {fund_en}\n"
                     f"• <b>Structure:</b> {tech_en}"
                 )
+
 
                 # ====================================================================
                 # 🚨 صدمة العرض المؤسساتية (للأدمن فقط - لا تحفظ في إشارة المستخدمين)
