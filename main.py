@@ -2064,7 +2064,7 @@ async def silent_data_harvester_worker(pool):
                         model_name = "العميق (MoE) 🧠" if deep_pump >= xgb_pump else "الكلاسيكي (XGB) ⚙️"
                         best_confidence = ai_confidence_deep if deep_pump >= xgb_pump else ai_confidence
                         
-                        if best_pump >= 60.0 and best_confidence >= 20.0:
+                        if best_pump >= 50.0 and best_confidence >= 20.0:
                             
                             # نمنع تكرار إرسال نفس الجوهرة الاستثمارية خلال 48 ساعة
                             async with pool.acquire() as conn:
@@ -2117,7 +2117,7 @@ async def silent_data_harvester_worker(pool):
                         # ====================================================================
 
                         # 🛑 الشرط الصارم
-                        if ai_confidence >= 80.0 and ai_confidence_deep >= 40.0:
+                        if ai_confidence >= 80.0 and ai_confidence_deep >= 70.0:
 
 
                             # التحقق مما إذا تم إرسال هذه العملة مؤخراً لتجنب الإزعاج
@@ -3277,7 +3277,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             is_macro_downtrend = price < ema200_val
             current_regime_trend = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
 
-            required_score = 65.0 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 60.0
+            required_score = 60.0 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 60.0
             
             # 🌟 تخفيض سكور القبول 5 نقاط كاملة إذا كانت العملة تُطبخ في غرفة الاحتضان!
             if is_incubated: 
