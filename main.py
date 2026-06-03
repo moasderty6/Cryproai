@@ -4468,9 +4468,23 @@ async def btc_vanguard_prediction_command(message: types.Message):
                 liq_type = liq_data['type']
                 move_icon = "🚀" if target_price > current_price else "📉"
             else:
-                expected_pump = pump_deep if use_deep else pump_xgb
-                target_price = current_price * (1 + (expected_pump / 100))
-                liq_type = "استقرار نسبي في العقود"
+                raw_expected_pump = pump_deep if use_deep else pump_xgb
+                
+                # 🛡️ القيد الكمّي (Quant Guardrail): كبح هلوسة الذكاء الاصطناعي بربطه بالتذبذب الفعلي للسوق
+                # حساب أقصى مدى تحرك فيه السعر خلال آخر 7 أيام (حوالي 672 شمعة ربع ساعة)
+                recent_high = df['high'].tail(672).max()
+                recent_low = df['low'].tail(672).min()
+                weekly_range_pct = ((recent_high - recent_low) / recent_low) * 100
+                
+                # الحد الأقصى المنطقي (Cap) للصعود في غياب سيولة المشتقات:
+                # نأخذ 60% من المدى الأسبوعي، ونضع حداً أدنى 3.5% كهدف منطقي لسكالبينج حيتان
+                realistic_pump_cap = max(3.5, weekly_range_pct * 0.6)
+                
+                # ترويض الرقم الفلكي: نأخذ الرقم الأقل بين توقع الـ AI والحد الأقصى لفيزياء السوق الحالية
+                realistic_pump = min(raw_expected_pump, realistic_pump_cap)
+                
+                target_price = current_price * (1 + (realistic_pump / 100))
+                liq_type = "استقرار عقود (الهدف مبني على التذبذب الديناميكي)"
                 move_icon = "⚖️"
 
             # 📝 8. صياغة التقرير كما يُطلب في غرف التداول المغلقة
