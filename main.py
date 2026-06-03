@@ -2117,7 +2117,7 @@ async def silent_data_harvester_worker(pool):
                         # ====================================================================
 
                         # 🛑 الشرط الصارم
-                        if ai_confidence >= 40.0 and ai_confidence_deep >= 40.0:
+                        if ai_confidence >= 80.0 and ai_confidence_deep >= 40.0:
 
 
                             # التحقق مما إذا تم إرسال هذه العملة مؤخراً لتجنب الإزعاج
