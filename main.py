@@ -2117,7 +2117,7 @@ async def silent_data_harvester_worker(pool):
                         # ====================================================================
 
                         # 🛑 الشرط الصارم
-                        if ai_confidence >= 75.0 and ai_confidence_deep >= 75.0:
+                        if ai_confidence >= 40.0 and ai_confidence_deep >= 40.0:
 
 
                             # التحقق مما إذا تم إرسال هذه العملة مؤخراً لتجنب الإزعاج
@@ -3277,7 +3277,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             is_macro_downtrend = price < ema200_val
             current_regime_trend = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
 
-            required_score = 75.0 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 70.0
+            required_score = 65.0 if (current_regime_trend == "Trending_Bear" or is_macro_downtrend) else 60.0
             
             # 🌟 تخفيض سكور القبول 5 نقاط كاملة إذا كانت العملة تُطبخ في غرفة الاحتضان!
             if is_incubated: 
