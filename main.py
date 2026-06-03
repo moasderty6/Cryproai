@@ -3763,7 +3763,7 @@ async def check_btc_gravity_veto(client: httpx.AsyncClient):
             candle_drop = (current_close - current_open) / current_open
             
             # إذا هبط البيتكوين أكثر من 0.4% في 5 دقائق، هذا نزيف حاد (Flash Drop)
-            if drop_pct < -0.004 or candle_drop < -0.004:
+            if drop_pct < -0.2 or candle_drop < -0.2:
                 return True # تفعيل الفيتو (خطر)
     except Exception as e:
         pass
