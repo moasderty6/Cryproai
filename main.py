@@ -3819,7 +3819,7 @@ async def ai_opportunity_radar(pool):
                     price_change = float(t["priceChangePercent"])
                     
                     # 🟢 الفلترة السحرية: 
-                    if vol_usd >= 400_000 and -10.0 <= price_change <= 5.0:
+                    if vol_usd >= 400_000 and -25.0 <= price_change <= 5.0:
                         coins.append({
                             "symbol": clean_sym,
                             "quote": {"USD": {"price": float(t["lastPrice"])}},
