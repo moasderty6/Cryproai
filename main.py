@@ -171,7 +171,7 @@ BINANCE_HEADERS = {"X-MBX-APIKEY": BINANCE_API_KEY}
 GATE_API_KEY = "a3f6a57b42f6106011e6890049e57b2e"
 GATE_API_SECRET = "1ac18e0a690ce782f6854137908a6b16eb910cf02f5b95fa3c43b670758f79bc"
 GATE_BASE = "https://api.gateio.ws/api/v4/spot/candlesticks"
-CRYPTORANK_API_KEY = "f9210c5b3b9e1fbf23ce8f839c35e3ae0c731c3b6193d05ede9013049248"
+CRYPTORANK_API_KEY = "6ba0b029bf0c28de3f3b9fc73b518d21b965498724e32ae31015be0da48b"
 BLACKLISTED_COINS = {"TOMO", "EUR", "TVK", "OMNI", "GAL", "USD1", "COCOS", "LRC", "BUSD", "TUSD", "USDC", "USDE", "BFUSD", "RLUSD", "POLY", "XUSD", "U", "USDT", "DAI", "USDP", "FDUSD", "USDD", "PYUSD", "FRAX", "LUSD", "GUSD", "ZUSD", "VAI", "MAI", "DOLA", "EURC", "EURT", "EURS", "AEUR", "EURA", "TRY", "BRL", "ZAR"}
 GROQ_KEYS_STR = os.getenv("GROQ_API_KEYS", "")
 GROQ_API_KEYS = [k.strip() for k in GROQ_KEYS_STR.split(",") if k.strip()]
@@ -3208,7 +3208,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             alt_regime = MACRO_CACHE.get("alt_regime_score", 50.0)
             alt_flow_multiplier = 1.0
             
-            if clean_sym != "BTC": # لا نطبق هذا الفلتر على البيتكوين نفسه
+            if symbol != "BTC": # لا نطبق هذا الفلتر على البيتكوين نفسه
                 if alt_regime > 60.0:
                     alt_flow_multiplier = 1.10 # +10% محفز (موسم العملات البديلة)
                     tags.append("Alt_Regime_Tailwind")
