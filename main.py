@@ -2866,6 +2866,82 @@ def calculate_macro_htf_features(candles_1d, candles_1w):
         print(f"⚠️ [Macro Engine] Error calculating HTF features: {e}")
 
     return weekly_void_score, macro_z_30d, htf_accumulation, days_since_expansion
+# ====================================================================
+# 🐋 THE INSTITUTIONAL TOKENOMICS ENGINE (Emission Overhang)
+# ====================================================================
+TOKENOMICS_CACHE = {}
+
+async def evaluate_tokenomics_overhang(symbol: str, client: httpx.AsyncClient):
+    """
+    محرك تقييم التضخم (Dilution Risk):
+    يفحص الفجوة بين القيمة السوقية والتقييم المخفف بالكامل (FDV)، 
+    ويبحث عن عمليات فك التوكنات القادمة (Unlocks) لقتل الإشارات الوهمية.
+    """
+    clean_sym = symbol.replace("USDT", "")
+    current_time = time.time()
+    
+    # 1. فحص الذاكرة المؤقتة (Cache) لتقليل استهلاك الـ API (كل 24 ساعة)
+    if clean_sym in TOKENOMICS_CACHE and (current_time - TOKENOMICS_CACHE[clean_sym]['ts']) < 86400:
+        return TOKENOMICS_CACHE[clean_sym]['data']
+        
+    result = {
+        "is_vetoed": False,
+        "penalty_multiplier": 1.0,
+        "reason": "",
+        "tag": ""
+    }
+
+    try:
+        # 2. حساب نسبة التضخم المتبقية (FDV to Market Cap Ratio) عبر CoinMarketCap
+        # أنت تمتلك المفتاح مسبقاً في متغيرات البيئة CMC_KEY
+        headers = {"X-CMC_PRO_API_KEY": CMC_KEY, "Accept": "application/json"}
+        cmc_url = f"https://pro-api.coinmarketcap.com/v2/cryptocurrency/quotes/latest?symbol={clean_sym}"
+        
+        cmc_res = await client.get(cmc_url, headers=headers, timeout=5.0)
+        
+        if cmc_res.status_code == 200:
+            data = cmc_res.json()
+            if 'data' in data and clean_sym in data['data']:
+                coin_info = data['data'][clean_sym][0]
+                circulating = float(coin_info.get('circulating_supply') or 1.0)
+                total_supply = float(coin_info.get('total_supply') or circulating)
+                
+                # نسبة ما تم فكه من التوكنات (الرقم المنخفض يعني تضخماً مرعباً قادماً)
+                unlocked_pct = (circulating / total_supply) * 100
+                fdv_ratio = total_supply / circulating
+                
+                # 🛡️ العقاب الأساسي (FDV Penalty):
+                # إذا كانت العملة قد فكت أقل من 15% من معروضها (FDV عالي جداً = عملات VC خطرة)
+                if fdv_ratio > 6.0:
+                    result["penalty_multiplier"] = 0.6 # سحق السكور النهائي بنسبة 40%
+                    result["tag"] = "Toxic_FDV_Overhang"
+                    
+        # 3. فحص جداول فك الارتباط اللحظية (Token Unlocks Cliff)
+        # ملاحظة: يمكنك استبدال هذا الرابط بـ API مفضل لديك مثل TokenUnlocks أو Dropstab
+        unlocks_url = f"https://api.tokenunlocks.app/v1/projects/{clean_sym.lower()}"
+        unlock_res = await client.get(unlocks_url, timeout=5.0)
+        
+        if unlock_res.status_code == 200:
+            unlock_data = unlock_res.json()
+            next_unlock = unlock_data.get('next_unlock', {})
+            
+            if next_unlock:
+                days_until_unlock = float(next_unlock.get('days_left', 999))
+                unlock_pct_of_circulating = float(next_unlock.get('pct_of_circulating', 0.0))
+                
+                # 🛑 جدار الإعدام (The Ultimate Veto):
+                # إذا كان هناك فك توكنات يتجاوز 3% من المعروض خلال الـ 14 يوماً القادمة
+                if days_until_unlock <= 14.0 and unlock_pct_of_circulating >= 3.0:
+                    result["is_vetoed"] = True
+                    result["reason"] = f"Massive Unlock ({unlock_pct_of_circulating:.1f}%) in {days_until_unlock:.1f} Days"
+                    result["tag"] = "Exit_Liquidity_Trap"
+
+    except Exception as e:
+        print(f"⚠️ [Tokenomics Engine] Error fetching data for {clean_sym}: {e}")
+        
+    # حفظ في الذاكرة
+    TOKENOMICS_CACHE[clean_sym] = {'ts': current_time, 'data': result}
+    return result
 
 async def analyze_radar_coin(c, client, market_regime, sem):
     async with sem:  
@@ -2898,10 +2974,16 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             safe_spread = max(candle_spread_pct, avg_spread, 0.15) # العتبة الأدنى 0.15%
             
             lar_score = current_z / safe_spread
-
             # ==========================================================
-            # 🛑 المرحلة الأولى: جدار الإعدام الرياضي (Fail-Fast Veto)
+            # 🛑 المرحلة الأولى: جدار الإعدام الرياضي والأساسي (Fail-Fast Veto)
             # ==========================================================
+            
+            # 🧬 1. فحص اقتصاديات التوكن (Tokenomics Exit-Liquidity Check)
+            tokenomics_risk = await evaluate_tokenomics_overhang(symbol, client)
+            if tokenomics_risk['is_vetoed']:
+                tags.append(tokenomics_risk['tag'])
+                print(f"🗑️ {symbol} - قُتلت مبكراً (فخ سيولة الخروج: {tokenomics_risk['reason']})")
+                return None 
             
             # تعديل عتبة Z-Score ديناميكياً بناءً على تقلبات الماكرو
             current_regime_trend = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
@@ -3101,22 +3183,48 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 
             volume_multiplier = raw_vol_multiplier * vol_penalty_factor
             # --- البُعد الرابع: محفزات الألفا الهيكلية (Structural Alpha Multipliers) ---
+            # --- البُعد الرابع: محفزات الألفا الهيكلية ووقود الماكرو (Structural Alpha & Macro Fuel) ---
             vca_multiplier = 1.0 + (vca_bonus_score / 100.0) 
             incubation_multiplier = 1.0 + (incubation_bonus / 100.0)
             
-            # 🛑 كابح الدارك بول: لا نُعطي ستيرويد (Bonus) لعملة تنهار والبولينجر يتوسع!
+            # 🌍 1. حقن سيولة الماكرو (Global Liquidity Injection):
+            onchain_macro_fuel = 1.0
+            if is_incubated and MACRO_CACHE.get("onchain_liquidity_score", 0.0) > 15.0 and micro_cvd_trend > 0:
+                onchain_macro_fuel = 1.15 # 15% دفعة قوية للعملة
+                
+            # 🪐 2. كابح/محفز استحواذ البيتكوين (Altcoin Regime Flow):
+            # إذا كان البيتكوين يمتص السيولة (السكور أقل من 40)، نعاقب العملات البديلة لمنع الاختراقات الوهمية.
+            # إذا كانت السيولة تتدفق للبديل (السكور أعلى من 60)، نمنحها علاوة زخم (Tailwind).
+            alt_regime = MACRO_CACHE.get("alt_regime_score", 50.0)
+            alt_flow_multiplier = 1.0
+            
+            if clean_sym != "BTC": # لا نطبق هذا الفلتر على البيتكوين نفسه
+                if alt_regime > 60.0:
+                    alt_flow_multiplier = 1.10 # +10% محفز (موسم العملات البديلة)
+                    tags.append("Alt_Regime_Tailwind")
+                elif alt_regime < 40.0:
+                    alt_flow_multiplier = 0.85 # -15% عقاب صارم (البيتكوين يمتص السيولة / BTC Vacuum)
+                    tags.append("BTC_Liquidity_Vacuum")
+            
+            # 🛑 كابح الدارك بول النهائي: 
             if squeeze_ratio < 1.2:
-                structural_alpha_boost = min(1.35, vca_multiplier * incubation_multiplier)
+                # نضرب المحفزات الذاتية بوقود الماكرو وتدفق القطاع (Alt Flow Multiplier)
+                structural_alpha_boost = min(1.60, vca_multiplier * incubation_multiplier * onchain_macro_fuel * alt_flow_multiplier)
             else:
-                structural_alpha_boost = 1.0 # إغلاق محفز الألفا لأن العملة تنزف
-
-
+                # إذا كانت العملة تنزف، نلغي المحفزات الإيجابية، لكن نُبقي على عقاب امتصاص البيتكوين إن وُجد
+                structural_alpha_boost = min(1.0, alt_flow_multiplier)
             # --- ⚖️ الدمج الهندسي المؤسساتي (Weighted Geometric Fusion) ---
             # استخدام الضرب التبادلي: إذا كان التوقيت سيئاً (يقترب من الصفر)، السكور ينهار لحماية المشترك
             base_conviction = (directional_score ** 0.70) * (timing_score ** 0.30)
             
-            # تطبيق محفزات الدارك بول (VCA) وغرفة الاحتضان
-            enhanced_conviction = base_conviction * structural_alpha_boost
+            # 🛡️ تطبيق عقاب التوكنوميكس المخفي (Toxic FDV Overhang Penalty)
+            tokenomics_multiplier = tokenomics_risk.get("penalty_multiplier", 1.0)
+            if tokenomics_multiplier < 1.0:
+                tags.append(tokenomics_risk.get("tag", "High_Inflation"))
+            
+            # تطبيق محفزات الدارك بول (VCA)، وغرفة الاحتضان، وعبء التوكنوميكس
+            enhanced_conviction = base_conviction * structural_alpha_boost * tokenomics_multiplier
+
             
             # البوابة النهائية (Volume Multiplier) تصفي الفرصة
             final_raw_score = enhanced_conviction * volume_multiplier
@@ -3418,29 +3526,26 @@ async def institutional_incubator_worker(pool):
                         std = df["close"].rolling(dyn_window).std(ddof=0)
                         bb_width = (4 * std) / sma
                         current_bb_width = bb_width.iloc[-1]
-                        
-                        # 🧠 شروط الاحتضان (Macro Compression & On-Chain Synergy):
-                        # إذا كان هناك طباعة قوية للعملات المستقرة على البلوكتشين،
-                        # نتساهل في شروط الاحتضان (نوسع البولينجر المسموح به) لنصطاد عملات أكثر
+                        # 🧠 شروط الاحتضان الصارمة (Idiosyncratic Compression):
+                        # العملة يجب أن تثبت انضغاطها الهيكلي بقوتها الذاتية دون الاعتماد على الماكرو.
+                        # الماكرو سيعمل لاحقاً كوقود للانفجار (Multiplier) وليس كعذر للدخول المبكر.
                         
                         onchain_boost = MACRO_CACHE.get("onchain_liquidity_score", 0.0)
                         
-                        # عتبة البولينجر الديناميكية
-                        dynamic_bb_threshold = 0.08
-                        if onchain_boost > 15.0:
-                            dynamic_bb_threshold = 0.12 # توسيع العتبة لأن الماكرو إيجابي جداً
-                        elif onchain_boost < -10.0:
-                            dynamic_bb_threshold = 0.05 # تضييق العتبة لأن الماكرو سلبي
-                            
-                        if current_bb_width < dynamic_bb_threshold and current_adx < 25.0 and current_z > 1.0:
+                        # عتبة البولينجر تصبح صارمة وخاصة بالعملة فقط
+                        # 0.08 تعني انضغاط قاتل (Volatility Squeeze) حقيقي
+                        strict_bb_threshold = 0.08
+                        
+                        # 🛡️ فلتر الانضغاط الذاتي (Self-Sustained Coiling)
+                        if current_bb_width < strict_bb_threshold and current_adx < 25.0 and current_z > 1.0:
                             if sym not in INCUBATION_MATRIX:
                                 INCUBATION_MATRIX[sym] = {
                                     "incubation_start": time.time(),
                                     "macro_z": current_z,
                                     "bb_width": current_bb_width,
-                                    "onchain_fueled": True if onchain_boost > 15.0 else False # 👈 بصمة البلوكتشين
+                                    "onchain_fueled": True if onchain_boost > 15.0 else False # 👈 نحتفظ ببصمة البلوكتشين لاستخدامها كمحفز
                                 }
-                                print(f"🧬 [Incubator] Added {sym}. On-Chain Fueled: {INCUBATION_MATRIX[sym]['onchain_fueled']}")
+                                print(f"🧬 [Incubator] Added {sym} (Strict Squeeze Confirmed). On-Chain Fueled: {INCUBATION_MATRIX[sym]['onchain_fueled']}")
                         
                         await asyncio.sleep(2) # راحة لبايننس
 
@@ -3623,17 +3728,16 @@ async def ml_inspector_worker(pool):
             
         await asyncio.sleep(600)
 
-
-# --- الذاكرة المؤسساتية للماكرو والاحتضان ---
-# --- الذاكرة المؤسساتية للماكرو والاحتضان ---
 MACRO_CACHE = {
     "sp500_trend": 0.0,
-    "sentiment_score": 50.0, # سيتم تحويله لـ Institutional Risk Score
-    "global_funding_health": 0.0, # صحة التمويل الكلي (هل السوق Short/Long مكشوف؟)
-    "btc_liquidity_health": 0.0, # هل يتم سحب السيولة من البيتكوين للألتكوين؟
-    "onchain_liquidity_score": 0.0, # 👈 الحقن هنا (قياس طباعة العملات المستقرة)
-    "onchain_net_flow_usd": 0.0     # 👈 حجم الأموال المطبوعة بدقة بالدولار
+    "sentiment_score": 50.0, 
+    "global_funding_health": 0.0, 
+    "btc_liquidity_health": 0.0, 
+    "onchain_liquidity_score": 0.0, 
+    "onchain_net_flow_usd": 0.0,
+    "alt_regime_score": 50.0      # 👈 المحرك الجديد: يقيس تدفق السيولة للعملات البديلة مقابل البيتكوين
 }
+
 
 # غرفة الاحتضان (الزنبرك): { "BTCUSDT": {"incubation_start": 1712000000, "score": 85} }
 INCUBATION_MATRIX = {} 
@@ -3722,17 +3826,48 @@ async def macro_data_worker():
                 MACRO_CACHE["onchain_net_flow_usd"] = net_usd
                 MACRO_CACHE["onchain_liquidity_score"] = onchain_score
                 # ----------------
-                
-                # 4. دمج الماكرو النهائي كـ "علاوة مخاطرة" (Risk Premium)
+                # 4. 🧠 محرك السيولة القطاعية (Altcoin Regime Engine)
+                # يقيس من يمتلك زمام المبادرة: البيتكوين أم العملات البديلة؟
+                try:
+                    tickers_res = await client.get(f"{get_random_binance_base()}/api/v3/ticker/24hr")
+                    if tickers_res.status_code == 200:
+                        tickers = tickers_res.json()
+                        btc_ticker = next((t for t in tickers if t['symbol'] == 'BTCUSDT'), None)
+                        if btc_ticker:
+                            btc_change = float(btc_ticker['priceChangePercent'])
+                            
+                            # أخذ أعلى 100 عملة بديلة سيولة (Top 100 Alts)
+                            alts = [t for t in tickers if t['symbol'].endswith('USDT') and t['symbol'] != 'BTCUSDT']
+                            alts = sorted(alts, key=lambda x: float(x['quoteVolume']), reverse=True)[:100]
+                            
+                            alts_changes = [float(a['priceChangePercent']) for a in alts]
+                            if alts_changes:
+                                # حساب أداء "الكتلة الصلبة" للعملات البديلة (Median لتجاهل الشذوذ)
+                                median_alt_change = sorted(alts_changes)[len(alts_changes)//2]
+                                
+                                # حساب الفارق (Spread) بين البديلة والبيتكوين
+                                alt_spread = median_alt_change - btc_change
+                                
+                                # تحويل الفارق لسكور مؤسساتي من 0 لـ 100 (50 هو التعادل)
+                                # إيجابي بقوة = Altseason | سلبي بقوة = BTC Vacuum
+                                MACRO_CACHE["alt_regime_score"] = quant_sigmoid_score(alt_spread, sensitivity=0.5, limit=100.0)
+                except Exception as e:
+                    print(f"⚠️ [Macro] Alt-Regime Engine Error: {e}")
+
+                # 5. دمج الماكرو النهائي كـ "علاوة مخاطرة" (Risk Premium)
                 base_score = 50.0
                 if MACRO_CACHE["sp500_trend"] > 0.5: base_score += 10
                 elif MACRO_CACHE["sp500_trend"] < -0.5: base_score -= 10
                 
-                # إضافة تأثير التمويل الكلي (30%) وتأثير البلوكتشين (30%)
-                final_macro_score = (base_score * 0.4) + (MACRO_CACHE["global_funding_health"] * 0.3) + (MACRO_CACHE["onchain_liquidity_score"] * 0.3)
+                # ⚖️ الدمج المؤسساتي المتوازن للأسواق الكلية:
+                # 25% SPY, 25% Funding, 25% On-Chain, 25% Alt-Regime
+                final_macro_score = (base_score * 0.25) + \
+                                    (MACRO_CACHE["global_funding_health"] * 0.25) + \
+                                    (MACRO_CACHE["onchain_liquidity_score"] * 0.25) + \
+                                    (MACRO_CACHE["alt_regime_score"] * 0.25)
                 
-                # إضافة علاوة (Bonus) قوية جداً إذا تم طباعة أموال ضخمة
-                if MACRO_CACHE["onchain_liquidity_score"] > 20.0:
+                # إضافة علاوة (Bonus) قوية جداً إذا تم طباعة أموال والسيولة تتجه للبديلة بقوة
+                if MACRO_CACHE["onchain_liquidity_score"] > 20.0 and MACRO_CACHE["alt_regime_score"] > 60.0:
                     final_macro_score += 15.0 
 
                 MACRO_CACHE["sentiment_score"] = round(max(0.0, min(100.0, final_macro_score)), 1)
