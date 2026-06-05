@@ -171,6 +171,7 @@ BINANCE_HEADERS = {"X-MBX-APIKEY": BINANCE_API_KEY}
 GATE_API_KEY = "a3f6a57b42f6106011e6890049e57b2e"
 GATE_API_SECRET = "1ac18e0a690ce782f6854137908a6b16eb910cf02f5b95fa3c43b670758f79bc"
 GATE_BASE = "https://api.gateio.ws/api/v4/spot/candlesticks"
+CRYPTORANK_API_KEY = "f9210c5b3b9e1fbf23ce8f839c35e3ae0c731c3b6193d05ede9013049248"
 BLACKLISTED_COINS = {"TOMO", "EUR", "TVK", "OMNI", "GAL", "USD1", "COCOS", "LRC", "BUSD", "TUSD", "USDC", "USDE", "BFUSD", "RLUSD", "POLY", "XUSD", "U", "USDT", "DAI", "USDP", "FDUSD", "USDD", "PYUSD", "FRAX", "LUSD", "GUSD", "ZUSD", "VAI", "MAI", "DOLA", "EURC", "EURT", "EURS", "AEUR", "EURA", "TRY", "BRL", "ZAR"}
 GROQ_KEYS_STR = os.getenv("GROQ_API_KEYS", "")
 GROQ_API_KEYS = [k.strip() for k in GROQ_KEYS_STR.split(",") if k.strip()]
@@ -2869,77 +2870,86 @@ def calculate_macro_htf_features(candles_1d, candles_1w):
 # ====================================================================
 # 🐋 THE INSTITUTIONAL TOKENOMICS ENGINE (Emission Overhang)
 # ====================================================================
+# ====================================================================
+# 🐋 THE INSTITUTIONAL TOKENOMICS ENGINE (Emission Overhang) [THE REAL FIX]
+# ====================================================================
 TOKENOMICS_CACHE = {}
 
 async def evaluate_tokenomics_overhang(symbol: str, client: httpx.AsyncClient):
-    """
-    محرك تقييم التضخم (Dilution Risk):
-    يفحص الفجوة بين القيمة السوقية والتقييم المخفف بالكامل (FDV)، 
-    ويبحث عن عمليات فك التوكنات القادمة (Unlocks) لقتل الإشارات الوهمية.
-    """
     clean_sym = symbol.replace("USDT", "")
     current_time = time.time()
     
-    # 1. فحص الذاكرة المؤقتة (Cache) لتقليل استهلاك الـ API (كل 24 ساعة)
+    # الذاكرة المؤقتة لمنع استنزاف حدود الـ API (كل 24 ساعة للعملة)
     if clean_sym in TOKENOMICS_CACHE and (current_time - TOKENOMICS_CACHE[clean_sym]['ts']) < 86400:
         return TOKENOMICS_CACHE[clean_sym]['data']
         
-    result = {
-        "is_vetoed": False,
-        "penalty_multiplier": 1.0,
-        "reason": "",
-        "tag": ""
-    }
+    result = {"is_vetoed": False, "penalty_multiplier": 1.0, "reason": "", "tag": ""}
 
-    try:
-        # 2. حساب نسبة التضخم المتبقية (FDV to Market Cap Ratio) عبر CoinMarketCap
-        # أنت تمتلك المفتاح مسبقاً في متغيرات البيئة CMC_KEY
-        headers = {"X-CMC_PRO_API_KEY": CMC_KEY, "Accept": "application/json"}
-        cmc_url = f"https://pro-api.coinmarketcap.com/v2/cryptocurrency/quotes/latest?symbol={clean_sym}"
-        
-        cmc_res = await client.get(cmc_url, headers=headers, timeout=5.0)
-        
-        if cmc_res.status_code == 200:
-            data = cmc_res.json()
-            if 'data' in data and clean_sym in data['data']:
-                coin_info = data['data'][clean_sym][0]
-                circulating = float(coin_info.get('circulating_supply') or 1.0)
-                total_supply = float(coin_info.get('total_supply') or circulating)
-                
-                # نسبة ما تم فكه من التوكنات (الرقم المنخفض يعني تضخماً مرعباً قادماً)
-                unlocked_pct = (circulating / total_supply) * 100
-                fdv_ratio = total_supply / circulating
-                
-                # 🛡️ العقاب الأساسي (FDV Penalty):
-                # إذا كانت العملة قد فكت أقل من 15% من معروضها (FDV عالي جداً = عملات VC خطرة)
-                if fdv_ratio > 6.0:
-                    result["penalty_multiplier"] = 0.6 # سحق السكور النهائي بنسبة 40%
-                    result["tag"] = "Toxic_FDV_Overhang"
-                    
-        # 3. فحص جداول فك الارتباط اللحظية (Token Unlocks Cliff)
-        # ملاحظة: يمكنك استبدال هذا الرابط بـ API مفضل لديك مثل TokenUnlocks أو Dropstab
-        unlocks_url = f"https://api.tokenunlocks.app/v1/projects/{clean_sym.lower()}"
-        unlock_res = await client.get(unlocks_url, timeout=5.0)
-        
-        if unlock_res.status_code == 200:
-            unlock_data = unlock_res.json()
-            next_unlock = unlock_data.get('next_unlock', {})
+    # ==========================================================
+    # 🛡️ المحرك الأول: التضخم الكلي (Macro FDV) باستخدام CoinMarketCap
+    # ==========================================
+    if CMC_KEY:
+        try:
+            headers = {"X-CMC_PRO_API_KEY": CMC_KEY, "Accept": "application/json"}
+            cmc_url = f"https://pro-api.coinmarketcap.com/v2/cryptocurrency/quotes/latest?symbol={clean_sym}"
+            # Time out قصير لمنع تعليق الرادار
+            cmc_res = await client.get(cmc_url, headers=headers, timeout=3.0)
             
-            if next_unlock:
-                days_until_unlock = float(next_unlock.get('days_left', 999))
-                unlock_pct_of_circulating = float(next_unlock.get('pct_of_circulating', 0.0))
-                
-                # 🛑 جدار الإعدام (The Ultimate Veto):
-                # إذا كان هناك فك توكنات يتجاوز 3% من المعروض خلال الـ 14 يوماً القادمة
-                if days_until_unlock <= 14.0 and unlock_pct_of_circulating >= 3.0:
-                    result["is_vetoed"] = True
-                    result["reason"] = f"Massive Unlock ({unlock_pct_of_circulating:.1f}%) in {days_until_unlock:.1f} Days"
-                    result["tag"] = "Exit_Liquidity_Trap"
+            if cmc_res.status_code == 200:
+                data = cmc_res.json()
+                if 'data' in data and clean_sym in data['data']:
+                    coin_info = data['data'][clean_sym][0]
+                    circulating = float(coin_info.get('circulating_supply') or 1.0)
+                    total_supply = float(coin_info.get('total_supply') or circulating)
+                    
+                    fdv_ratio = total_supply / circulating
+                    
+                    # العقاب الأساسي: إذا كانت العملة لم تفك سوى جزء بسيط من معروضها
+                    if fdv_ratio > 6.0:
+                        result["penalty_multiplier"] = 0.6 
+                        result["tag"] = "Toxic_FDV_Overhang"
+        except Exception:
+            pass # عزل الخطأ بصمت تام لكي لا يتعطل المحرك الثاني
 
-    except Exception as e:
-        print(f"⚠️ [Tokenomics Engine] Error fetching data for {clean_sym}: {e}")
-        
-    # حفظ في الذاكرة
+    # ==========================================================
+    # ⏱️ المحرك الثاني: مؤقت الانفجار (The Cliff Timer) باستخدام CryptoRank
+    # هذا هو الحل الحقيقي لمعرفة "متى" سيحدث فك الارتباط بدقة
+    # ==========================================
+    if CRYPTORANK_API_KEY:
+        try:
+            # 1. جلب ID العملة الداخلي في CryptoRank
+            cr_url = f"https://api.cryptorank.io/v1/currencies?symbol={clean_sym}&api_key={CRYPTORANK_API_KEY}"
+            cr_res = await client.get(cr_url, timeout=4.0)
+            
+            if cr_res.status_code == 200:
+                cr_data = cr_res.json()
+                if cr_data.get('data') and len(cr_data['data']) > 0:
+                    coin_id = cr_data['data'][0]['id']
+                    
+                    # 2. جلب جدول فك الارتباط اللحظي (Vesting/Unlocks)
+                    unlocks_url = f"https://api.cryptorank.io/v1/vesting/{coin_id}?api_key={CRYPTORANK_API_KEY}"
+                    unlocks_res = await client.get(unlocks_url, timeout=4.0)
+                    
+                    if unlocks_res.status_code == 200:
+                        vesting_data = unlocks_res.json().get('data', {})
+                        next_unlock = vesting_data.get('nextUnlock', {})
+                        
+                        if next_unlock:
+                            # حساب الأيام المتبقية وحجم الفك بدقة
+                            unlock_date = pd.to_datetime(next_unlock.get('date'))
+                            days_until_unlock = (unlock_date - pd.Timestamp.utcnow()).days
+                            unlock_pct = float(next_unlock.get('percentOfCirculatingSupply', 0.0))
+                            
+                            # 🛑 جدار الإعدام المؤسساتي (The True Veto): 
+                            # إعدام الإشارة فوراً إذا كان هناك فك لأكثر من 3% خلال الـ 14 يوم القادمة
+                            if 0 <= days_until_unlock <= 14.0 and unlock_pct >= 3.0:
+                                result["is_vetoed"] = True
+                                result["reason"] = f"Massive Unlock ({unlock_pct:.1f}%) in {days_until_unlock} Days"
+                                result["tag"] = "Exit_Liquidity_Trap"
+        except Exception:
+            pass # في حال فشل الاتصال، لا يتوقف الرادار ولا تظهر رسالة Error مزعجة
+
+    # حفظ النتيجة في الذاكرة لمنع تكرار الاتصال العبثي للـ API
     TOKENOMICS_CACHE[clean_sym] = {'ts': current_time, 'data': result}
     return result
 
