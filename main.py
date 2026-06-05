@@ -171,7 +171,15 @@ BINANCE_HEADERS = {"X-MBX-APIKEY": BINANCE_API_KEY}
 GATE_API_KEY = "a3f6a57b42f6106011e6890049e57b2e"
 GATE_API_SECRET = "1ac18e0a690ce782f6854137908a6b16eb910cf02f5b95fa3c43b670758f79bc"
 GATE_BASE = "https://api.gateio.ws/api/v4/spot/candlesticks"
-CRYPTORANK_API_KEY = "94131717582a30a14e0e951139f2a5c3638054e53094af9a48d56d0af197"
+# 🔄 مصفوفة المفاتيح المجانية (API Pool) لضمان عدم توقف المحرك
+CRYPTORANK_API_KEYS = [
+    "6ba0b029bf0c28de3f3b9fc73b518d21b965498724e32ae31015be0da48b",
+    "f39724a2c07164b0e1021801673ef8e0b8b8c1b60878f801372cf6b2df21",
+    "f9210c5b3b9e1fbf23ce8f839c35e3ae0c731c3b6193d05ede9013049248",
+    "7788730c52567724dab6d175c97f121540fab95557a549f47ea07782e833",
+    "94131717582a30a14e0e951139f2a5c3638054e53094af9a48d56d0af197"
+]
+
 BLACKLISTED_COINS = {"TOMO", "EUR", "TVK", "OMNI", "GAL", "USD1", "COCOS", "LRC", "BUSD", "TUSD", "USDC", "USDE", "BFUSD", "RLUSD", "POLY", "XUSD", "U", "USDT", "DAI", "USDP", "FDUSD", "USDD", "PYUSD", "FRAX", "LUSD", "GUSD", "ZUSD", "VAI", "MAI", "DOLA", "EURC", "EURT", "EURS", "AEUR", "EURA", "TRY", "BRL", "ZAR"}
 GROQ_KEYS_STR = os.getenv("GROQ_API_KEYS", "")
 GROQ_API_KEYS = [k.strip() for k in GROQ_KEYS_STR.split(",") if k.strip()]
@@ -1699,40 +1707,54 @@ async def get_aggregated_orderbook(client: httpx.AsyncClient, symbol: str):
                 data = res.json()
                 bids_vol, asks_vol = 0.0, 0.0
                 
+                # 🧠 محرك الفلترة المكانية (Proximity Filter)
+                # تجاهل أي سيولة تبعد أكثر من 5% عن السعر الحالي لقتل الجدران الوهمية (Spoof Walls)
+                def calc_real_depth(orders_list, is_bid):
+                    if not orders_list: return 0.0
+                    best_price = float(orders_list[0][0])
+                    limit_price = best_price * 0.95 if is_bid else best_price * 1.05
+                    total = 0.0
+                    for p, v in orders_list:
+                        price, vol = float(p), float(v)
+                        if (is_bid and price >= limit_price) or (not is_bid and price <= limit_price):
+                            total += price * vol
+                    return total
+
                 # 1. Binance, MEXC, Gate
                 if exchange in ["binance", "mexc", "gate"]:
-                    bids_vol = sum(float(b[0]) * float(b[1]) for b in data.get("bids", []))
-                    asks_vol = sum(float(a[0]) * float(a[1]) for a in data.get("asks", []))
+                    bids_vol = calc_real_depth(data.get("bids", []), True)
+                    asks_vol = calc_real_depth(data.get("asks", []), False)
                 # 2. Bybit
                 elif exchange == "bybit":
                     result = data.get("result", {})
-                    bids_vol = sum(float(b[0]) * float(b[1]) for b in result.get("b", []))
-                    asks_vol = sum(float(a[0]) * float(a[1]) for a in result.get("a", []))
+                    bids_vol = calc_real_depth(result.get("b", []), True)
+                    asks_vol = calc_real_depth(result.get("a", []), False)
                 # 3. KuCoin
                 elif exchange == "kucoin":
                     d = data.get("data", {})
-                    bids_vol = sum(float(b[0]) * float(b[1]) for b in d.get("bids", [])[:50])
-                    asks_vol = sum(float(a[0]) * float(a[1]) for a in d.get("asks", [])[:50])
+                    bids_vol = calc_real_depth(d.get("bids", [])[:50], True)
+                    asks_vol = calc_real_depth(d.get("asks", [])[:50], False)
                 # 4. OKX
                 elif exchange == "okx":
                     d = data.get("data", [{}])[0]
-                    bids_vol = sum(float(b[0]) * float(b[1]) for b in d.get("bids", []))
-                    asks_vol = sum(float(a[0]) * float(a[1]) for a in d.get("asks", []))
+                    bids_vol = calc_real_depth(d.get("bids", []), True)
+                    asks_vol = calc_real_depth(d.get("asks", []), False)
                 # 5. Bitget (الجديدة)
                 elif exchange == "bitget":
                     d = data.get("data", {})
-                    bids_vol = sum(float(b[0]) * float(b[1]) for b in d.get("bids", []))
-                    asks_vol = sum(float(a[0]) * float(a[1]) for a in d.get("asks", []))
+                    bids_vol = calc_real_depth(d.get("bids", []), True)
+                    asks_vol = calc_real_depth(d.get("asks", []), False)
                 # 6. HTX (الجديدة)
                 elif exchange == "htx":
                     d = data.get("tick", {})
-                    bids_vol = sum(float(b[0]) * float(b[1]) for b in d.get("bids", [])[:50])
-                    asks_vol = sum(float(a[0]) * float(a[1]) for a in d.get("asks", [])[:50])
+                    bids_vol = calc_real_depth(d.get("bids", [])[:50], True)
+                    asks_vol = calc_real_depth(d.get("asks", [])[:50], False)
 
                 return exchange, bids_vol, asks_vol
         except:
             pass 
         return exchange, 0.0, 0.0
+
 
     tasks = [fetch_ob(ex, url) for ex, url in urls.items()]
     results = await asyncio.gather(*tasks)
@@ -3017,44 +3039,62 @@ async def evaluate_tokenomics_overhang(symbol: str, client: httpx.AsyncClient):
                         result["tag"] = "Toxic_FDV_Overhang"
         except Exception:
             pass # عزل الخطأ بصمت تام لكي لا يتعطل المحرك الثاني
-
     # ==========================================================
     # ⏱️ المحرك الثاني: مؤقت الانفجار (The Cliff Timer) باستخدام CryptoRank
     # هذا هو الحل الحقيقي لمعرفة "متى" سيحدث فك الارتباط بدقة
     # ==========================================
-    if CRYPTORANK_API_KEY:
-        try:
-            # 1. جلب ID العملة الداخلي في CryptoRank
-            cr_url = f"https://api.cryptorank.io/v1/currencies?symbol={clean_sym}&api_key={CRYPTORANK_API_KEY}"
-            cr_res = await client.get(cr_url, timeout=4.0)
-            
-            if cr_res.status_code == 200:
-                cr_data = cr_res.json()
-                if cr_data.get('data') and len(cr_data['data']) > 0:
-                    coin_id = cr_data['data'][0]['id']
-                    
-                    # 2. جلب جدول فك الارتباط اللحظي (Vesting/Unlocks)
-                    unlocks_url = f"https://api.cryptorank.io/v1/vesting/{coin_id}?api_key={CRYPTORANK_API_KEY}"
-                    unlocks_res = await client.get(unlocks_url, timeout=4.0)
-                    
-                    if unlocks_res.status_code == 200:
-                        vesting_data = unlocks_res.json().get('data', {})
-                        next_unlock = vesting_data.get('nextUnlock', {})
+    if CRYPTORANK_API_KEYS:
+        # 🔄 محرك التبديل الذكي (API Key Rotation Engine)
+        for api_key in CRYPTORANK_API_KEYS:
+            try:
+                # 1. جلب ID العملة الداخلي في CryptoRank
+                cr_url = f"https://api.cryptorank.io/v1/currencies?symbol={clean_sym}&api_key={api_key}"
+                cr_res = await client.get(cr_url, timeout=4.0)
+                
+                # إذا استنفدنا الرصيد اليومي أو كان المفتاح معطلاً، ننتقل للمفتاح التالي فوراً
+                if cr_res.status_code in [429, 403, 401]:
+                    print(f"⚠️ [CryptoRank] المفتاح {api_key[:8]}... استنفد الرصيد. التبديل للذي يليه...")
+                    continue
+                
+                if cr_res.status_code == 200:
+                    cr_data = cr_res.json()
+                    if cr_data.get('data') and len(cr_data['data']) > 0:
+                        coin_id = cr_data['data'][0]['id']
                         
-                        if next_unlock:
-                            # حساب الأيام المتبقية وحجم الفك بدقة
-                            unlock_date = pd.to_datetime(next_unlock.get('date'))
-                            days_until_unlock = (unlock_date - pd.Timestamp.utcnow()).days
-                            unlock_pct = float(next_unlock.get('percentOfCirculatingSupply', 0.0))
+                        # 2. جلب جدول فك الارتباط اللحظي (Vesting/Unlocks)
+                        unlocks_url = f"https://api.cryptorank.io/v1/vesting/{coin_id}?api_key={api_key}"
+                        unlocks_res = await client.get(unlocks_url, timeout=4.0)
+                        
+                        if unlocks_res.status_code in [429, 403, 401]:
+                            print(f"⚠️ [CryptoRank] المفتاح {api_key[:8]}... استنفد الرصيد أثناء جلب الجدول. التبديل...")
+                            continue
+                        
+                        if unlocks_res.status_code == 200:
+                            vesting_data = unlocks_res.json().get('data', {})
+                            next_unlock = vesting_data.get('nextUnlock', {})
                             
-                            # 🛑 جدار الإعدام المؤسساتي (The True Veto): 
-                            # إعدام الإشارة فوراً إذا كان هناك فك لأكثر من 3% خلال الـ 14 يوم القادمة
-                            if 0 <= days_until_unlock <= 14.0 and unlock_pct >= 3.0:
-                                result["is_vetoed"] = True
-                                result["reason"] = f"Massive Unlock ({unlock_pct:.1f}%) in {days_until_unlock} Days"
-                                result["tag"] = "Exit_Liquidity_Trap"
-        except Exception:
-            pass # في حال فشل الاتصال، لا يتوقف الرادار ولا تظهر رسالة Error مزعجة
+                            if next_unlock:
+                                # حساب الأيام المتبقية وحجم الفك بدقة
+                                unlock_date = pd.to_datetime(next_unlock.get('date'))
+                                days_until_unlock = (unlock_date - pd.Timestamp.utcnow()).days
+                                unlock_pct = float(next_unlock.get('percentOfCirculatingSupply', 0.0))
+                                
+                                # 🛑 جدار الإعدام المؤسساتي (The True Veto): 
+                                # إعدام الإشارة فوراً إذا كان هناك فك لأكثر من 3% خلال الـ 14 يوم القادمة
+                                if 0 <= days_until_unlock <= 14.0 and unlock_pct >= 3.0:
+                                    result["is_vetoed"] = True
+                                    result["reason"] = f"Massive Unlock ({unlock_pct:.1f}%) in {days_until_unlock} Days"
+                                    result["tag"] = "Exit_Liquidity_Trap"
+                    
+                    # 🎯 كسر الحلقة (Break): 
+                    # إذا وصلنا هنا، يعني أن الاتصال نجح وتمت قراءة البيانات (أو العملة لا تملك فك ارتباط)
+                    # لذلك لا داعي لاستهلاك باقي المفاتيح عبثاً.
+                    break 
+                    
+            except Exception as e:
+                # خطأ في الاتصال بالشبكة (TimeOut)، نتخطاه ونجرب المفتاح التالي لعل السيرفر يستجيب
+                print(f"⚠️ [CryptoRank] خطأ اتصال/شبكة في المفتاح {api_key[:8]}... : {str(e)}")
+                continue 
 
     # حفظ النتيجة في الذاكرة لمنع تكرار الاتصال العبثي للـ API
     TOKENOMICS_CACHE[clean_sym] = {'ts': current_time, 'data': result}
