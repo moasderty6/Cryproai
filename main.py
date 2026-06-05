@@ -171,7 +171,7 @@ BINANCE_HEADERS = {"X-MBX-APIKEY": BINANCE_API_KEY}
 GATE_API_KEY = "a3f6a57b42f6106011e6890049e57b2e"
 GATE_API_SECRET = "1ac18e0a690ce782f6854137908a6b16eb910cf02f5b95fa3c43b670758f79bc"
 GATE_BASE = "https://api.gateio.ws/api/v4/spot/candlesticks"
-CRYPTORANK_API_KEY = "f39724a2c07164b0e1021801673ef8e0b8b8c1b60878f801372cf6b2df21"
+CRYPTORANK_API_KEY = "94131717582a30a14e0e951139f2a5c3638054e53094af9a48d56d0af197"
 BLACKLISTED_COINS = {"TOMO", "EUR", "TVK", "OMNI", "GAL", "USD1", "COCOS", "LRC", "BUSD", "TUSD", "USDC", "USDE", "BFUSD", "RLUSD", "POLY", "XUSD", "U", "USDT", "DAI", "USDP", "FDUSD", "USDD", "PYUSD", "FRAX", "LUSD", "GUSD", "ZUSD", "VAI", "MAI", "DOLA", "EURC", "EURT", "EURS", "AEUR", "EURA", "TRY", "BRL", "ZAR"}
 GROQ_KEYS_STR = os.getenv("GROQ_API_KEYS", "")
 GROQ_API_KEYS = [k.strip() for k in GROQ_KEYS_STR.split(",") if k.strip()]
@@ -855,17 +855,32 @@ async def get_micro_cvd_absorption(symbol, client, base_interval="1m", is_dex: b
             df["delta"] = df["tbv"] - df["sell_vol"]
             df["cvd"] = df["delta"].cumsum()
             
-            price_change = (df["c"].iloc[-1] - df["c"].iloc[0]) / df["c"].iloc[0]
+            price_change = (df["c"].iloc[-1] - df["c"].iloc[0]) / (df["c"].iloc[0] + 1e-8)
             cvd_trend = df["cvd"].iloc[-1] - df["cvd"].iloc[0]
             total_vol = df["v"].sum()
             
-            if abs(price_change) < 0.02 and cvd_trend > (total_vol * 0.15):
+            # 🧠 المحرك الكمي: الجهد مقابل النتيجة (Effort vs. Result / Institutional Absorption)
+            # CVD يقيس أوامر الماركت (Takers - عادةً الأفراد أو خوارزميات الزخم). 
+            # السعر يقيس أوامر الليمت (Makers - الحيتان وصناع السوق).
+            
+            delta_pct = cvd_trend / (total_vol + 1e-8)
+            
+            # 1. الامتصاص الشرائي الحقيقي (True Limit Buy Absorption / Bottom Squeezing)
+            # الأفراد يبيعون بهلع ماركت (CVD سلبي)، لكن السعر يرفض الهبوط (امتصاص مؤسساتي بطلبات ليمت).
+            if delta_pct < -0.06 and price_change >= -0.005:
                 return 30.0, "Micro_Silent_Accumulation", cvd_trend 
 
-            elif price_change > 0.02 and cvd_trend < -(total_vol * 0.15):
-                return -25.0, "Hidden_Distribution", cvd_trend 
+            # 2. الامتصاص البيعي الخفي (True Limit Sell Distribution / Top Trapping)
+            # الأفراد يشترون بفومو ماركت (CVD إيجابي)، لكن السعر يرفض الصعود (تفريغ مؤسساتي بعروض ليمت).
+            elif delta_pct > 0.06 and price_change <= 0.005:
+                return -30.0, "Hidden_Distribution", cvd_trend 
+                
+            # 3. كفاءة السيولة (High Efficiency Mark-up)
+            # سيولة ماركت خفيفة تنجح في رفع السعر بقوة (دليل على انعدام عروض البيع وجفاف العرض).
+            elif delta_pct > 0.02 and price_change > 0.03:
+                return 15.0, "Efficient_Markup", cvd_trend
             
-            # 🟢 الإصلاح الجذري: إرجاع قيمة الـ CVD الحقيقية للذكاء الاصطناعي حتى لو لم يكن هناك شذوذ!
+            # 🟢 إرجاع قيمة الـ CVD الحقيقية للذكاء الاصطناعي للتحليل العميق
             return 0.0, None, cvd_trend
                 
     except Exception as e:
