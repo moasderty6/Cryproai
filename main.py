@@ -171,7 +171,7 @@ BINANCE_HEADERS = {"X-MBX-APIKEY": BINANCE_API_KEY}
 GATE_API_KEY = "a3f6a57b42f6106011e6890049e57b2e"
 GATE_API_SECRET = "1ac18e0a690ce782f6854137908a6b16eb910cf02f5b95fa3c43b670758f79bc"
 GATE_BASE = "https://api.gateio.ws/api/v4/spot/candlesticks"
-CRYPTORANK_API_KEY = "6ba0b029bf0c28de3f3b9fc73b518d21b965498724e32ae31015be0da48b"
+CRYPTORANK_API_KEY = "f39724a2c07164b0e1021801673ef8e0b8b8c1b60878f801372cf6b2df21"
 BLACKLISTED_COINS = {"TOMO", "EUR", "TVK", "OMNI", "GAL", "USD1", "COCOS", "LRC", "BUSD", "TUSD", "USDC", "USDE", "BFUSD", "RLUSD", "POLY", "XUSD", "U", "USDT", "DAI", "USDP", "FDUSD", "USDD", "PYUSD", "FRAX", "LUSD", "GUSD", "ZUSD", "VAI", "MAI", "DOLA", "EURC", "EURT", "EURS", "AEUR", "EURA", "TRY", "BRL", "ZAR"}
 GROQ_KEYS_STR = os.getenv("GROQ_API_KEYS", "")
 GROQ_API_KEYS = [k.strip() for k in GROQ_KEYS_STR.split(",") if k.strip()]
@@ -292,58 +292,92 @@ INSTITUTIONAL_LOB = {}
 
 def update_dynamic_ofi(symbol, new_bids, new_asks):
     """
-    [Hedge Fund Level] True Order Flow Imbalance (Top of Book)
-    يعزل ضجيج انزياح نافذة الأسعار (Window Shift) عن سيولة صناع السوق الحقيقية.
+    [Tier-1 Quant] Multi-Level Order Flow Imbalance (ML-OFI)
+    يتتبع أول 5 مستويات سعرية محددة بوزن أسّي (Exponential Decay) لامتصاص 
+    تلاعب صناع السوق (Flickering/Spoofing) في المستوى الأول، واكتشاف السيولة الملتزمة.
     """
     if symbol not in INSTITUTIONAL_LOB:
+        # تهيئة الذاكرة المتقدمة لـ 5 مستويات بدلاً من مستوى واحد
         INSTITUTIONAL_LOB[symbol] = {
-            "best_bid": 0.0, "best_bid_vol": 0.0, # 👈 أضفنا حجم المستوى الأول للطلبات
-            "best_ask": float('inf'), "best_ask_vol": 0.0, # 👈 أضفنا حجم المستوى الأول للعروض
+            "prev_bids": {}, # {price: volume}
+            "prev_asks": {},
             "ofi_window": deque(maxlen=600), 
             "bid_vols": deque(maxlen=60),    
-            "ask_vols": deque(maxlen=60)
+            "ask_vols": deque(maxlen=60),
+            # 🛡️ الحفاظ على المتغيرات التوافقية لدالة analyze_orderbook_advanced_manual
+            "best_bid": 0.0, "best_bid_vol": 0.0,
+            "best_ask": float('inf'), "best_ask_vol": 0.0,
+            "prev_mid": 0.0
         }
     
     mem = INSTITUTIONAL_LOB[symbol]
     
-    # 🧠 الفصل المؤسساتي: حجم المستوى الأول (للـ OFI) والحجم الكلي (لقياس الضغط العميق)
+    # تحديث المتغيرات الأساسية للحفاظ على استقرار باقي الكود
     curr_best_bid = float(new_bids[0][0]) if new_bids else 0.0
-    curr_best_bid_vol = float(new_bids[0][1]) if new_bids else 0.0 # 👈 الحجم الفعلي عند أفضل سعر فقط
-    curr_total_bid_vol = sum(float(v) for p, v in new_bids)        # 👈 الحجم الكلي للحفاظ على استقرار الكود
+    curr_best_bid_vol = float(new_bids[0][1]) if new_bids else 0.0
+    curr_total_bid_vol = sum(float(v) for p, v in new_bids)
     
     curr_best_ask = float(new_asks[0][0]) if new_asks else float('inf')
     curr_best_ask_vol = float(new_asks[0][1]) if new_asks else 0.0
     curr_total_ask_vol = sum(float(v) for p, v in new_asks)
     
-    ofi = 0.0
-    
-    # 🧠 معادلة True OFI (تُطبّق حصراً على المستوى الأول Top of Book)
-    # BIDS
-    if curr_best_bid > mem["best_bid"]: 
-        ofi += curr_best_bid_vol
-    elif curr_best_bid == mem["best_bid"]: 
-        ofi += (curr_best_bid_vol - mem["best_bid_vol"])
-    else: 
-        ofi -= mem["best_bid_vol"]
-    
-    # ASKS
-    if curr_best_ask < mem["best_ask"]: 
-        ofi -= curr_best_ask_vol
-    elif curr_best_ask == mem["best_ask"]: 
-        ofi -= (curr_best_ask_vol - mem["best_ask_vol"])
-    else: 
-        ofi += mem["best_ask_vol"]
-    
-    # تحديث الذاكرة
-    mem["ofi_window"].append(ofi)
-    mem["bid_vols"].append(curr_total_bid_vol) # 👈 نحتفظ بإجمالي العمق للدوال الأخرى
-    mem["ask_vols"].append(curr_total_ask_vol)
-    
     mem["best_bid"] = curr_best_bid
-    mem["best_bid_vol"] = curr_best_bid_vol # 👈 تحديث ذاكرة المستوى الأول
-    
+    mem["best_bid_vol"] = curr_best_bid_vol
     mem["best_ask"] = curr_best_ask
     mem["best_ask_vol"] = curr_best_ask_vol
+    mem["bid_vols"].append(curr_total_bid_vol)
+    mem["ask_vols"].append(curr_total_ask_vol)
+    
+    # ==========================================================
+    # 🧠 المحرك المؤسساتي: ML-OFI (Multi-Level Order Flow Imbalance)
+    # ==========================================================
+    total_ofi = 0.0
+    decay_factor = 0.5 # وزن المستوى ينخفض للنصف كلما ابتعدنا عن السعر الحالي
+    
+    # تحويل أول 5 مستويات إلى قواميس للبحث الدقيق عن الأسعار
+    curr_bids_dict = {float(p): float(v) for p, v in new_bids[:5]}
+    curr_asks_dict = {float(p): float(v) for p, v in new_asks[:5]}
+    
+    prev_bids_dict = mem["prev_bids"]
+    prev_asks_dict = mem["prev_asks"]
+    
+    # 1. حساب OFI لطلبات الشراء (Bids) - تتبع السعر وليس فقط المستوى
+    all_bid_prices = set(curr_bids_dict.keys()).union(set(prev_bids_dict.keys()))
+    sorted_bids = sorted(list(all_bid_prices), reverse=True)[:5] # الأقرب للسعر أولاً
+    
+    for i, price in enumerate(sorted_bids):
+        weight = math.exp(-decay_factor * i)
+        curr_v = curr_bids_dict.get(price, 0.0)
+        prev_v = prev_bids_dict.get(price, 0.0)
+        total_ofi += weight * (curr_v - prev_v)
+        
+    # 2. حساب OFI لعروض البيع (Asks)
+    all_ask_prices = set(curr_asks_dict.keys()).union(set(prev_asks_dict.keys()))
+    sorted_asks = sorted(list(all_ask_prices))[:5] # الأقرب للسعر أولاً
+    
+    for i, price in enumerate(sorted_asks):
+        weight = math.exp(-decay_factor * i)
+        curr_v = curr_asks_dict.get(price, 0.0)
+        prev_v = prev_asks_dict.get(price, 0.0)
+        # العروض علاقتها عكسية (زيادتها تعني ضغط بيعي)
+        total_ofi -= weight * (curr_v - prev_v)
+        
+    # 3. 🛡️ فلتر الانزياح الوهمي (Window Shift Filter):
+    # نوقف قراءة الـ OFI إذا قفز السعر بقوة (لأن المستويات ستتغير بأكملها ولن يكون القياس دقيقاً)
+    mid_price = (curr_best_bid + curr_best_ask) / 2.0
+    prev_mid = mem["prev_mid"] if mem["prev_mid"] > 0 else mid_price
+    price_change_pct = abs(mid_price - prev_mid) / prev_mid if prev_mid > 0 else 0
+    
+    if price_change_pct < 0.001: # تحرك طبيعي للسعر (< 0.1%)
+        mem["ofi_window"].append(total_ofi)
+    else: # قفزة سعرية، نكرر آخر قراءة مستقرة لتجنب تلوث البيانات
+        last_valid = mem["ofi_window"][-1] if mem["ofi_window"] else 0.0
+        mem["ofi_window"].append(last_valid)
+        
+    # 4. تحديث الذاكرة للدورة القادمة
+    mem["prev_bids"] = curr_bids_dict
+    mem["prev_asks"] = curr_asks_dict
+    mem["prev_mid"] = mid_price
 
 async def get_whale_inflow_score():
     """
@@ -1075,7 +1109,6 @@ async def get_institutional_orderflow(symbol, client, minutes=15):
         return 0.0, 0.0
 
     # ... (باقي كود الدالة كما هو تماماً بدون تغيير) ...
-
     # ==========================================
     # 🚀 الإطلاق المتزامن (Scatter-Gather)
     # ==========================================
@@ -1092,33 +1125,59 @@ async def get_institutional_orderflow(symbol, client, minutes=15):
         byb_buy, byb_sell = bybit_res
         okx_buy, okx_sell = okx_res
         
-        # حساب السيولة العالمية (Global Flow)
-        global_buy_vol = bin_buy + byb_buy + okx_buy
-        global_sell_vol = bin_sell + byb_sell + okx_sell
+        # 🧠 [التحديث المؤسساتي]: مصفوفة خصم أثر السيولة (Liquidity Impact Discounting)
+        # 1 دولار في Binance يتمتع بوزن 1.0 (تأثير كامل).
+        # المنصات ذات الدفاتر الضحلة (Shallow Orderbooks) تُعاقب بخصم وزنها 
+        # لمنع تأثير التدوير الوهمي (Wash Trading) الذي يخدع مؤشرات السيولة.
+        BINANCE_WEIGHT = 1.00
+        BYBIT_WEIGHT   = 0.65
+        OKX_WEIGHT     = 0.40
+        
+        adj_bin_buy = bin_buy * BINANCE_WEIGHT
+        adj_bin_sell = bin_sell * BINANCE_WEIGHT
+        
+        adj_byb_buy = byb_buy * BYBIT_WEIGHT
+        adj_byb_sell = byb_sell * BYBIT_WEIGHT
+        
+        adj_okx_buy = okx_buy * OKX_WEIGHT
+        adj_okx_sell = okx_sell * OKX_WEIGHT
+        
+        # 🌍 حساب التدفق العالمي الموزون (Depth-Adjusted Global Flow)
+        global_buy_vol = adj_bin_buy + adj_byb_buy + adj_okx_buy
+        global_sell_vol = adj_bin_sell + adj_byb_sell + adj_okx_sell
         
         global_delta = global_buy_vol - global_sell_vol
         total_global_vol = global_buy_vol + global_sell_vol
         signal = None
         
-        # --- محرك اكتشاف الامتصاص (Limit Absorption) ---
-        # نعتمد على حركة أسعار بايننس كمؤشر قياسي لحركة السوق اللحظية
+        # --- 🛡️ محرك اكتشاف الامتصاص المتقاطع (Cross-Exchange Absorption) ---
         if bin_prices and total_global_vol > 0:
+            import pandas as pd # ضمان التوفر اللحظي
             price_series = pd.Series(bin_prices)
             price_range_pct = (price_series.max() - price_series.min()) / (price_series.min() + 1e-8)
             
-            # إذا كان السعر شبه ثابت (نطاق ضيق جداً < 0.5%) 
-            # والدلتا الشرائية العالمية ضخمة جداً (تشكل أكثر من 25% من السيولة)
+            # 1. الامتصاص التقليدي (السعر ثابت والسيولة تدخل)
             if price_range_pct <= 0.005 and global_delta > (total_global_vol * 0.25):
                 signal = "Limit_Absorption"
                 
-        return global_delta, global_buy_vol, global_sell_vol, signal
+            # 2. الموازنة المؤسساتية (Arbitrage & Panic Absorption)
+            # الألفا الحقيقية: متداولو التجزئة يفرغون عملاتهم في OKX و Bybit بهلع (دلتا سلبية)،
+            # بينما حيتان Binance يقومون بابتلاع كل هذا البيع وتثبيت السعر (دلتا إيجابية ضخمة)!
+            bin_delta = adj_bin_buy - adj_bin_sell
+            alt_delta = (adj_byb_buy + adj_okx_buy) - (adj_byb_sell + adj_okx_sell)
+            
+            if price_range_pct <= 0.008 and bin_delta > 0 and alt_delta < 0:
+                if bin_delta > abs(alt_delta) * 1.5: # بايننس تبتلع الهلع بـ 1.5 ضعف
+                    signal = "Limit_Absorption" 
+                    # مكافأة رياضية: رفع قيمة الدلتا لأن امتصاص بايننس هو المحرك الحقيقي للسوق
+                    global_delta += bin_delta * 0.30 
+                    
+        return float(global_delta), float(global_buy_vol), float(global_sell_vol), signal
 
     except Exception as e:
         print(f"⚠️ Global Flow Error: {e}")
         
     return 0.0, 0.0, 0.0, None
-
-
 
 async def detect_spot_perp_divergence(symbol: str, client: httpx.AsyncClient):
     """
@@ -1243,30 +1302,38 @@ import pandas as pd
 
 async def build_liquidation_heatmap(symbol: str, client: httpx.AsyncClient):
     """
-    [Tier-1 Quant Upgrade] Dynamic Cross-Margin Liquidation Engine
-    يحسب عقدة الألم (Pain Node) ويربطها بالتذبذب الديناميكي للعملة (Volatility Bands)
-    بدلاً من الاعتماد على نسبة 5% الثابتة الساذجة.
+    [Tier-1 Quant] Directional Bias Liquidation Engine (True Heatmap)
+    يربط التدفق السعري بالتغير في الـ OI ومعدل التمويل لتحديد هوية الطرف 
+    "المحاصر" (Trapped Traders) بدقة، وكشف السكويز الحقيقي (Short/Long Squeeze).
     """
+    import numpy as np
+    import pandas as pd
+    
     fapi_base = "https://fapi.binance.com"
     clean_sym = symbol.replace("USDT", "") + "USDT"
     
     try:
         oi_url = f"{fapi_base}/futures/data/openInterestHist?symbol={clean_sym}&period=4h&limit=18"
         klines_url = f"{get_random_binance_base()}/api/v3/klines?symbol={clean_sym}&interval=4h&limit=18"
+        funding_url = f"{fapi_base}/fapi/v1/premiumIndex?symbol={clean_sym}"
         
         await binance_rate_limit_event.wait()
-        res_oi, res_klines = await asyncio.gather(
+        # 🚀 الإطلاق المتزامن لثلاثة محركات معاً لضمان توحيد بيانات الزمن
+        res_oi, res_klines, res_fund = await asyncio.gather(
             client.get(oi_url, timeout=5.0),
-            client.get(klines_url, timeout=5.0)
+            client.get(klines_url, timeout=5.0),
+            client.get(funding_url, timeout=5.0)
         )
         
         if res_oi.status_code != 200 or res_klines.status_code != 200: 
-            if res_oi.status_code != 200:
-                print(f"⚠️ [Binance FAPI Direct] {clean_sym} | رفض كود {res_oi.status_code} في خريطة التصفية (Heatmap)")
             return None
-        
+            
         oi_data = res_oi.json()
         klines_data = res_klines.json()
+        
+        current_funding = 0.0
+        if res_fund.status_code == 200:
+            current_funding = float(res_fund.json().get("lastFundingRate", 0.0))
         
         if len(oi_data) != len(klines_data) or len(oi_data) < 10: return None
 
@@ -1279,38 +1346,53 @@ async def build_liquidation_heatmap(symbol: str, client: httpx.AsyncClient):
         })
         
         df['oi_delta'] = df['oi_value'].diff().fillna(0)
+        df['price_delta'] = df['close'].diff().fillna(0)
         
-        massive_build_ups = df[df['oi_delta'] > df['oi_delta'].std()]
+        # 1. فلترة العقد التي شهدت بناءً عنيفاً للسيولة
+        massive_build_ups = df[df['oi_delta'] > df['oi_delta'].std()].copy()
         if massive_build_ups.empty: return None
         
-        pain_node = np.average(massive_build_ups['vwap'], weights=massive_build_ups['oi_delta'])
+        # 🧠 2. محرك كشف الانحياز (Directional Bias Logic):
+        # مَن الذي بنى هذه المراكز؟
+        # السعر يهبط + الـ OI يرتفع = هجوم بيعي (Shorts Building)
+        # السعر يصعد + الـ OI يرتفع = هجوم شرائي (Longs Building)
+        massive_build_ups['bias'] = np.where(massive_build_ups['price_delta'] > 0, 1, -1)
         
-        # 🧠 [التحديث المؤسساتي]: حساب التذبذب اللحظي لعزل رافعات الحيتان (Cross-Margin Proxy)
+        # اختيار العقدة الأضخم لتكون هي البوصلة الرئيسية
+        biggest_node_idx = massive_build_ups['oi_delta'].idxmax()
+        biggest_node = massive_build_ups.loc[biggest_node_idx]
+        
+        pain_node = biggest_node['vwap']
+        trapped_side = biggest_node['bias']
+        
         df['tr'] = df['high'] - df['low']
         local_volatility_pct = (df['tr'].mean() / df['close'].mean())
-        
-        # معامل تصفية ديناميكي: العملات الهادئة (تذبذب ضعيف) تُضرب برافعات عالية والعكس صحيح
-        # حماية الحدود: بين 3% (لرافعات الحيتان الثقيلة) و 12% (لرافعات التجزئة)
-        liquidation_margin_pct = max(0.03, min(local_volatility_pct * 1.5, 0.12))
+        liquidation_margin_pct = max(0.025, min(local_volatility_pct * 1.5, 0.10))
         
         current_price = df['vwap'].iloc[-1]
         
-        if current_price < pain_node:
+        # 🧠 3. التقييم المؤسساتي (Confluence Fusion):
+        # نحن ندمج سلوك السعر في نقطة الانفجار مع معدل التمويل اللحظي
+        
+        # إذا كان الانحياز بيعي (Shorts) أو كان التمويل سلبياً بشكل ملحوظ
+        if trapped_side == -1 or current_funding < -0.0005:
             liq_target = pain_node * (1.0 + liquidation_margin_pct)
-            type_liq = "Short Liquidation Magnet 🧲"
+            type_liq = "Short Liquidation Magnet (Squeeze) 🧲"
+        # إذا كان الانحياز شرائي (Longs) أو التمويل إيجابي يميل للطمع
         else:
             liq_target = pain_node * (1.0 - liquidation_margin_pct)
-            type_liq = "Long Liquidation Magnet 🧲"
+            type_liq = "Long Liquidation Magnet (Flush) 🧲"
             
         return {
             "pain_node": pain_node, 
             "target": liq_target, 
             "type": type_liq, 
-            "distance_pct": abs(current_price - liq_target)/current_price
+            "distance_pct": abs(current_price - liq_target) / current_price
         }
     except Exception as e:
-        print(f"🚨 [Binance FAPI Direct] خطأ في build_liquidation_heatmap لـ {clean_sym}: {str(e)}")
+        print(f"🚨 [Liquidity Heatmap Engine] Error for {clean_sym}: {str(e)}")
         return None
+
 
 async def track_orderbook_center_of_mass(symbol: str, client: httpx.AsyncClient, current_price: float):
     """
@@ -2555,19 +2637,26 @@ def detect_dark_pool_vca(df, current_cvd_usd, oi_change_pct, funding_rate=0.0, o
         signal_tag = "DEEP_ABSORPTION"
 
     return round(vca_score, 1), signal_tag
-async def get_institutional_vpin(symbol: str, client: httpx.AsyncClient, volume_24h: float, target_trades: int = 10000):
+async def get_institutional_vpin(symbol: str, client: httpx.AsyncClient, volume_24h: float):
     """
-    [Hedge Fund Grade] ADV-Anchored VPIN Engine.
-    يربط دلاء السيولة بالحجم اليومي للعملة لضمان صحة المقارنة الإحصائية (Cross-Sectional Comparability).
+    [Tier-1 Quant] Dynamic Volume-Synchronized Probability of Informed Trading (VPIN)
+    يعالج السيولة بناءً على (الوقت الحجمي) وليس عدد الصفقات، مما يوحد 
+    المقاييس الإحصائية بين العملات القيادية والعملات الضعيفة.
     """
     clean_sym = symbol.replace("USDT", "") + "USDT"
     trades = []
+    
+    # 1. تحديد حجم العينة المطلوبة كنسبة من السيولة اليومية الحقيقية (Volume Synchronization)
+    # نطلب تحليل آخر 1.5% من سيولة اليوم (لأن الانفجارات السعرية تسبقها ذروة سيولة مخفية بهذا الحجم)
+    target_volume_usd = max(volume_24h * 0.015, 25000.0) 
+    
     try:
         base_url = get_random_binance_base()
         last_id = None
+        accumulated_vol = 0.0
         
-        requests_needed = target_trades // 1000
-        for _ in range(requests_needed):
+        # 🛡️ حماية الـ API: بحد أقصى 5 طلبات (5000 صفقة) لكي لا نعلق البوت وتزيد سرعة الاستجابة
+        for _ in range(5):
             await binance_rate_limit_event.wait()
             params = {"symbol": clean_sym, "limit": 1000}
             if last_id:
@@ -2579,45 +2668,45 @@ async def get_institutional_vpin(symbol: str, client: httpx.AsyncClient, volume_
             batch = res.json()
             if not batch: break
             
-            trades = batch + trades 
-            last_id = batch[0]['a'] 
+            trades = batch + trades # إضافة الصفقات الأقدم في البداية
+            last_id = batch[0]['a']
             
-        if len(trades) < 1000: return 0.5 
+            # حساب الفوليوم المتراكم في هذه الدفعة
+            batch_vol = sum(float(t['q']) * float(t['p']) for t in batch)
+            accumulated_vol += batch_vol
+            
+            # 🛑 التوقف فوراً إذا جمعنا السيولة المطلوبة (حققنا الـ Volume-Invariance)
+            if accumulated_vol >= target_volume_usd:
+                break
+                
+        if not trades: return 0.5 
         
         import numpy as np
         trade_vols = np.array([float(t['q']) * float(t['p']) for t in trades])
         taker_sell_flags = np.array([t['m'] for t in trades])
         total_sample_vol = np.sum(trade_vols)
-        if total_sample_vol == 0: return 0.5
         
-        # 🧠 الحل المؤسساتي المحدث (Dynamic Micro-Bucketing):
-        # بدلاً من ربط السلة بالسيولة اليومية (ما يسبب انهيار السلال للعملات الكبيرة)،
-        # نقوم بتقسيم إجمالي فوليوم العينة المتاحة بدقة إلى 50 سلة متساوية.
-        # هذا يعزل سمية التدفق اللحظي (Micro-Toxicity) عن الماكرو.
+        if total_sample_vol < 5000.0: return 0.5 # حماية من العملات الميتة جداً
         
-        NUM_BUCKETS = 50
+        # 2. تقسيم العينة إلى دلاء (Buckets) متساوية الحجم بناءً على السيولة الفعلية المجمعة
+        NUM_BUCKETS = 20 # 20 دلو يعطي دقة ممتازة لعزل السيولة السامة
         bucket_size = total_sample_vol / NUM_BUCKETS
         
-        # 🛡️ الفلتر السحري: حماية من العينات الميتة تماماً (غبار الأفراد)
-        if bucket_size < 500.0: # إذا كانت السلة الواحدة لا تحتوي حتى على 500 دولار
-            return 0.5
-            
-        num_filled_buckets = NUM_BUCKETS
-            
-        buckets_buy = np.zeros(num_filled_buckets)
-        buckets_sell = np.zeros(num_filled_buckets)
+        buckets_buy = np.zeros(NUM_BUCKETS)
+        buckets_sell = np.zeros(NUM_BUCKETS)
         
         current_bucket = 0
         current_accumulated = 0.0
         
         for i in range(len(trades)):
-            if current_bucket >= num_filled_buckets:
-                break # نتوقف عند امتلاء الدلاء المطلوبة فقط
+            if current_bucket >= NUM_BUCKETS:
+                break 
                 
             vol = trade_vols[i]
             is_sell = taker_sell_flags[i]
             
             if current_accumulated + vol > bucket_size:
+                # الصفقة أكبر من المساحة المتبقية في الدلو الحالي (يتم تقسيمها Flow Slicing)
                 excess = (current_accumulated + vol) - bucket_size
                 current_bucket_share = vol - excess
                 
@@ -2627,7 +2716,7 @@ async def get_institutional_vpin(symbol: str, client: httpx.AsyncClient, volume_
                 current_bucket += 1
                 current_accumulated = excess
                 
-                if current_bucket < num_filled_buckets:
+                if current_bucket < NUM_BUCKETS:
                     if is_sell: buckets_sell[current_bucket] += excess
                     else: buckets_buy[current_bucket] += excess
             else:
@@ -2635,14 +2724,17 @@ async def get_institutional_vpin(symbol: str, client: httpx.AsyncClient, volume_
                 else: buckets_buy[current_bucket] += vol
                 current_accumulated += vol
                 
+        # 3. حساب الاختلالات (Imbalances) لكل دلو
         imbalances = np.abs(buckets_buy - buckets_sell)
         
-        # حساب VPIN فقط على الدلاء الممتلئة الحقيقية
-        vpin = np.sum(imbalances) / (num_filled_buckets * bucket_size)
+        # حساب VPIN: مجموع الاختلالات مقسوماً على إجمالي الحجم
+        vpin = np.sum(imbalances) / (NUM_BUCKETS * bucket_size)
         return float(vpin)
         
-    except Exception:
+    except Exception as e:
+        print(f"VPIN Engine Error: {e}")
         return 0.5
+
 
 import numpy as np
 import onnxruntime as ort
@@ -5580,70 +5672,103 @@ def calculate_vpvr_levels(df, current_price, trend_direction, num_bins=50):
         above_price = profile_df[profile_df['price'] > current_price]
         below_price = profile_df[profile_df['price'] < current_price]
         # ... (باقي الكود أسفل هذا السطر يبقى كما هو تماماً) ...
+        # ==========================================================
+        # 🧠 المحرك الكمّي الجديد: تسعير اكتشاف السعر (Kinetic Price Discovery)
+        # ==========================================================
+        # 1. حساب التذبذب الحقيقي (ATR) لاستخدامه كمسطرة ديناميكية للانفجارات
+        df['tr0'] = abs(df['high'] - df['low'])
+        df['tr1'] = abs(df['high'] - df['close'].shift(1))
+        df['tr2'] = abs(df['low'] - df['close'].shift(1))
+        df['tr'] = df[['tr0', 'tr1', 'tr2']].max(axis=1)
+        recent_atr = df['tr'].tail(14).mean()
+        
+        # حماية رياضية من العملات الميتة أو البيانات الناقصة
+        if pd.isna(recent_atr) or recent_atr == 0:
+            recent_atr = current_price * 0.02 
 
-
-        # 🛡️ إعدادات الحماية وإدارة المخاطر الجديدة
-                # 🛡️ إعدادات الحماية وإدارة المخاطر الجديدة
-        MAX_SL_PCT = 0.05  # أقصى مسافة لوقف الخسارة (5%)
-        MIN_TP_PCT = 0.015 # أقل مسافة للهدف الأول (1.5%)
-        MAX_TP_PCT = 0.15  # أقصى مسافة للأهداف (15% لكي لا يعطي أهدافاً جنونية)
-
+        # 2. حدود الحماية الديناميكية (Dynamic Risk Bounds)
+        # نتخلى عن النسب الثابتة الغبية ونربطها بشخصية تذبذب العملة
+        DYNAMIC_MIN_TP = max(current_price * 0.015, recent_atr * 1.5)
+        
         if trend_direction == "Bullish":
-            valid_targets = above_price[(above_price['price'] >= current_price * (1 + MIN_TP_PCT)) & 
-                                        (above_price['price'] <= current_price * (1 + MAX_TP_PCT))]
-            targets = valid_targets.nlargest(3, 'volume').sort_values('price')
-            tps = targets['price'].tolist()
+            # 🚀 الكشف عن منطقة (Price Discovery)
+            is_price_discovery = above_price.empty or (above_price['price'].max() < current_price * 1.01)
 
+            tps = []
+            if not is_price_discovery:
+                # استخراج الأهداف من عقد السيولة التاريخية (HVN)
+                valid_targets = above_price[above_price['price'] >= current_price + DYNAMIC_MIN_TP]
+                if not valid_targets.empty:
+                    targets = valid_targets.nlargest(3, 'volume').sort_values('price')
+                    tps = targets['price'].tolist()
+
+            # 🚀 التدخل المؤسساتي: الإسقاط الحركي (Kinetic Projection)
+            # إذا اخترقنا القمم ولا يوجد أهداف كافية، نسقط الأهداف بناءً على زخم التذبذب (ATR Fibs)
+            if len(tps) < 1: tps.append(current_price + (recent_atr * 1.618))
+            if len(tps) < 2: tps.append(tps[-1] + (recent_atr * 1.0))
+            if len(tps) < 3: tps.append(tps[-1] + (recent_atr * 1.618))
+
+            # 🛡️ تحديد الوقف (SL) بناءً على فجوات السيولة (LVN) أسفل الدعم
             support_node = below_price.nlargest(1, 'volume')
-            support_price = support_node['price'].iloc[0] if not support_node.empty else current_price * 0.95
+            support_price = support_node['price'].iloc[0] if not support_node.empty else current_price - recent_atr
 
             lvns_below_support = below_price[below_price['price'] < support_price]
             if not lvns_below_support.empty:
                 sl_price = lvns_below_support.nsmallest(1, 'volume')['price'].iloc[0]
             else:
-                sl_price = support_price * 0.98
+                sl_price = support_price - (recent_atr * 0.5)
 
-            if sl_price < current_price * (1 - MAX_SL_PCT):
-                sl_price = current_price * (1 - MAX_SL_PCT)
+            # حماية قصوى: الوقف الديناميكي لا يجب أن يتجاوز 8% لمنع التصفية
+            sl_price = max(sl_price, current_price * (1 - 0.08))
 
         else: # Bearish
-            valid_targets = below_price[(below_price['price'] <= current_price * (1 - MIN_TP_PCT)) & 
-                                        (below_price['price'] >= current_price * (1 - MAX_TP_PCT))]
-            targets = valid_targets.nlargest(3, 'volume').sort_values('price', ascending=False)
-            tps = targets['price'].tolist()
+            # 🚀 الكشف عن الانهيار السحيق (Bottom Discovery)
+            is_bottom_discovery = below_price.empty or (below_price['price'].min() > current_price * 0.99)
+            
+            tps = []
+            if not is_bottom_discovery:
+                valid_targets = below_price[below_price['price'] <= current_price - DYNAMIC_MIN_TP]
+                if not valid_targets.empty:
+                    targets = valid_targets.nlargest(3, 'volume').sort_values('price', ascending=False)
+                    tps = targets['price'].tolist()
+
+            # 🚀 الإسقاط الحركي لانهيارات الشورت
+            if len(tps) < 1: tps.append(current_price - (recent_atr * 1.618))
+            if len(tps) < 2: tps.append(tps[-1] - (recent_atr * 1.0))
+            if len(tps) < 3: tps.append(tps[-1] - (recent_atr * 1.618))
 
             res_node = above_price.nlargest(1, 'volume')
-            res_price = res_node['price'].iloc[0] if not res_node.empty else current_price * 1.05
+            res_price = res_node['price'].iloc[0] if not res_node.empty else current_price + recent_atr
 
             lvns_above_res = above_price[above_price['price'] > res_price]
             if not lvns_above_res.empty:
                 sl_price = lvns_above_res.nsmallest(1, 'volume')['price'].iloc[0]
             else:
-                sl_price = res_price * 1.02
+                sl_price = res_price + (recent_atr * 0.5)
 
-            if sl_price > current_price * (1 + MAX_SL_PCT):
-                sl_price = current_price * (1 + MAX_SL_PCT)
+            sl_price = min(sl_price, current_price * (1 + 0.08))
 
-        # ترتيب الأهداف منطقياً مع حماية النواقص إذا لم يتم العثور على 3 عقد
+        # ترتيب الأهداف منطقياً
+        tp1, tp2, tp3 = tps[0], tps[1], tps[2]
+        
         if trend_direction == "Bullish":
-            tp1 = tps[0] if len(tps) > 0 else current_price * (1 + MIN_TP_PCT)
-            tp2 = tps[1] if len(tps) > 1 else tp1 * 1.02
-            tp3 = tps[2] if len(tps) > 2 else tp2 * 1.02
             tp1, tp2, tp3 = sorted([tp1, tp2, tp3])
-            sl_price = min(sl_price, current_price * 0.99)
+            sl_price = min(sl_price, current_price * 0.99) # الوقف أسفل السعر الحالي دائماً
         else:
-            tp1 = tps[0] if len(tps) > 0 else current_price * (1 - MIN_TP_PCT)
-            tp2 = tps[1] if len(tps) > 1 else tp1 * 0.98
-            tp3 = tps[2] if len(tps) > 2 else tp2 * 0.98
             tp1, tp2, tp3 = sorted([tp1, tp2, tp3], reverse=True)
             sl_price = max(sl_price, current_price * 1.01)
 
-        return sl_price, tp1, tp2, tp3
+        return float(sl_price), float(tp1), float(tp2), float(tp3)
 
     except Exception as e:
-        print(f"VPVR Error: {e}")
-        # أهداف احتياطية محمية في حال فشل الحساب
-        return current_price*0.95, current_price*1.02, current_price*1.04, current_price*1.06
+        print(f"VPVR Kinetic Engine Error: {e}")
+        # أهداف احتياطية ديناميكية بدلاً من الثابتة
+        fallback_atr = current_price * 0.02
+        if trend_direction == "Bullish":
+            return current_price - fallback_atr*2, current_price + fallback_atr*1.5, current_price + fallback_atr*2.5, current_price + fallback_atr*4
+        else:
+            return current_price + fallback_atr*2, current_price - fallback_atr*1.5, current_price - fallback_atr*2.5, current_price - fallback_atr*4
+
 async def analyze_macro_derivatives_divergence(symbol: str, client: httpx.AsyncClient, spot_df: pd.DataFrame, tf: str):
     """
     [Macro Derivatives Engine] - محرك المشتقات الكلي للفريمات الكبيرة
@@ -5883,90 +6008,89 @@ async def evaluate_dex_risk(liquidity_usd: float, vol_24h: float):
     return risk_warnings_ar, risk_warnings_en, risk_score
 def calculate_mtfa_context_sync(candles_4h, candles_1d, candles_1w):
     """
-    [Institutional MTFA Engine] - محرك التوافق الزمني الثلاثي
-    تم تأمينه ضد تسريب البيانات (Look-ahead Bias) والانحياز اللحظي.
+    [Tier-1 Quant] Volatility Compression MTFA Engine (Macro Coil)
+    يعالج "تأخر المؤشرات" بالبحث عن الانضغاط السعري (Compression) على الفريمات الكبيرة
+    بدلاً من انتظار اتجاه صريح قد يكون متأخراً (Lagging Trend).
     """
-    def get_trend(candles, drop_unclosed=False):
+    import numpy as np
+    import pandas as pd
+
+    def get_tf_state(candles, drop_unclosed=False):
         if not candles or isinstance(candles, Exception) or len(candles) < 50:
-            return "Unknown"
+            return "Unknown", False
         
         df = pd.DataFrame(candles).iloc[:, :6]
         df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
         
-        # 🧠 الحل المؤسساتي: إغلاق الارتكاز (Anchor Sealing)
-        # نحذف الشمعة الأخيرة (المفتوحة) للفريمات الكبيرة لنحصل على اتجاه حتمي لا يعيد رسم نفسه
         if drop_unclosed and len(df) > 1:
             df = df.iloc[:-1].copy()
             
         df[["high", "low", "close", "volume"]] = df[["high", "low", "close", "volume"]].apply(pd.to_numeric, errors='coerce')
         
+        # 1. تحديد الاتجاه (Trend) عبر VWAP المرتكز لضمان عدم الانحياز السعري
         df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3.0
         df['vwap'] = (df['typical_price'] * df['volume']).cumsum() / (df['volume'].cumsum() + 1e-8)
-        
-        import numpy as np
-        prices = df['close'].dropna().values 
-        if len(prices) == 0: return "Unknown"
-        
-        n = len(prices)
-        xhat = np.zeros(n) 
-        p = np.zeros(n)    
-        xhat[0], p[0] = prices[0], 1.0
-        q, r = 1e-5, 1e-4  
-        
-        for k in range(1, n):
-            k_gain = (p[k-1] + q) / (p[k-1] + q + r)
-            xhat[k] = xhat[k-1] + k_gain * (prices[k] - xhat[k-1])
-            p[k] = (1 - k_gain) * (p[k-1] + q)
-            
-        current_kalman = xhat[-1]
+        current_close = df['close'].iloc[-1]
         current_vwap = df['vwap'].iloc[-1]
         
-        return "Bullish" if (current_kalman > current_vwap and prices[-1] > current_vwap) else "Bearish"
+        trend = "Bullish" if current_close > current_vwap else "Bearish"
+        
+        # 2. 🧠 تحديد الانضغاط (Compression/Squeeze) عبر عرض البولينجر باندز
+        sma20 = df['close'].rolling(20).mean()
+        std20 = df['close'].rolling(20).std(ddof=0)
+        bb_width = ((4 * std20) / sma20).iloc[-1]
+        
+        # إذا كان عرض الباند أقل من 15% (وهي عتبة مؤسساتية لسوق الكريبتو)، فهناك تجميع هادئ
+        is_compressing = bb_width < 0.15 
+        
+        return trend, is_compressing
 
-    # ⚡ فريم التنفيذ (4H): نسمح له بقراءة الشمعة المفتوحة لاكتشاف التدفق اللحظي
-    trend_4h = get_trend(candles_4h, drop_unclosed=False)
-    
-    # ⚓ فريمات الارتكاز (1D, 1W): نمنعها من قراءة الشمعة المفتوحة لحماية الماكرو
-    trend_1d = get_trend(candles_1d, drop_unclosed=True)
-    trend_1w = get_trend(candles_1w, drop_unclosed=True)
+    # استخراج حالة الاتجاه والانضغاط لكل فريم
+    trend_4h, comp_4h = get_tf_state(candles_4h, drop_unclosed=False)
+    trend_1d, comp_1d = get_tf_state(candles_1d, drop_unclosed=True)
+    trend_1w, comp_1w = get_tf_state(candles_1w, drop_unclosed=True)
 
-    # 🧠 المنطق المؤسساتي لتحديد نوع الإشارة وحجم الأهداف
-    alignment_status = "Neutral"
+    # 🧠 المنطق المؤسساتي المتقدم (Macro Coil & Kinetic Expansion)
     tp_modifier = 1.0 
     status_ar = ""
     status_en = ""
 
-    # 1. التوافق الذهبي (القطار السريع)
-    if trend_4h == "Bullish" and trend_1d == "Bullish" and trend_1w == "Bullish":
-        alignment_status = "Golden_Bullish"
-        tp_modifier = 1.30 
-        status_ar = "<b>توافق زمني كامل (Golden Alignment):</b> سيولة الفريمات الثلاثة تضخ للأعلى. فرصة استثمارية ممتازة (Let Winners Run)."
-        status_en = "<b>Golden Alignment:</b> Macro, Swing, and Execution timeframes are fully bullish. High conviction setup."
+    # 1. 🚀 الانفجار السعري من الانضغاط (The Ultimate Macro Squeeze Breakout)
+    # الفريم الأسبوعي أو اليومي مضغوط (تجميع هادئ) + الفريم اللحظي (4H) بدأ بالصعود
+    if (comp_1w or comp_1d) and trend_4h == "Bullish":
+        tp_modifier = 1.50 # نوسع الأهداف جداً لأن الانفجار سيكون عنيفاً
+        status_ar = "<b>انفجار انضغاطي (Macro Coil Breakout):</b> الفريمات الكبيرة في مرحلة تجميع صامت والسيولة اللحظية بدأت بالدخول. أفضل فرصة لاصطياد قاع الانفجار."
+        status_en = "<b>Macro Coil Breakout:</b> HTF is in a tight volatility squeeze while 4H is expanding upwards. Optimal bottom-catching setup."
 
-    elif trend_4h == "Bearish" and trend_1d == "Bearish" and trend_1w == "Bearish":
-        alignment_status = "Golden_Bearish"
-        tp_modifier = 1.30
-        status_ar = "<b>انهيار متزامن (Death Spiral):</b> توافق هبوطي على كل الفريمات. السوق في مرحلة تصريف كلي."
-        status_en = "<b>Death Spiral Alignment:</b> All timeframes are heavily bearish. Macro distribution phase."
+    # 2. التوافق الذهبي (Trend Continuation)
+    elif trend_4h == "Bullish" and trend_1d == "Bullish" and trend_1w == "Bullish":
+        tp_modifier = 1.20 
+        status_ar = "<b>استمرار الاتجاه (Golden Continuation):</b> جميع الفريمات في ترند صاعد. السعر يواصل رحلة الاكتشاف."
+        status_en = "<b>Golden Continuation:</b> All timeframes aligned bullishly. Asset is in steady markup phase."
 
-    # 2. ارتداد عكس الاتجاه (السكالبينج الخطير)
-    elif trend_4h == "Bullish" and trend_1d == "Bearish":
-        alignment_status = "Counter_Trend_Scalp"
-        tp_modifier = 0.50 
-        status_ar = "<b>سكالبينج عكس الاتجاه (Counter-Trend):</b> الفريم اليومي هابط بقوة والـ 4H يرتد. <b>تم تقريب الأهداف للهروب السريع (Hit & Run).</b>"
-        status_en = "<b>Counter-Trend Scalp:</b> Daily is Bearish while 4H is bouncing. <b>Targets tightened for a Hit & Run.</b>"
-
-    # 3. صيد التراجعات (اصطياد القيعان في ترند صاعد)
+    # 3. صيد التراجعات (Dip Buying)
     elif trend_4h == "Bearish" and trend_1d == "Bullish":
-        alignment_status = "Bullish_Pullback"
         tp_modifier = 1.0 
-        status_ar = "<b>تراجع صحي (Pullback):</b> الفريم اليومي صاعد لكن الـ 4H يمر بتصحيح. مناطق ممتازة للتجميع (Dip Buying)."
+        status_ar = "<b>تراجع صحي (Pullback / Dip Buy):</b> الماكرو صاعد لكن اللحظي يصحح. منطقة ممتازة للشراء مع الاتجاه العام."
         status_en = "<b>Healthy Pullback:</b> Macro is Bullish, execution timeframe is retracing. Prime Dip Buying zone."
 
+    # 4. ارتداد عكس الاتجاه (Counter-Trend Scalp)
+    elif trend_4h == "Bullish" and trend_1d == "Bearish":
+        tp_modifier = 0.50 # نخنق الأهداف لتجنب الفخ والرجوع بسرعة للأسفل
+        status_ar = "<b>ارتداد عكس الاتجاه (Counter-Trend):</b> الماكرو هابط بقوة والـ 4H يرتد. <b>تم تقريب الأهداف للهروب السريع (Hit & Run).</b>"
+        status_en = "<b>Counter-Trend Scalp:</b> Daily is Bearish while 4H is bouncing. <b>Targets tightened for a Hit & Run.</b>"
+
+    # 5. الانهيار المتزامن (Death Spiral)
+    elif trend_4h == "Bearish" and trend_1d == "Bearish" and trend_1w == "Bearish":
+        tp_modifier = 1.20 # توسيع لأهداف الشورت
+        status_ar = "<b>انهيار متزامن (Death Spiral):</b> توافق هبوطي تام. السعر في مرحلة تفريغ مؤسساتي كامل."
+        status_en = "<b>Death Spiral:</b> Perfect bearish alignment. Asset is in full structural capitulation."
+
     else:
-        status_ar = "<b>تذبذب هيكلي (Mixed Flow):</b> لا يوجد إجماع واضح بين الفريمات الكبيرة والصغيرة."
+        status_ar = "<b>تذبذب هيكلي (Mixed Flow):</b> لا يوجد إجماع هيكلي واضح بين الفريمات."
         status_en = "<b>Mixed Flow:</b> Timeframes lack structural consensus."
 
+    # 🛡️ الحفاظ على المخرجات تماماً كما يتوقعها باقي الكود لضمان عدم توقف دوال الفيتو
     return {
         "macro_1w": trend_1w, "swing_1d": trend_1d, "exec_4h": trend_4h,
         "tp_modifier": tp_modifier, "ar_text": status_ar, "en_text": status_en
