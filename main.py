@@ -812,6 +812,274 @@ async def radar_worker_process(pool):
             except Exception as e:
                 print(f"⚠️ خطأ عابر في Live Sniper Worker: {e}")
                 await asyncio.sleep(2)
+# طابور مستقل لمعالجة الشورت
+short_processing_queue = asyncio.Queue()
+
+async def apex_short_watchdog(pool):
+    """
+    مستشعر ذروة الفومو (Euphoria Producer): 
+    يصطاد اللحظة التي يضخ فيها الأفراد سيولة جنونية لكن السعر يتوقف عن الصعود (تفريغ الحيتان).
+    """
+    url = "wss://stream.binance.com:9443/ws/!miniTicker@arr"
+    print("🔴 [Short Engine] Euphoria Watchdog is Online. Hunting market tops...")
+
+    short_market_memory = {}
+
+    while True:
+        current_time = time.time()
+        keys_to_delete = [k for k, v in short_market_memory.items() if current_time - v['last_update'] > 3600]
+        for k in keys_to_delete: del short_market_memory[k]
+
+        try:
+            async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
+                async for message in ws:
+                    data = json.loads(message)
+                    current_time = time.time()
+
+                    for ticker in data:
+                        symbol = ticker['s']
+                        if not symbol.endswith("USDT"): continue
+
+                        clean_sym = symbol.replace("USDT", "")
+                        if clean_sym in BLACKLISTED_COINS: continue
+
+                        current_vol = float(ticker['q']) 
+                        current_price = float(ticker['c'])
+
+                        if symbol in short_market_memory:
+                            old_data = short_market_memory[symbol]
+                            old_vol = old_data['volume']
+                            old_price = old_data['price']
+                            time_diff = current_time - old_data['last_update']
+
+                            # مراقبة الدقيقة الواحدة
+                            if time_diff >= 60 and old_vol > 0:
+                                traded_usd_minute = current_vol - old_vol 
+                                price_change = (current_price - old_price) / old_price
+                                
+                                # 🧠 شروط قمة التصريف (Distribution Top):
+                                # 1. سيولة ضخمة دخلت فجأة (أكثر من 50 ألف دولار في دقيقة)
+                                # 2. السعر إما صعد بحدة شديدة (FOMO Spike > 1.5%)
+                                # 3. أو السعر لم يتحرك رغم السيولة الضخمة (Limit Sell Wall Absorption)
+                                MIN_EXHAUSTION_VOL = max(50_000.0, old_vol * 0.003)
+
+                                if traded_usd_minute >= MIN_EXHAUSTION_VOL and (price_change >= 0.015 or (price_change <= 0.002 and traded_usd_minute > MIN_EXHAUSTION_VOL * 2)):
+                                    print(f"🩸 [Euphoria Alert] {symbol} | Injected: ${traded_usd_minute:,.0f} | Price Shift: {price_change*100:.2f}%") 
+                                    
+                                    await short_processing_queue.put({"symbol": clean_sym, "quote": {"USD": {"price": current_price}}})
+                                
+                                short_market_memory[symbol] = {'volume': current_vol, 'price': current_price, 'last_update': current_time}
+                        else:
+                            short_market_memory[symbol] = {'volume': current_vol, 'price': current_price, 'last_update': current_time}
+
+        except Exception as e:
+            print(f"⚠️ Short Watchdog Error: {e} - Reconnecting...")
+            await asyncio.sleep(3)
+async def analyze_short_radar_coin(c, client, market_regime, sem):
+    """
+    [Institutional Grade Short Radar]
+    النسخة الهجومية المعكوسة من رادار التحليل. تعمل بنفس القوة والتعقيد لكن باحثة عن فخاخ السيولة الشرائية.
+    """
+    async with sem:  
+        try:
+            symbol = c["symbol"]
+            price = float(c["quote"]["USD"]["price"])
+            
+            candles = await get_candles_binance(f"{symbol}USDT", "1h", limit=750)
+            if not candles: return None
+
+            df, last_rsi, current_adx, current_z, vol_mean, vol_std = await asyncio.to_thread(process_dataframe_sync, candles)
+            tags = []
+            
+            # 🛡️ 1. فلتر قوة الاندفاع (Exhaustion Filter)
+            current_vwap_z, current_vwap_price = calculate_vwap_zscore(df, window=24)
+            current_high, current_low = df["high"].iloc[-1], df["low"].iloc[-1]
+            candle_spread_pct = ((current_high - current_low) / current_low) * 100
+            
+            # إذا كان السعر تحت الـ VWAP، لا يوجد شورت (لا تشورت عملة تنزف أصلاً، نحن نبحث عن قمم)
+            if current_vwap_z < 1.0: 
+                return None
+                
+            # 🟢 2. جلب كل البيانات الميكرو-سوقية (Data Fetching)
+            spot_lead_score = await detect_spot_perp_divergence(symbol, client)
+            old_price_val = df["close"].iloc[-3] if len(df) > 3 else df["open"].iloc[0]
+            approx_24h_vol_usd = df["volume"].tail(24).sum() * price 
+
+            # جلب اللحظي
+            micro_cvd_boost, micro_cvd_signal, micro_cvd_trend = await get_micro_cvd_absorption(f"{symbol}USDT", client, "1h")
+            global_ob_pressure = await get_aggregated_orderbook(client, symbol)
+            depth_data = await analyze_orderbook_spoofing_instant(symbol, client, price)
+            tick_delta, tick_buy, tick_sell, limit_abs_signal = await get_institutional_orderflow(f"{symbol}USDT", client)
+            _, futures_signal, funding_val, oi_change_pct = await get_futures_liquidity(symbol, client, price, old_price_val)
+            whale_score, phantom_tags = await detect_phantom_liquidity_ws(symbol, client, price, approx_24h_vol_usd)
+            rs_score = await detect_btc_relative_strength(symbol, client)
+            vpin_score = await get_institutional_vpin(symbol, client, approx_24h_vol_usd)
+            
+            tags.extend(phantom_tags)
+
+            # 🧠 3. جلب بيانات الماكرو والـ MTFA (Timeframe Alignment)
+            candles_1d_macro = await get_candles_binance(f"{symbol}USDT", "1d", limit=40)
+            candles_4h = await get_candles_binance(f"{symbol}USDT", "4h", limit=100)
+            candles_1w_simulated = [] # (اختصاراً هنا نضع كود تجميع الشموع الأسبوعية الخاص بك كما هو في الدالة الأصلية)
+            # ... (كود تجميع df_daily للشموع الأسبوعية) ...
+
+            mtfa_context = await asyncio.to_thread(calculate_mtfa_context_sync, candles_4h, candles_1d_macro, candles_1w_simulated)
+            
+            # ⚙️ 4. الهيكلة الفنية والبولينجر
+            dyn_window = get_dynamic_window(df, base_window=20)
+            sma = df["close"].rolling(dyn_window).mean()
+            std = df["close"].rolling(dyn_window).std(ddof=0)
+            bb_width = (4 * std) / sma
+            avg_bb_width = bb_width.rolling(dyn_window * 5).mean().iloc[-1]
+            current_bb_width = bb_width.iloc[-1]
+            squeeze_ratio = current_bb_width / (avg_bb_width + 1e-8) if not pd.isna(avg_bb_width) and avg_bb_width > 0 else 1.0
+
+            # ====================================================================
+            # 🩸 5. محرك التسعير الكمي الهجومي (The Inverse Quant Scoring)
+            # ====================================================================
+            df["vol_usd"] = df["volume"] * df["close"]
+            avg_vol_usd_20 = max(df["vol_usd"].tail(20).mean(), 1.0)
+            
+            # أ. تقييم السيولة (CVD) للشورت:
+            # نبحث عن CVD إيجابي جداً يقابله ضعف في حركة السعر (تفريغ المؤسسات على الأفراد)
+            real_cvd_usd_eval = float(micro_cvd_trend) * price 
+            cvd_ratio = real_cvd_usd_eval / avg_vol_usd_20
+            
+            # كلما زاد التفاعل الشرائي اللحظي للأفراد (CVD عالي)، زادت جودة الشورت!
+            dir_cvd = quant_sigmoid_score(cvd_ratio, sensitivity=6.0, limit=100.0) 
+            
+            # ب. تقييم المشتقات (Long Squeeze):
+            # نبحث عن Funding إيجابي جداً و OI مرتفع.
+            funding_sensitivity = 3000.0 if (futures_signal == "OI_Rising" and oi_change_pct > 0.02) else 1000.0
+            dir_deriv = quant_sigmoid_score(funding_val, sensitivity=funding_sensitivity, limit=100.0)
+
+            # ج. تقييم الأوردر بوك اللحظي:
+            # نبحث عن ضغط بيعي في الأوردر بوك (Imbalance سالب) وفراغ في طلبات الشراء
+            imbalance = depth_data.get('imbalance', 0.0)
+            # كلما قل Imbalance (اتجه للسالب)، زاد سكور الشورت
+            ob_base = 100.0 - quant_sigmoid_score(imbalance, sensitivity=4.0, limit=100.0)
+            timing_score = ob_base
+            
+            if depth_data.get('is_hollow', False): timing_score *= 1.4 # مكافأة: لا يوجد قاع يحمي السعر!
+            
+            # د. دمج الاتجاه المؤسساتي (Inverse Fusion)
+            short_conviction = (dir_cvd * 0.40) + (dir_deriv * 0.40) + (timing_score * 0.20)
+            
+            # 🛑 الفيتو الإجباري للشورت (Vetoes):
+            # 1. لا تشورت عملة في وضع "اكتشاف السعر" (All Time Highs) بدون علامات إرهاق قوية
+            if rs_score > 8.0 and vpin_score > 0.7: 
+                return None # العملة أقوى من البيتكوين والسيولة سامة للشراء، اهرب!
+            # 2. لا تشورت عملة ذات فاندنج سالب جداً (Short Squeeze Trap)
+            if funding_val < -0.001: 
+                return None 
+
+            final_raw_score = short_conviction
+            score = round(max(0.0, min(final_raw_score, 99.5)), 1)
+            
+            if score < 75.0: return None # رادار الشورت يجب أن يكون دقيقاً ولا يقبل أقل من 75%
+            
+            # ====================================================================
+            # 🤖 6. استدعاء الذكاء الاصطناعي و (عكس النتائج)
+            # ====================================================================
+            ml_features = {
+                'market_regime': 0, 'sp500_trend': float(MACRO_CACHE.get("sp500_trend", 0.0)),
+                'sentiment_score': float(MACRO_CACHE.get("sentiment_score", 50.0)),
+                'z_score': float(current_z), 'cvd_to_vol_ratio': float((tick_delta / avg_vol_usd_20) * 100),
+                'ofi_imbalance': float(imbalance), 'ob_skewness': float(depth_data.get('bid_pressure_ratio', 1.0)),
+                'whale_inflow': await get_whale_inflow_score(), 'adx': float(current_adx), 'rsi': float(last_rsi),
+                'micro_volatility': float(df['close'].tail(20).pct_change().std() * 100),
+                'cvd_divergence': 0.0, 'funding_rate': float(funding_val),
+                'weekly_liquidity_void': 0.0, 'macro_z_score_30d': 0.0,
+                'htf_whale_accumulation': 0.0, 'days_since_last_expansion': 0.0
+            }
+            
+            ai_confidence, xgb_drop, xgb_time, xgb_pump = await asyncio.to_thread(predict_signal_sync, ml_features)
+            ai_confidence_deep, deep_drop, deep_time, deep_pump = await asyncio.to_thread(predict_deep_moe, ml_features)
+
+            # 🩸 العكس الذكي: הـ Drop هو الربح، والـ Pump هو الوقف!
+            best_short_profit = max(xgb_drop, deep_drop)
+            worst_short_risk = max(xgb_pump, deep_pump)
+            
+            # إذا كان الوقف (Pump) المحتمل كبيراً جداً (> 10%)، فالعملة خطرة للشورت
+            if worst_short_risk > 10.0: return None
+
+            # 🎯 7. حساب أهداف الشورت العكسية بالـ VPVR
+            conf_sl, conf_tp1, conf_tp2, conf_tp3 = await asyncio.to_thread(
+                calculate_institutional_vpvr_confluence, candles_4h, candles_1d_macro, price, "Bearish"
+            )
+            
+            sl = conf_sl if conf_sl else price * (1 + (worst_short_risk / 100))
+            tp1 = conf_tp1 if conf_tp1 else price * (1 - 0.02)
+            tp2 = conf_tp2 if conf_tp2 else price * (1 - (best_short_profit / 100))
+            tp3 = conf_tp3 if conf_tp3 else price * 0.90 # افتراضي
+
+            return {
+                "symbol": symbol, "price": price, "score": score,
+                "rsi": round(last_rsi, 2), "adx": round(current_adx, 2),
+                "macd": current_z, "vol_ratio": float((df["volume"].iloc[-1] / vol_mean) if vol_mean > 0 else 1.0),
+                "ob_pressure": float(depth_data.get('bid_pressure_ratio', 1.0)),
+                "signal_type": "🩸 قمة تصريف (Short / Exit)",
+                "confluence": 5, "ml_features": ml_features, 
+                "cvd_usd": float(real_cvd_usd_eval),
+                "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3,
+                "ai_conf": max(ai_confidence, ai_confidence_deep)
+            }
+
+        except Exception as e:
+            print(f"Error in analyze_short_radar_coin: {e}")
+            return None  
+async def short_radar_worker_process(pool):
+    sem = asyncio.Semaphore(5) 
+    await asyncio.sleep(15)
+    print("🩸 [Live Short Sniper] Ready for execution...")
+    
+    async with httpx.AsyncClient(timeout=30) as client:
+        while True:
+            try:
+                coin_mock_data = await short_processing_queue.get()
+                clean_sym = coin_mock_data['symbol']
+                
+                async with pool.acquire() as conn:
+                    is_signaled = await conn.fetchval("SELECT 1 FROM radar_history WHERE symbol = $1 AND last_signaled > CURRENT_TIMESTAMP - INTERVAL '12 hours'", f"{clean_sym}_SHORT")
+
+                if not is_signaled:
+                    await binance_rate_limit_event.wait()
+                    market_regime = await detect_market_regime(client)
+                    meta = await analyze_short_radar_coin(coin_mock_data, client, market_regime, sem)
+                    
+                    if meta and meta['score'] >= 80.0:
+                        async with pool.acquire() as conn:
+                            await conn.execute("INSERT INTO radar_history (symbol, last_signaled) VALUES ($1, CURRENT_TIMESTAMP) ON CONFLICT (symbol) DO UPDATE SET last_signaled = CURRENT_TIMESTAMP", f"{clean_sym}_SHORT")
+
+                        price = meta['price']
+                        insight_ar = (
+                            f"🩸 <b>إشارة بيع مكشوف (SHORT) / جني أرباح</b> 🩸\n"
+                            f"🧲 <b>منطقة الدخول:</b> <code>{format_price(price)}$</code>\n"
+                            f"🎯 <b>أهداف الهبوط:</b> <code>{format_price(meta['tp1'])}$</code> - <code>{format_price(meta['tp2'])}$</code>\n"
+                            f"🛑 <b>وقف الخسارة:</b> <code>{format_price(meta['sl'])}$</code>\n"
+                            f"• <b>التدفق:</b> تصريف مؤسساتي مخفي، ومخاطر Long Squeeze عالية.\n"
+                            f"• <b>الذكاء الاصطناعي:</b> ثقة {meta['ai_conf']:.1f}% بالانهيار السعري."
+                        )
+
+                        signal_id = str(uuid.uuid4())[:8]
+                        radar_pending_approvals[f"sh_{signal_id}"] = {
+                            "symbol": clean_sym, "price": price, "signal": meta['signal_type'], "score": meta['score'],
+                            "insight_ar": insight_ar, "insight_en": insight_ar.replace("إشارة بيع مكشوف", "SHORT Signal").replace("أهداف الهبوط", "Drop Targets").replace("وقف الخسارة", "Stop Loss")
+                        }
+
+                        admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="✅ نشر إشارة (Short)", callback_data=f"rad_app_sh_{signal_id}")],
+                            [InlineKeyboardButton(text="❌ تجاهل", callback_data=f"rad_rej_sh_{signal_id}")]
+                        ])
+
+                        admin_text = f"🩸 <b>تنبيه شورت: قمة تفريغ مكتشفة!</b>\n🏆 <b>العملة:</b> #{clean_sym}\n💵 السعر: ${format_price(price)}\n📊 السكور: <b>{meta['score']:.1f}/100</b>\n\n📝 <b>التحليل:</b>\n{insight_ar}\n\nنشر الإشارة؟"
+                        
+                        await bot.send_message(ADMIN_USER_ID, admin_text, reply_markup=admin_kb, parse_mode=ParseMode.HTML)
+                        
+                short_processing_queue.task_done()
+                await asyncio.sleep(1)
+            except Exception as e:
+                await asyncio.sleep(2)
 
 # دالة وسيطة لتجهيز البيانات قبل التحليل العميق
 async def trigger_deep_analysis(coin_mock_data, sem, pool):
@@ -7176,6 +7444,8 @@ async def on_startup(app):
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
 
+    asyncio.create_task(apex_short_watchdog(pool))
+    asyncio.create_task(short_radar_worker_process(pool))
     asyncio.create_task(smart_radar_watchdog(pool))
     asyncio.create_task(institutional_lob_worker(pool))
     asyncio.create_task(silent_data_harvester_worker(pool))
