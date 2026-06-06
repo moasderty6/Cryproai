@@ -3358,21 +3358,31 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             onchain_macro_fuel = 1.0
             if is_incubated and MACRO_CACHE.get("onchain_liquidity_score", 0.0) > 15.0 and micro_cvd_trend > 0:
                 onchain_macro_fuel = 1.15 # 15% دفعة قوية للعملة
-                
-            # 🪐 2. كابح/محفز استحواذ البيتكوين (Altcoin Regime Flow):
-            # إذا كان البيتكوين يمتص السيولة (السكور أقل من 40)، نعاقب العملات البديلة لمنع الاختراقات الوهمية.
-            # إذا كانت السيولة تتدفق للبديل (السكور أعلى من 60)، نمنحها علاوة زخم (Tailwind).
+            # 🪐 2. المحرك المؤسساتي لتوزيع السيولة القطاعية (Dynamic Altcoin Regime Flow):
+            # تم استبدال الكابح القاطع بدالة نعومة أسّية (Exponential Smoothing) لمنع التذبذب الحاد للسكور
             alt_regime = MACRO_CACHE.get("alt_regime_score", 50.0)
             alt_flow_multiplier = 1.0
             
             if symbol != "BTC": # لا نطبق هذا الفلتر على البيتكوين نفسه
-                if alt_regime > 60.0:
-                    alt_flow_multiplier = 1.10 # +10% محفز (موسم العملات البديلة)
-                    tags.append("Alt_Regime_Tailwind")
-                elif alt_regime < 40.0:
-                    alt_flow_multiplier = 0.85 # -15% عقاب صارم (البيتكوين يمتص السيولة / BTC Vacuum)
-                    tags.append("BTC_Liquidity_Vacuum")
-            
+                if alt_regime > 50.0:
+                    # 🚀 منحنى تصاعدي مرن: يبدأ بهدوء من 50 ويصل لأقصى مكافأة (+15%) عند 80 فأكثر
+                    boost_ratio = min((alt_regime - 50.0) / 30.0, 1.0)
+                    # القوة 1.5 تضمن أن التغيير حول مستوى 50 يكون بطيئاً جداً، ويتسارع كلما اقتربنا من 80
+                    alt_flow_multiplier = 1.0 + (0.15 * (boost_ratio ** 1.5))
+                    
+                    # لا نعطي إشارة بوجود "موسم عملات بديلة" إلا إذا كان المحفز مؤثراً فعلاً (> 8%)
+                    if alt_flow_multiplier >= 1.08: 
+                        tags.append("Alt_Regime_Tailwind")
+                        
+                elif alt_regime < 50.0:
+                    # 🩸 منحنى هبوطي مرن: يبدأ بهدوء من 50 ويصل لأقصى عقاب (-25%) عند 20 فأقل
+                    drop_ratio = min((50.0 - alt_regime) / 30.0, 1.0)
+                    alt_flow_multiplier = 1.0 - (0.25 * (drop_ratio ** 1.5))
+                    
+                    # لا نطلق تحذير "ابتلاع البيتكوين للسيولة" إلا إذا كان العقاب مؤثراً فعلاً (> 12%)
+                    if alt_flow_multiplier <= 0.88: 
+                        tags.append("BTC_Liquidity_Vacuum")
+
             # 🛑 كابح الدارك بول النهائي: 
             if squeeze_ratio < 1.2:
                 # نضرب المحفزات الذاتية بوقود الماكرو وتدفق القطاع (Alt Flow Multiplier)
