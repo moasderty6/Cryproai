@@ -973,11 +973,30 @@ async def analyze_short_radar_coin(c, client, market_regime, sem):
             if funding_val < -0.001: 
                 return None 
 
-            final_raw_score = short_conviction
+# ✅ الكود الجديد (الاندماج مع الماكرو):
+# 1. سيولة الماكرو الكلية: هل البيتكوين يمتص السيولة؟ (Altcoin Bleed)
+            alt_regime = MACRO_CACHE.get("alt_regime_score", 50.0)
+            macro_tailwinds = 1.0
+            
+            if alt_regime < 45.0:
+                # البيتكوين ينزف البديلة، بيئة ممتازة للشورت
+                macro_tailwinds += 0.15 
+            elif alt_regime > 60.0:
+                # موسم عملات بديلة! خطر جداً عمل شورت، نعاقب السكور
+                macro_tailwinds -= 0.20
+            
+            # 2. صحة التمويل الكلي (Global Over-leverage)
+            global_funding = MACRO_CACHE.get("global_funding_health", 50.0)
+            if global_funding > 75.0: 
+                # طمع شديد في السوق بالكامل = اقتراب الانهيار
+                macro_tailwinds += 0.10
+            
+            final_raw_score = short_conviction * macro_tailwinds
+            
+            # 🛑 الفيتو المزدوج للشورت:
             score = round(max(0.0, min(final_raw_score, 99.5)), 1)
-            
-            if score < 75.0: return None # رادار الشورت يجب أن يكون دقيقاً ولا يقبل أقل من 75%
-            
+            if score < 75.0: return None 
+
             # ====================================================================
             # 🤖 6. استدعاء الذكاء الاصطناعي و (عكس النتائج)
             # ====================================================================
@@ -993,26 +1012,69 @@ async def analyze_short_radar_coin(c, client, market_regime, sem):
                 'htf_whale_accumulation': 0.0, 'days_since_last_expansion': 0.0
             }
             
-            ai_confidence, xgb_drop, xgb_time, xgb_pump = await asyncio.to_thread(predict_signal_sync, ml_features)
-            ai_confidence_deep, deep_drop, deep_time, deep_pump = await asyncio.to_thread(predict_deep_moe, ml_features)
-
-            # 🩸 العكس الذكي: הـ Drop هو الربح، والـ Pump هو الوقف!
+            # ✅ الكود الجديد (التصحيح الكمي - AI Short Logic):
+            ai_confidence_bull, xgb_drop, xgb_time, xgb_pump = await asyncio.to_thread(predict_signal_sync, ml_features)
+            ai_conf_deep_bull, deep_drop, deep_time, deep_pump = await asyncio.to_thread(predict_deep_moe, ml_features)
+            
             best_short_profit = max(xgb_drop, deep_drop)
             worst_short_risk = max(xgb_pump, deep_pump)
             
-            # إذا كان الوقف (Pump) المحتمل كبيراً جداً (> 10%)، فالعملة خطرة للشورت
             if worst_short_risk > 10.0: return None
+            
+            # 🧠 المحرك العكسي للذكاء الاصطناعي (AI Inverse Engine):
+            # 1. حساب احتمالية الشورت بناءً على نسبة الهبوط المحتمل مقارنة بإجمالي الحركة المتوقعة
+            total_move_xgb = xgb_drop + xgb_pump + 1e-8
+            xgb_short_conf = (xgb_drop / total_move_xgb) * 100
+            
+            total_move_deep = deep_drop + deep_pump + 1e-8
+            deep_short_conf = (deep_drop / total_move_deep) * 100
+            
+            # 2. الفيتو القاتل: إذا كان نموذج الشراء متأكداً جداً (>70%) من الانفجار، يتم سحق سكور الشورت
+            # ✅ الكود الجديد (حقن بيانات التوكنوميكس كمعزز قوي):
+# (أضفه مع باقي دوال جلب البيانات في القسم 2):
+            tokenomics_risk = await evaluate_tokenomics_overhang(symbol, client)
+            
+            # ... (وفي القسم 5 عند دمج الاتجاه المؤسساتي Inverse Fusion): ...
+            short_conviction = (dir_cvd * 0.40) + (dir_deriv * 0.40) + (timing_score * 0.20)
+            
+            # 🧠 التوكنوميكس كـ "محفز انهيار" (Exit Liquidity Catalyst):
+            # إذا كان هناك فك ضخم قريب (is_vetoed في رادار الشراء)، نعتبره هنا إشارة قنص ممتازة!
+            if tokenomics_risk['is_vetoed']:
+                short_conviction *= 1.30 # زيادة 30% في قوة قناعة الشورت!
+                tags.append("Tokenomics_Exit_Liquidity")
+            elif tokenomics_risk['penalty_multiplier'] < 1.0:
+                short_conviction *= 1.15 # زيادة 15% للتضخم الكلي (Toxic FDV)
+            
+            if ai_confidence_bull > 70.0 or ai_conf_deep_bull > 70.0:
+                xgb_short_conf *= 0.3
+                deep_short_conf *= 0.3
+            
+            true_short_ai_conf = max(xgb_short_conf, deep_short_conf)
 
-            # 🎯 7. حساب أهداف الشورت العكسية بالـ VPVR
+# ✅ الكود الجديد (الاستهداف المغناطيسي للتصفيات):
             conf_sl, conf_tp1, conf_tp2, conf_tp3 = await asyncio.to_thread(
                 calculate_institutional_vpvr_confluence, candles_4h, candles_1d_macro, price, "Bearish"
             )
             
+            # 🩸 جلب خريطة التصفيات اللحظية
+            liq_data = await build_liquidation_heatmap(symbol, client)
+            
             sl = conf_sl if conf_sl else price * (1 + (worst_short_risk / 100))
             tp1 = conf_tp1 if conf_tp1 else price * (1 - 0.02)
             tp2 = conf_tp2 if conf_tp2 else price * (1 - (best_short_profit / 100))
-            tp3 = conf_tp3 if conf_tp3 else price * 0.90 # افتراضي
-
+            
+            # 🧠 الاندماج المغناطيسي (Heatmap Fusion):
+            # إذا اكتشفنا أن هناك Longs محاصرين، نستخدم نقطة تصفيتهم كهدف أول أو ثاني مؤكد!
+            if liq_data and "Long Liquidation" in liq_data['type']:
+                # إذا كانت التصفية قريبة نضعها كهدف أول، وإذا كانت بعيدة نضعها كهدف ثاني
+                if liq_data['distance_pct'] <= 0.03:
+                    tp1 = liq_data['target']
+                else:
+                    tp2 = liq_data['target']
+                    tp1 = price * (1 - (liq_data['distance_pct'] * 0.5)) # هدف أولي في منتصف الطريق
+                    
+            tp3 = conf_tp3 if conf_tp3 else tp2 * 0.95
+            
             return {
                 "symbol": symbol, "price": price, "score": score,
                 "rsi": round(last_rsi, 2), "adx": round(current_adx, 2),
@@ -1022,12 +1084,13 @@ async def analyze_short_radar_coin(c, client, market_regime, sem):
                 "confluence": 5, "ml_features": ml_features, 
                 "cvd_usd": float(real_cvd_usd_eval),
                 "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3,
-                "ai_conf": max(ai_confidence, ai_confidence_deep)
+                "ai_conf": true_short_ai_conf # ✅ التعديل الصحيح
             }
 
         except Exception as e:
             print(f"Error in analyze_short_radar_coin: {e}")
             return None  
+
 async def short_radar_worker_process(pool):
     sem = asyncio.Semaphore(5) 
     await asyncio.sleep(15)
