@@ -335,57 +335,67 @@ def update_dynamic_ofi(symbol, new_bids, new_asks):
     mem["best_ask_vol"] = curr_best_ask_vol
     mem["bid_vols"].append(curr_total_bid_vol)
     mem["ask_vols"].append(curr_total_ask_vol)
-    
     # ==========================================================
-    # 🧠 المحرك المؤسساتي: ML-OFI (Multi-Level Order Flow Imbalance)
+    # 🧠 المحرك المؤسساتي: ML-OFI (Price-Grid Anchoring & Boundary Filtration)
     # ==========================================================
     total_ofi = 0.0
-    decay_factor = 0.5 # وزن المستوى ينخفض للنصف كلما ابتعدنا عن السعر الحالي
-    
-    # تحويل أول 5 مستويات إلى قواميس للبحث الدقيق عن الأسعار
-    curr_bids_dict = {float(p): float(v) for p, v in new_bids[:5]}
-    curr_asks_dict = {float(p): float(v) for p, v in new_asks[:5]}
-    
-    prev_bids_dict = mem["prev_bids"]
-    prev_asks_dict = mem["prev_asks"]
-    
-    # 1. حساب OFI لطلبات الشراء (Bids) - تتبع السعر وليس فقط المستوى
+
+    # نوسع العدسة لـ 10 مستويات لامتصاص الصدمات السعرية دون فقدان البيانات
+    curr_bids_dict = {float(p): float(v) for p, v in new_bids[:10]}
+    curr_asks_dict = {float(p): float(v) for p, v in new_asks[:10]}
+
+    prev_bids_dict = mem.get("prev_bids", {})
+    prev_asks_dict = mem.get("prev_asks", {})
+
+    curr_mid = (curr_best_bid + curr_best_ask) / 2.0
+    prev_mid = mem.get("prev_mid", curr_mid)
+    if prev_mid == 0: prev_mid = curr_mid
+
+    # 🛡️ فلتر حدود الأوردر بوك (Boundary Effect Filter):
+    # لمنع وهم "دخول سيولة" ناتج فقط عن تحرك السعر وإدخال مستويات جديدة لعدسة الرؤية
+    prev_worst_bid = min(prev_bids_dict.keys()) if prev_bids_dict else 0.0
+    prev_worst_ask = max(prev_asks_dict.keys()) if prev_asks_dict else float('inf')
+
+    # 1. معالجة طلبات الشراء (Bids) بدقة السعر المطلق (Price-Tick)
     all_bid_prices = set(curr_bids_dict.keys()).union(set(prev_bids_dict.keys()))
-    sorted_bids = sorted(list(all_bid_prices), reverse=True)[:5] # الأقرب للسعر أولاً
-    
-    for i, price in enumerate(sorted_bids):
-        weight = math.exp(-decay_factor * i)
+    for price in all_bid_prices:
+        # إعدام الضجيج: تجاهل أي سعر ظهر فجأة أسفل أضعف طلب قديم (هذا انزياح للرؤية وليس ضخ سيولة حقيقي)
+        if price < prev_worst_bid and price not in prev_bids_dict:
+            continue
+
         curr_v = curr_bids_dict.get(price, 0.0)
         prev_v = prev_bids_dict.get(price, 0.0)
+
+        # الوزن الديناميكي: المستويات القريبة من السعر العادل (Mid-Price) تمتلك تأثيراً أقوى
+        distance_pct = abs(curr_mid - price) / curr_mid if curr_mid > 0 else 0
+        weight = math.exp(-distance_pct * 1000)
+
         total_ofi += weight * (curr_v - prev_v)
-        
-    # 2. حساب OFI لعروض البيع (Asks)
+
+    # 2. معالجة عروض البيع (Asks)
     all_ask_prices = set(curr_asks_dict.keys()).union(set(prev_asks_dict.keys()))
-    sorted_asks = sorted(list(all_ask_prices))[:5] # الأقرب للسعر أولاً
-    
-    for i, price in enumerate(sorted_asks):
-        weight = math.exp(-decay_factor * i)
+    for price in all_ask_prices:
+        # إعدام الضجيج للعروض: تجاهل الأسعار التي تقع فوق أعلى عرض قديم
+        if price > prev_worst_ask and price not in prev_asks_dict:
+            continue
+
         curr_v = curr_asks_dict.get(price, 0.0)
         prev_v = prev_asks_dict.get(price, 0.0)
-        # العروض علاقتها عكسية (زيادتها تعني ضغط بيعي)
+
+        distance_pct = abs(price - curr_mid) / curr_mid if curr_mid > 0 else 0
+        weight = math.exp(-distance_pct * 1000)
+
+        # العروض علاقتها عكسية: زيادة العرض تضغط السعر للأسفل (OFI سالب)
         total_ofi -= weight * (curr_v - prev_v)
-        
-    # 3. 🛡️ فلتر الانزياح الوهمي (Window Shift Filter):
-    # نوقف قراءة الـ OFI إذا قفز السعر بقوة (لأن المستويات ستتغير بأكملها ولن يكون القياس دقيقاً)
-    mid_price = (curr_best_bid + curr_best_ask) / 2.0
-    prev_mid = mem["prev_mid"] if mem["prev_mid"] > 0 else mid_price
-    price_change_pct = abs(mid_price - prev_mid) / prev_mid if prev_mid > 0 else 0
-    
-    if price_change_pct < 0.001: # تحرك طبيعي للسعر (< 0.1%)
-        mem["ofi_window"].append(total_ofi)
-    else: # قفزة سعرية، نكرر آخر قراءة مستقرة لتجنب تلوث البيانات
-        last_valid = mem["ofi_window"][-1] if mem["ofi_window"] else 0.0
-        mem["ofi_window"].append(last_valid)
-        
+
+    # 3. إدراج الـ OFI النقي في الذاكرة (تم الاستغناء عن Shift Filter القديم لأن الكود الجديد يمتص الانزياح طبيعياً)
+    mem["ofi_window"].append(total_ofi)
+
     # 4. تحديث الذاكرة للدورة القادمة
     mem["prev_bids"] = curr_bids_dict
     mem["prev_asks"] = curr_asks_dict
-    mem["prev_mid"] = mid_price
+    mem["prev_mid"] = curr_mid
+
 
 async def get_whale_inflow_score():
     """
@@ -2677,22 +2687,26 @@ def detect_dark_pool_vca(df, current_cvd_usd, oi_change_pct, funding_rate=0.0, o
 async def get_institutional_vpin(symbol: str, client: httpx.AsyncClient, volume_24h: float):
     """
     [Tier-1 Quant] Dynamic Volume-Synchronized Probability of Informed Trading (VPIN)
-    يعالج السيولة بناءً على (الوقت الحجمي) وليس عدد الصفقات، مما يوحد 
-    المقاييس الإحصائية بين العملات القيادية والعملات الضعيفة.
+    تطبيق أصلي لساعة الفوليوم (Volume-Clock Slicing): 
+    يعتمد حجم الدلو كنسبة ثابتة من الـ ADV، ويقطع أوامر الحيتان بدقة لتوزيعها على الدلاء.
     """
     clean_sym = symbol.replace("USDT", "") + "USDT"
     trades = []
     
-    # 1. تحديد حجم العينة المطلوبة كنسبة من السيولة اليومية الحقيقية (Volume Synchronization)
-    # نطلب تحليل آخر 1.5% من سيولة اليوم (لأن الانفجارات السعرية تسبقها ذروة سيولة مخفية بهذا الحجم)
-    target_volume_usd = max(volume_24h * 0.015, 25000.0) 
+    # 1. 🧠 تثبيت سعة الدلو (Anchored Bucket Size):
+    # الدلو الصارم يمثل 2% من السيولة اليومية (Average Daily Volume). 
+    # هذا يضمن أن تقييم BTC يعادل تقييم PEPE إحصائياً.
+    bucket_size_usd = max(volume_24h * 0.02, 5000.0)
+    
+    # نهدف لجمع سيولة تكفي لملء 3 دلاء على الأقل (6% من سيولة اليوم) לקراءة اختلال حقيقي
+    target_volume_usd = bucket_size_usd * 3.0
     
     try:
         base_url = get_random_binance_base()
         last_id = None
         accumulated_vol = 0.0
         
-        # 🛡️ حماية الـ API: بحد أقصى 5 طلبات (5000 صفقة) لكي لا نعلق البوت وتزيد سرعة الاستجابة
+        # 🛡️ سحب بيانات التنفيذ: نطلب صفقات متتالية من الأحدث للأقدم، ثم نعكسها زمنياً
         for _ in range(5):
             await binance_rate_limit_event.wait()
             params = {"symbol": clean_sym, "limit": 1000}
@@ -2705,72 +2719,68 @@ async def get_institutional_vpin(symbol: str, client: httpx.AsyncClient, volume_
             batch = res.json()
             if not batch: break
             
-            trades = batch + trades # إضافة الصفقات الأقدم في البداية
+            trades = batch + trades # الترتيب الزمني الصحيح (الأقدم فالأحدث)
             last_id = batch[0]['a']
             
-            # حساب الفوليوم المتراكم في هذه الدفعة
             batch_vol = sum(float(t['q']) * float(t['p']) for t in batch)
             accumulated_vol += batch_vol
             
-            # 🛑 التوقف فوراً إذا جمعنا السيولة المطلوبة (حققنا الـ Volume-Invariance)
             if accumulated_vol >= target_volume_usd:
                 break
                 
         if not trades: return 0.5 
         
         import numpy as np
-        trade_vols = np.array([float(t['q']) * float(t['p']) for t in trades])
-        taker_sell_flags = np.array([t['m'] for t in trades])
-        total_sample_vol = np.sum(trade_vols)
         
-        if total_sample_vol < 5000.0: return 0.5 # حماية من العملات الميتة جداً
+        # 2. 🧠 خوارزمية التقطيع الفوليومي (Volume Slicing Engine)
+        completed_buckets_imbalance = []
         
-        # 2. تقسيم العينة إلى دلاء (Buckets) متساوية الحجم بناءً على السيولة الفعلية المجمعة
-        NUM_BUCKETS = 20 # 20 دلو يعطي دقة ممتازة لعزل السيولة السامة
-        bucket_size = total_sample_vol / NUM_BUCKETS
+        current_buy_vol = 0.0
+        current_sell_vol = 0.0
         
-        buckets_buy = np.zeros(NUM_BUCKETS)
-        buckets_sell = np.zeros(NUM_BUCKETS)
-        
-        current_bucket = 0
-        current_accumulated = 0.0
-        
-        for i in range(len(trades)):
-            if current_bucket >= NUM_BUCKETS:
-                break 
-                
-            vol = trade_vols[i]
-            is_sell = taker_sell_flags[i]
+        for t in trades:
+            vol = float(t['q']) * float(t['p'])
+            is_sell = t['m'] # True = Taker Sell (بيع ماركت)
             
-            if current_accumulated + vol > bucket_size:
-                # الصفقة أكبر من المساحة المتبقية في الدلو الحالي (يتم تقسيمها Flow Slicing)
-                excess = (current_accumulated + vol) - bucket_size
-                current_bucket_share = vol - excess
+            # حلقة while هنا هي (قلب المحرك): إذا كانت الصفقة أكبر من مساحة الدلو، 
+            # سيتم قصها، ملء الدلو، حفظه، ثم وضع الباقي في الدلو التالي!
+            while vol > 0:
+                current_total = current_buy_vol + current_sell_vol
+                space_left = bucket_size_usd - current_total
                 
-                if is_sell: buckets_sell[current_bucket] += current_bucket_share
-                else: buckets_buy[current_bucket] += current_bucket_share
+                # نأخذ الحجم الأصغر: إما كل الصفقة، أو ما يملأ الدلو الحالي فقط
+                fill_vol = min(vol, space_left)
                 
-                current_bucket += 1
-                current_accumulated = excess
+                if is_sell:
+                    current_sell_vol += fill_vol
+                else:
+                    current_buy_vol += fill_vol
                 
-                if current_bucket < NUM_BUCKETS:
-                    if is_sell: buckets_sell[current_bucket] += excess
-                    else: buckets_buy[current_bucket] += excess
-            else:
-                if is_sell: buckets_sell[current_bucket] += vol
-                else: buckets_buy[current_bucket] += vol
-                current_accumulated += vol
+                vol -= fill_vol # خصم ما تم وضعه في الدلو
                 
-        # 3. حساب الاختلالات (Imbalances) لكل دلو
-        imbalances = np.abs(buckets_buy - buckets_sell)
-        
-        # حساب VPIN: مجموع الاختلالات مقسوماً على إجمالي الحجم
-        vpin = np.sum(imbalances) / (NUM_BUCKETS * bucket_size)
+                # إذا امتلأ الدلو (مع التسامح مع الكسور العشرية)
+                if (current_buy_vol + current_sell_vol) >= bucket_size_usd - 1e-4:
+                    imbalance = abs(current_buy_vol - current_sell_vol)
+                    completed_buckets_imbalance.append(imbalance)
+                    # تصفير الدلو للبدء من جديد
+                    current_buy_vol = 0.0
+                    current_sell_vol = 0.0
+
+        # 3. ⚖️ حساب مؤشر VPIN النهائي
+        if not completed_buckets_imbalance:
+            # حالة استثنائية: إذا كانت العملة ميتة جداً ولم يمتلئ حتى دلو واحد
+            total_collected = current_buy_vol + current_sell_vol
+            if total_collected < 1000.0: return 0.5 # حيادي
+            return float(abs(current_buy_vol - current_sell_vol) / total_collected)
+            
+        # VPIN = مجموع الاختلالات / إجمالي الحجم في كل الدلاء المكتملة
+        vpin = np.sum(completed_buckets_imbalance) / (len(completed_buckets_imbalance) * bucket_size_usd)
         return float(vpin)
         
     except Exception as e:
-        print(f"VPIN Engine Error: {e}")
+        print(f"VPIN Quant Engine Error: {e}")
         return 0.5
+
 
 
 import numpy as np
