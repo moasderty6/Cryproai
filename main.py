@@ -933,9 +933,8 @@ async def analyze_short_radar_coin(c, client, market_regime, sem):
             avg_bb_width = bb_width.rolling(dyn_window * 5).mean().iloc[-1]
             current_bb_width = bb_width.iloc[-1]
             squeeze_ratio = current_bb_width / (avg_bb_width + 1e-8) if not pd.isna(avg_bb_width) and avg_bb_width > 0 else 1.0
-
             # ====================================================================
-            # 🩸 5. محرك التسعير الكمي الهجومي (The Inverse Quant Scoring)
+            # 🩸 5. محرك التسعير الكمي الهجومي (The Inverse Quant Scoring & Alpha Fusion)
             # ====================================================================
             df["vol_usd"] = df["volume"] * df["close"]
             avg_vol_usd_20 = max(df["vol_usd"].tail(20).mean(), 1.0)
@@ -947,11 +946,25 @@ async def analyze_short_radar_coin(c, client, market_regime, sem):
             
             # كلما زاد التفاعل الشرائي اللحظي للأفراد (CVD عالي)، زادت جودة الشورت!
             dir_cvd = quant_sigmoid_score(cvd_ratio, sensitivity=6.0, limit=100.0) 
+            # ب. تقييم المشتقات، الانحراف، وإنهاك السيولة (Derivatives, Spot Divergence & OI Exhaustion):
             
-            # ب. تقييم المشتقات (Long Squeeze):
-            # نبحث عن Funding إيجابي جداً و OI مرتفع.
+            # 1. حساسية معدل التمويل (Funding Sensitivity - لسيناريو مصيدة المشترين)
             funding_sensitivity = 3000.0 if (futures_signal == "OI_Rising" and oi_change_pct > 0.02) else 1000.0
-            dir_deriv = quant_sigmoid_score(funding_val, sensitivity=funding_sensitivity, limit=100.0)
+            base_deriv = quant_sigmoid_score(funding_val, sensitivity=funding_sensitivity, limit=100.0)
+            
+            # 2. استعادة الألفا المهدرة (Spot Divergence Bonus - لسيناريو تفريغ السبوت):
+            spot_divergence_bonus = min(20.0, abs(spot_lead_score) * 2.0) if spot_lead_score < 0 else 0.0
+            
+            # 3. 🧠 محرك إنهاك السيولة المفتوحة (OI Exhaustion Engine - لسيناريو الهروب الصامت):
+            # القمة الحقيقية تتشكل عندما يبدأ الـ OI بالنزيف بينما الأفراد لا زالوا يطمعون (Funding إيجابي)
+            oi_exhaustion_bonus = 0.0
+            if oi_change_pct < -0.005 and funding_val > 0.0001:
+                # سحب مؤسساتي صامت للسيولة: نكافئ الشورت تصاعدياً بناءً على حجم انسحاب الحيتان
+                # نضيف 10 نقاط كحد أدنى، وتزيد مع قوة النزيف (بحد أقصى 25 نقطة)
+                oi_exhaustion_bonus = min(25.0, 10.0 + (abs(oi_change_pct) * 500.0))
+                
+            # ⚖️ الدمج المؤسساتي: جمع كافة محفزات المشتقات لتكوين القناعة النهائية (Capped at 100)
+            dir_deriv = min(100.0, base_deriv + spot_divergence_bonus + oi_exhaustion_bonus)
 
             # ج. تقييم الأوردر بوك اللحظي:
             # نبحث عن ضغط بيعي في الأوردر بوك (Imbalance سالب) وفراغ في طلبات الشراء
@@ -963,16 +976,39 @@ async def analyze_short_radar_coin(c, client, market_regime, sem):
             if depth_data.get('is_hollow', False): timing_score *= 1.4 # مكافأة: لا يوجد قاع يحمي السعر!
             
             # د. دمج الاتجاه المؤسساتي (Inverse Fusion)
-            short_conviction = (dir_cvd * 0.40) + (dir_deriv * 0.40) + (timing_score * 0.20)
+            base_short_conviction = (dir_cvd * 0.40) + (dir_deriv * 0.40) + (timing_score * 0.20)
             
-            # 🛑 الفيتو الإجباري للشورت (Vetoes):
-            # 1. لا تشورت عملة في وضع "اكتشاف السعر" (All Time Highs) بدون علامات إرهاق قوية
+            # 🧠 استعادة الألفا المهدرة 2 (VPIN Toxicity Multiplier):
+            # نقيس "سمية السيولة". إذا كانت السيولة سامة جداً (VPIN > 0.5)، نضاعف ثقة الشورت
+            # لأن من يصرف الكميات هم الحيتان (Informed Traders) وليس صغار المتداولين.
+            vpin_multiplier = 1.0 + (max(0.0, vpin_score - 0.5) * 0.60) # يضيف حتى 30% قوة إضافية للفرصة
+            
+            # القناعة النهائية الهجومية
+            short_conviction = min(100.0, base_short_conviction * vpin_multiplier)
+
+            # ====================================================================
+            # 🛑 الفيتو الإجباري الديناميكي للشورت (Dynamic Institutional Vetoes)
+            # ====================================================================
+            # 1. فيتو اكتشاف السعر (Price Discovery Veto):
+            # لا تشورت عملة أقوى من البيتكوين (RS عالي) وتتلقى سيولة مؤسساتية هجومية (VPIN سام)
             if rs_score > 8.0 and vpin_score > 0.7: 
                 return None # العملة أقوى من البيتكوين والسيولة سامة للشراء، اهرب!
-            # 2. لا تشورت عملة ذات فاندنج سالب جداً (Short Squeeze Trap)
-            if funding_val < -0.001: 
+            
+            # 2. فيتو مصيدة الشورت (Smart Short Squeeze Veto):
+            # بدلاً من الرقم الثابت الساذج (-0.001)، نعتمد على الانحراف المعياري وسياق المراكز المفتوحة (OI).
+            
+            # أ. الإشارة الإحصائية: هل أبلغنا المحرك عن انحراف معياري خطير (Z-Score < -1.5)؟
+            is_statistical_squeeze = (futures_signal == "Short_Squeeze")
+            
+            # ب. فخ التكدس (Trapped Shorts): إذا كان الـ OI يرتفع بقوة بينما التمويل يميل للسلبية
+            # فهذا يعني أن الأفراد يفتحون شورتات بهلع، وصانع السوق يجهز لضربهم صعوداً.
+            is_trapped_shorts = (futures_signal == "OI_Rising" and funding_val < -0.0004)
+            
+            # ج. الجدار المطلق (Absolute Hard Floor): للحماية من الانهيارات التاريخية المفتوحة
+            is_extreme_funding = (funding_val < -0.0020) # عتبة واسعة جداً (-2% يومياً) تُستخدم فقط كصمام أمان أخير
+            
+            if is_statistical_squeeze or is_trapped_shorts or is_extreme_funding:
                 return None 
-
 # ✅ الكود الجديد (الاندماج مع الماكرو):
 # 1. سيولة الماكرو الكلية: هل البيتكوين يمتص السيولة؟ (Altcoin Bleed)
             alt_regime = MACRO_CACHE.get("alt_regime_score", 50.0)
@@ -996,60 +1032,85 @@ async def analyze_short_radar_coin(c, client, market_regime, sem):
             # 🛑 الفيتو المزدوج للشورت:
             score = round(max(0.0, min(final_raw_score, 99.5)), 1)
             if score < 75.0: return None 
+            # ====================================================================
+            # 🤖 6. محرك الانعكاس الاصطناعي للذكاء الاصطناعي (Synthetic Feature Inversion - SFI)
+            # ====================================================================
+            # بدلاً من استنتاج الشورت عبر حساب نسبة الخطأ (Drop) لنماذج الشراء،
+            # سنقوم بقلب كافة المتغيرات الاتجاهية رياضياً لتكوين "عالم مرايا".
+            # إذا أعطانا النموذج ثقة شراء 90% في عالم المرايا، فهذا يعني ثقة شورت 90% في العالم الحقيقي!
+            
+            # 🧠 دمج المتغيرات المهدرة (VPIN & Spot Divergence) لتغذية الشورت قبل الإرسال للـ AI
+            enhanced_cvd_ratio = float((tick_delta / avg_vol_usd_20) * 100)
+            if spot_lead_score < -5.0: enhanced_cvd_ratio -= 15.0 # السبوت يفرّغ والفيوتشرز عالق
 
-            # ====================================================================
-            # 🤖 6. استدعاء الذكاء الاصطناعي و (عكس النتائج)
-            # ====================================================================
-            ml_features = {
-                'market_regime': 0, 'sp500_trend': float(MACRO_CACHE.get("sp500_trend", 0.0)),
-                'sentiment_score': float(MACRO_CACHE.get("sentiment_score", 50.0)),
-                'z_score': float(current_z), 'cvd_to_vol_ratio': float((tick_delta / avg_vol_usd_20) * 100),
-                'ofi_imbalance': float(imbalance), 'ob_skewness': float(depth_data.get('bid_pressure_ratio', 1.0)),
-                'whale_inflow': await get_whale_inflow_score(), 'adx': float(current_adx), 'rsi': float(last_rsi),
+            whale_ratio = await get_whale_inflow_score()
+            
+            inverse_ml_features = {
+                'market_regime': 2 if int(MACRO_CACHE.get("market_regime", 0)) == 1 else (1 if int(MACRO_CACHE.get("market_regime", 0)) == 2 else 0), 
+                'sp500_trend': float(MACRO_CACHE.get("sp500_trend", 0.0)) * -1.0, 
+                'sentiment_score': 100.0 - float(MACRO_CACHE.get("sentiment_score", 50.0)),
+                
+                # 📊 الفوليوم يظل موجباً لأننا نحتاج سيولة عالية وتذبذب للانفجار سواء كان صعوداً أو هبوطاً
+                'z_score': float(current_z), 
+                
+                # 🔄 قلب التدفق: تفريغ السبوت (-10%) سيراه النموذج كشراء مؤسساتي (+10%)
+                'cvd_to_vol_ratio': enhanced_cvd_ratio * -1.0, 
+                
+                # 🔄 قلب الأوردر بوك: العروض الكثيفة تصبح طلبات كثيفة
+                'ofi_imbalance': float(imbalance) * -1.0, 
+                'ob_skewness': 1.0 / max(float(depth_data.get('bid_pressure_ratio', 1.0)), 1e-4), 
+                
+                # 🔄 قلب تدفق الحيتان (Long/Short Ratio)
+                'whale_inflow': 1.0 / max(whale_ratio, 1e-4), 
+                
+                'adx': float(current_adx), # زخم الترند يظل موجباً لأنه يقيس القوة وليس الاتجاه
+                
+                # 🔄 قلب الـ RSI: ذروة الشراء 80 تصبح ذروة بيع 20 ليقتنصها النموذج كفرصة ممتازة!
+                'rsi': 100.0 - float(last_rsi), 
+                
                 'micro_volatility': float(df['close'].tail(20).pct_change().std() * 100),
-                'cvd_divergence': 0.0, 'funding_rate': float(funding_val),
-                'weekly_liquidity_void': 0.0, 'macro_z_score_30d': 0.0,
-                'htf_whale_accumulation': 0.0, 'days_since_last_expansion': 0.0
+                'cvd_divergence': float(MACRO_CACHE.get("cvd_divergence", 0.0)) * -1.0, 
+                
+                # 🔄 قلب الفاندنج: فاندنج إيجابي عالي (طمع) يصبح سلبياً جداً ليحاكي Short Squeeze في عقل النموذج
+                'funding_rate': float(funding_val) * -1.0, 
+                
+                'weekly_liquidity_void': float(MACRO_CACHE.get("weekly_liquidity_void", 0.0)) * -1.0,
+                'macro_z_score_30d': float(MACRO_CACHE.get("macro_z_score_30d", 0.0)),
+                'htf_whale_accumulation': float(MACRO_CACHE.get("htf_whale_accumulation", 0.0)) * -1.0,
+                'days_since_last_expansion': float(MACRO_CACHE.get("days_since_last_expansion", 0.0))
             }
             
-            # ✅ الكود الجديد (التصحيح الكمي - AI Short Logic):
-            ai_confidence_bull, xgb_drop, xgb_time, xgb_pump = await asyncio.to_thread(predict_signal_sync, ml_features)
-            ai_conf_deep_bull, deep_drop, deep_time, deep_pump = await asyncio.to_thread(predict_deep_moe, ml_features)
+            # 🚀 استدعاء النماذج وتمرير "البيانات المعكوسة"
+            ai_conf_short_xgb, xgb_synthetic_drop, xgb_time, xgb_synthetic_pump = await asyncio.to_thread(predict_signal_sync, inverse_ml_features)
+            ai_conf_short_deep, deep_synthetic_drop, deep_time, deep_synthetic_pump = await asyncio.to_thread(predict_deep_moe, inverse_ml_features)
+
+            # 🧠 فك التشفير العكسي (Inverse Translation)
+            # بما أننا عكسنا المتغيرات، فإن الصعود المتوقع (Pump) في عقل النموذج، هو في الحقيقة الانهيار السعري (Drop)!
+            # والـ Drop في عقل النموذج هو الارتداد المعاكس (Risk) الذي سيضرب وقف الخسارة.
+            best_short_profit = max(xgb_synthetic_pump, deep_synthetic_pump) 
+            worst_short_risk = max(xgb_synthetic_drop, deep_synthetic_drop) 
             
-            best_short_profit = max(xgb_drop, deep_drop)
-            worst_short_risk = max(xgb_pump, deep_pump)
-            
+            # 🛑 الفيتو الإلزامي: إذا كان النموذج (في العالم المعكوس) يرى خطراً كبيراً للانهيار
+            # فهذا يعني أن السعر سيرتد صعوداً ويضرب الشورت الخاص بنا.
             if worst_short_risk > 10.0: return None
             
-            # 🧠 المحرك العكسي للذكاء الاصطناعي (AI Inverse Engine):
-            # 1. حساب احتمالية الشورت بناءً على نسبة الهبوط المحتمل مقارنة بإجمالي الحركة المتوقعة
-            total_move_xgb = xgb_drop + xgb_pump + 1e-8
-            xgb_short_conf = (xgb_drop / total_move_xgb) * 100
-            
-            total_move_deep = deep_drop + deep_pump + 1e-8
-            deep_short_conf = (deep_drop / total_move_deep) * 100
-            
-            # 2. الفيتو القاتل: إذا كان نموذج الشراء متأكداً جداً (>70%) من الانفجار، يتم سحق سكور الشورت
-            # ✅ الكود الجديد (حقن بيانات التوكنوميكس كمعزز قوي):
-# (أضفه مع باقي دوال جلب البيانات في القسم 2):
+            true_short_ai_conf = max(ai_conf_short_xgb, ai_conf_short_deep)
+
+            # ====================================================================
+            # 🩸 تعزيز قناعة الشورت بناءً على محفزات اقتصاديات التوكن (Tokenomics Exit-Liquidity)
+            # تم دمجها هنا لتعزيز التقييم النهائي قبل إخراجه
+            # ====================================================================
             tokenomics_risk = await evaluate_tokenomics_overhang(symbol, client)
             
-            # ... (وفي القسم 5 عند دمج الاتجاه المؤسساتي Inverse Fusion): ...
-            short_conviction = (dir_cvd * 0.40) + (dir_deriv * 0.40) + (timing_score * 0.20)
-            
-            # 🧠 التوكنوميكس كـ "محفز انهيار" (Exit Liquidity Catalyst):
-            # إذا كان هناك فك ضخم قريب (is_vetoed في رادار الشراء)، نعتبره هنا إشارة قنص ممتازة!
             if tokenomics_risk['is_vetoed']:
-                short_conviction *= 1.30 # زيادة 30% في قوة قناعة الشورت!
+                # إذا كان هناك فك توكنات ضخم قادم، نعتبره إشارة قنص ممتازة لتفريغ المؤسسات!
+                true_short_ai_conf = min(99.9, true_short_ai_conf * 1.30)
+                score = min(99.9, score * 1.30)
                 tags.append("Tokenomics_Exit_Liquidity")
             elif tokenomics_risk['penalty_multiplier'] < 1.0:
-                short_conviction *= 1.15 # زيادة 15% للتضخم الكلي (Toxic FDV)
-            
-            if ai_confidence_bull > 70.0 or ai_conf_deep_bull > 70.0:
-                xgb_short_conf *= 0.3
-                deep_short_conf *= 0.3
-            
-            true_short_ai_conf = max(xgb_short_conf, deep_short_conf)
+                # تضخم عالي (Toxic FDV) يعطي دفعة للشورت
+                true_short_ai_conf = min(99.9, true_short_ai_conf * 1.15)
+                score = min(99.9, score * 1.15)
 
 # ✅ الكود الجديد (الاستهداف المغناطيسي للتصفيات):
             conf_sl, conf_tp1, conf_tp2, conf_tp3 = await asyncio.to_thread(
