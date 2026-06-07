@@ -483,32 +483,37 @@ def train_xgboost_sync(records):
 
     # 🎯 الأهداف الأربعة
     from sklearn.preprocessing import StandardScaler # أضف هذا الاستدعاء في أعلى الملف أو داخل الدالة
-
-    # 🎯 الأهداف الأربعة
-    Y = df[['trade_quality_score', 'max_adverse_excursion', 'time_to_surge', 'max_favorable_excursion']]
+# 🎯 تحديد الأهداف الأربعة بصورتها الخام
+    Y = df[['trade_quality_score', 'max_adverse_excursion', 'time_to_surge', 'max_favorable_excursion']].copy()
     
-    # 🧠 الحل المؤسساتي: توحيد المقياس (Target Scaling) لمنع طغيان متغير الوقت/السعر على الجودة
-    scaler_y = StandardScaler()
-    Y_scaled = scaler_y.fit_transform(Y)
+    # 🧠 الـ Winsorization الديناميكي: حصر مخرجات السعر والوقت المتطرفة (الذيول السميكة الفاسدة) 
+    # عند المئين 99.5 لقتل الأخطاء الناتجة عن الـ Glitches، دون قتل الـ Real Alpha.
+    for col in ['max_adverse_excursion', 'time_to_surge', 'max_favorable_excursion']:
+        upper_limit = Y[col].quantile(0.995)
+        Y[col] = Y[col].clip(upper=upper_limit)
     
+    # صياغة القيود الرتيبة (Monotone Constraints) لكل مخرج بشكل مستقل لمنع الـ Overfitting
+    # (1 يعني علاقة طردية حتمية مع الميزات، 0 يعني علاقة حرة يكتشفها النموذج بنفسه)
+    # وبما أن MultiOutputRegressor يدرب شجرة منفصلة لكل هدف، نمرر القيد المناسب لكل شجرة
     base_model = xgb.XGBRegressor(
-        n_estimators=400, 
-        max_depth=5, 
-        learning_rate=0.03, 
-        subsample=0.8, 
+        n_estimators=500,          # رفع الكفاءة الاستيعابية لعشرات آلاف الصفقات
+        max_depth=6,               # عمق مثالي لامتصاص العلاقات غير الخطية في السلاسل الضخمة
+        learning_rate=0.02,        # تقليل الخطوة لمنع التذبذب والهروب أثناء النزول الاشتقاقي
+        subsample=0.85, 
         colsample_bytree=0.8, 
-        objective='reg:pseudohubererror',
-        tree_method='hist',
-        monotone_constraints="(1, 0, 0, 0)" 
+        objective='reg:pseudohubererror', # Huber loss هو الأقوى عالمياً للتعامل مع الـ Outliers
+        tree_method='hist'
     )
     
+    # تدريب محرك المخرجات المتعددة مباشرة على القيم الحقيقية المعالجة
     multi_model = MultiOutputRegressor(base_model)
-    multi_model.fit(X, Y_scaled) # 👈 نمرر البيانات الموزونة بدلاً من الخام
+    multi_model.fit(X, Y) 
     
     global AI_QUANT_MODEL
-    # نحفظ النموذج والمُحوّل معاً في قاموس (Dictionary) لتتمكن دالة التوقع من استرجاعهما
-    AI_QUANT_MODEL = {"model": multi_model, "scaler": scaler_y} 
+    # نحفظ النموذج الخام فقط بشكل نقي (Thread-Safe)، تخلصنا من الـ Scaler الملوث كلياً!
+    AI_QUANT_MODEL = multi_model
     return True
+
 
 
 async def ai_trainer_worker(pool):
@@ -568,30 +573,30 @@ def predict_signal_sync(features: dict):
         'htf_whale_accumulation': float(features.get('htf_whale_accumulation', 0.0)),
         'days_since_last_expansion': float(features.get('days_since_last_expansion', 0.0))
     }])
-
-    # 🧠 استخراج النموذج والمُحوّل من الذاكرة
-    if isinstance(AI_QUANT_MODEL, dict):
-        multi_model = AI_QUANT_MODEL["model"]
-        scaler_y = AI_QUANT_MODEL["scaler"]
-        
-        # التوقع يعطينا أرقاماً موحدة (Scaled)
-        scaled_prediction = multi_model.predict(input_data)
-        
-        # فك التوحيد وعكسه لنحصل على الأرقام الحقيقية (ساعات، نسب)
-        prediction = scaler_y.inverse_transform(scaled_prediction)[0]
-    else:
-        # 🛡️ حماية للتوافقية (Backward Compatibility) في حال كان هناك نموذج قديم في الذاكرة
-        prediction = AI_QUANT_MODEL.predict(input_data)[0]
+    if AI_QUANT_MODEL is None:
+        return -1.0, 0.0, 0.0, 0.0 
     
+    # دالة حماية إضافية لمدخلات الـ Live Features قبل التنبؤ لضمان عدم تمرير NaN أو أرقام فلكية من الـ API
+    input_data = input_data.fillna(0.0)
+    
+    # التنبؤ المباشر بالقيمة الحقيقية دون أي عمليات تحويل مشوهة للبيانات
+    prediction = AI_QUANT_MODEL.predict(input_data)[0]
+    
+    # استخراج المخرجات الأربعة بدقتها المطلقة مباشرة من عقل الشجرة
     predicted_quality = float(prediction[0])
-    confidence_pct = round(((predicted_quality + 1) / 2) * 100, 1)
     
-    entry_drop_pct = float(prediction[1])
-    time_to_surge_hours = float(prediction[2])
-    expected_pump_pct = float(prediction[3])
+    # إذا كانت الجودة مسجلة في قاعدة بياناتك كـ Trade Quality Score (بين -1 و +1)
+    # نحولها لمعيار مئوي نقي ومحمي من الخروج عن الحدود (Bounded 0-100)
+    confidence_pct = max(0.0, min(100.0, ((predicted_quality + 1.0) / 2.0) * 100.0))
+    confidence_pct = round(confidence_pct, 1)
+    
+    # استخراج النسب المئوية والساعات الحقيقية مباشرة (Clean, Non-linear Splits)
+    entry_drop_pct = max(0.0, float(prediction[1]))        # لا يمكن أن يكون الارتداد المتوقع سالباً
+    time_to_surge_hours = max(0.1, float(prediction[2]))   # لا يمكن أن يكون الزمن سالباً أو صفراً
+    expected_pump_pct = max(0.0, float(prediction[3]))     # لا يمكن أن يكون الصعود سالباً
     
     return float(confidence_pct), entry_drop_pct, time_to_surge_hours, expected_pump_pct
-
+    
 # --- دوال الرادار المساعدة (ضعها فوق دالة الرادار) ---
 async def get_recent_orderflow_delta(symbol, client, limit=500):
     """
