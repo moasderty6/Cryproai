@@ -915,7 +915,7 @@ async def analyze_short_radar_coin(c, client, market_regime, sem):
             global_ob_pressure = await get_aggregated_orderbook(client, symbol)
             depth_data = await analyze_orderbook_spoofing_instant(symbol, client, price)
             tick_delta, tick_buy, tick_sell, limit_abs_signal = await get_institutional_orderflow(f"{symbol}USDT", client)
-            _, futures_signal, funding_val, oi_change_pct = await get_futures_liquidity(symbol, client, price, old_price_val)
+            _, futures_signal, funding_val, oi_change_pct, _ = await get_futures_liquidity(symbol, client, price, old_price_val)
             whale_score, phantom_tags = await detect_phantom_liquidity_ws(symbol, client, price, approx_24h_vol_usd)
             rs_score = await detect_btc_relative_strength(symbol, client)
             vpin_score = await get_institutional_vpin(symbol, client, approx_24h_vol_usd)
@@ -2257,24 +2257,28 @@ def detect_smart_money_absorption(df):
     return score_boost, signal_upgrade
 
 async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_price: float, old_price: float):
+    """
+    [The True Funding Z-Score Engine]
+    يحسب الانحراف المعياري الحقيقي لآخر 14 يوماً (42 فترة تمويل) بدون أي أرقام وهمية.
+    """
     fapi_base = "https://fapi.binance.com"
     pair = f"{symbol}USDT"
 
     try:
         # 1. جلب التغير اللحظي للـ OI
         oi_url = f"{fapi_base}/futures/data/openInterestHist?symbol={pair}&period=15m&limit=2"
-        # 2. جلب التمويل اللحظي المتوقع (للتفاعل السريع)
+        # 2. جلب التمويل اللحظي القادم
         live_fund_url = f"{fapi_base}/fapi/v1/premiumIndex?symbol={pair}"
-        # 3. جلب تاريخ التمويل لآخر 7 أيام (21 فترة ذات 8 ساعات) لبناء الـ Baseline
-        hist_fund_url = f"{fapi_base}/fapi/v1/fundingRate?symbol={pair}&limit=21"
+        # 3. جلب تاريخ التمويل لآخر 14 يوم (42 فترة، كل فترة 8 ساعات)
+        hist_fund_url = f"{fapi_base}/fapi/v1/fundingRate?symbol={pair}&limit=42"
 
-        # 🛑 حارس حماية الـ API (قبل إرسال الطلبات المتزامنة)
+        # 🛑 حماية من حظر بايننس
         await binance_rate_limit_event.wait()
 
         oi_res, live_fund_res, hist_fund_res = await asyncio.gather(
-            client.get(oi_url, timeout=3.0),
-            client.get(live_fund_url, timeout=3.0),
-            client.get(hist_fund_url, timeout=3.0)
+            client.get(oi_url, timeout=5.0),
+            client.get(live_fund_url, timeout=5.0),
+            client.get(hist_fund_url, timeout=5.0)
         )
 
         if oi_res.status_code == 200 and live_fund_res.status_code == 200 and hist_fund_res.status_code == 200:
@@ -2282,33 +2286,31 @@ async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_
             live_fund_data = live_fund_res.json()
             hist_fund_data = hist_fund_res.json()
 
-            if len(oi_data) < 2 or not hist_fund_data: return 0.0, None, 0.0, 0.0
+            if len(oi_data) < 2 or not hist_fund_data: 
+                return 0.0, None, 0.0, 0.0, 0.0
 
             old_oi = float(oi_data[0]["sumOpenInterest"])
             current_oi = float(oi_data[-1]["sumOpenInterest"])
-            oi_change_pct = (current_oi - old_oi) / old_oi
-            price_change_pct = (float(current_price) - float(old_price)) / float(old_price)
+            oi_change_pct = (current_oi - old_oi) / (old_oi + 1e-8)
+            price_change_pct = (float(current_price) - float(old_price)) / (float(old_price) + 1e-8)
             
-            # 🧠 التصحيح الكمّي: حساب Funding Z-Score اللحظي
+            # التمويل اللحظي
             current_funding_rate = float(live_fund_data.get("lastFundingRate", 0.0))
             
+            # 🧠 الحساب الكمي للانحراف المعياري الحقيقي (True Z-Score)
+            import numpy as np
             hist_rates = [float(item["fundingRate"]) for item in hist_fund_data]
-            mean_funding = sum(hist_rates) / len(hist_rates)
             
-            # حساب الانحراف المعياري للتمويل            # حساب الانحراف المعياري للتمويل
-            variance = sum((x - mean_funding) ** 2 for x in hist_rates) / len(hist_rates)
-            std_funding = variance ** 0.5
+            mean_funding = np.mean(hist_rates)
+            std_funding = np.std(hist_rates, ddof=0)
             
-            # 🧠 الحل المؤسساتي: (Volatility Floor)
-            # أقل تذبذب مالي معتبر لمعدل التمويل هو 0.01% (0.0001)
-            # إذا كان التذبذب الفعلي أقل من ذلك، نثبته عند هذا الحد لمنع جنون الـ Z-Score
-            MIN_FUNDING_STD = 0.0001
-            std_funding = max(std_funding, MIN_FUNDING_STD) # 👈 الحماية الحقيقية
+            # 🛡️ الجدار المؤسساتي (Volatility Floor) لمنع انفجار الأرقام
+            MIN_FUNDING_STD = 0.00005
+            safe_std = max(std_funding, MIN_FUNDING_STD)
             
-            # كم انحرافاً معيارياً يبتعد التمويل اللحظي عن متوسط أسبوع كامل؟
-            funding_z_score = (current_funding_rate - mean_funding) / std_funding
-
-
+            funding_z_score = float((current_funding_rate - mean_funding) / safe_std)
+            
+            # ⚙️ إشارات الرادار الكلاسيكية الخاصة بك
             score_modifier = 0.0
             futures_signal = None
 
@@ -2319,24 +2321,21 @@ async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_
                 score_modifier -= 25.0
                 futures_signal = "Short_Covering"
             
-            # 🎯 التقييم المؤسساتي: استخدام Z-Score لمعرفة الشذوذ الحقيقي بدلاً من الأرقام الثابتة
-            # Z-Score < -1.5 يعني التمويل سلبي ومضغوط بشكل غير طبيعي مقارنة بسلوك العملة (Short Squeeze)
             if funding_z_score < -1.5: 
                 score_modifier += 12.0
                 if not futures_signal: futures_signal = "Short_Squeeze"
-            # Z-Score > 1.5 يعني التمويل إيجابي مبالغ فيه (خطر تصفية Long Squeeze)
             elif funding_z_score > 1.5:
                 score_modifier -= 10.0
-            # نرجع current_funding_rate الخامة للـ AI لتدريبه، ونعتمد على الـ Z-Score في التقييم الداخلي
-            return score_modifier, futures_signal, current_funding_rate, oi_change_pct 
-        else:
-            print(f"⚠️ [Binance FAPI Direct] {symbol} | رفض الاتصال: OI({oi_res.status_code}), Fund({live_fund_res.status_code})")
-            
+
+            # 🚀 إرجاع 5 متغيرات (تمت إضافة Z-Score في النهاية)
+            return score_modifier, futures_signal, current_funding_rate, oi_change_pct, funding_z_score
+
     except Exception as e: 
-        print(f"🚨 [Binance FAPI Direct] خطأ برمجي/شبكة في get_futures_liquidity لـ {symbol}: {str(e)}")
+        print(f"🚨 [Funding Engine] Error for {pair}: {str(e)}")
     
-    # إرجاع 4 قيم أصفار في حال الخطأ
-    return 0.0, None, 0.0, 0.0  
+    # في حال الفشل، نعيد أصفاراً آمنة
+    return 0.0, None, 0.0, 0.0, 0.0
+
 
 def calculate_volume_zscore(df, window=720):
     """
@@ -2496,7 +2495,7 @@ async def silent_data_harvester_worker(pool):
                         global_ob_pressure = await get_aggregated_orderbook(client, sym)
                         depth_data = await analyze_orderbook_spoofing_instant(sym, client, price)
                         tick_delta, tick_buy, tick_sell, limit_abs = await get_institutional_orderflow(pair, client)
-                        _, fut_sig, funding_val, _ = await get_futures_liquidity(sym, client, price, float(df["close"].iloc[-3]))
+                        _, fut_sig, funding_val, _, _ = await get_futures_liquidity(sym, client, price, float(df["close"].iloc[-3]))
                         
                         avg_vol_20 = df["volume"].tail(20).mean()
                         avg_vol_usd = avg_vol_20 * price if avg_vol_20 > 0 else 1.0
@@ -3592,7 +3591,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             global_ob_pressure = await get_aggregated_orderbook(client, symbol)
             depth_data = await analyze_orderbook_spoofing_instant(symbol, client, price)
             tick_delta, tick_buy, tick_sell, limit_abs_signal = await get_institutional_orderflow(f"{symbol}USDT", client)
-            _, futures_signal, funding_val, oi_change_pct = await get_futures_liquidity(symbol, client, price, old_price_val)
+            _, futures_signal, funding_val, oi_change_pct, _ = await get_futures_liquidity(symbol, client, price, old_price_val)
             whale_score, phantom_tags = await detect_phantom_liquidity_ws(symbol, client, price, approx_24h_vol_usd)
             rs_score = await detect_btc_relative_strength(symbol, client)
                         # 🚀 استدعاء فلتر الحقيقة VPIN (قراءة 10,000 صفقة)            # 🚀 استدعاء فلتر الحقيقة VPIN (مثبت بـ ADV لضمان الدقة)
@@ -5111,143 +5110,298 @@ async def clear_radar_memory_cmd(m: types.Message):
         await conn.execute("DELETE FROM radar_history")
     
     await m.answer("🧹 <b>تم تنظيف ذاكرة الرادار بنجاح!</b>\nالرادار الآن جاهز لاصطياد أي عملة قوية حتى لو قام بإرسالها مسبقاً في الأيام الماضية.", parse_mode=ParseMode.HTML)
+import time
+import pandas as pd
+import numpy as np
+import httpx
+import asyncio
+from aiogram.filters import Command
+from aiogram.enums import ParseMode
+from aiogram import types
+
+# ذاكرة مؤقتة لمنع استنزاف الـ API عند الحسابات التاريخية المتكررة
+VANGUARD_STATS_CACHE = {
+    "premium_mean": 0.0, "premium_std": 0.001,
+    "basis_mean": 0.0, "basis_std": 0.001,
+    "last_update": 0
+}
+
+async def fetch_historical_zscore_baselines(client: httpx.AsyncClient):
+    """
+    [Baseline Engine] محرك المحاذاة الزمنية
+    يسحب تاريخ بايننس وكوينبيس، يدمج الشموع بناءً على الزمن، ويستخرج الانحراف المعياري.
+    """
+    current_time = time.time()
+    
+    # تحديث الذاكرة كل 4 ساعات فقط
+    if current_time - VANGUARD_STATS_CACHE["last_update"] < 14400 and VANGUARD_STATS_CACHE["last_update"] != 0:
+        return VANGUARD_STATS_CACHE["premium_mean"], VANGUARD_STATS_CACHE["premium_std"], \
+               VANGUARD_STATS_CACHE["basis_mean"], VANGUARD_STATS_CACHE["basis_std"]
+
+    try:
+        base_url = get_random_binance_base()
+        
+        bin_usdc_url = f"{base_url}/api/v3/klines?symbol=BTCUSDC&interval=1h&limit=100"
+        cb_usd_url = "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=3600"
+        
+        # جلب العقد الديناميكي للفيوتشرز (عقود التسليم)
+        dapi_info = await client.get("https://dapi.binance.com/dapi/v1/exchangeInfo", timeout=5.0)
+        active_contract = "BTCUSD_PERP" 
+        if dapi_info.status_code == 200:
+            symbols = dapi_info.json().get('symbols', [])
+            delivery = [s['symbol'] for s in symbols if "BTCUSD_" in s['symbol'] and "PERP" not in s['symbol'] and s['contractStatus'] == "TRADING"]
+            if delivery: active_contract = delivery[0] 
+            
+        bin_delivery_url = f"https://dapi.binance.com/dapi/v1/klines?symbol={active_contract}&interval=1h&limit=100"
+
+        res_bin, res_cb, res_del = await asyncio.gather(
+            client.get(bin_usdc_url, timeout=5.0),
+            client.get(cb_usd_url, timeout=5.0),
+            client.get(bin_delivery_url, timeout=5.0)
+        )
+
+        if res_bin.status_code == 200 and res_cb.status_code == 200 and res_del.status_code == 200:
+            df_bin = pd.DataFrame(res_bin.json(), columns=["t", "o", "h", "l", "c", "v", "ct", "qv", "tr", "tbv", "tqav", "i"])
+            df_bin["t"] = pd.to_datetime(df_bin["t"].astype(float), unit='ms')
+            df_bin["close_bin"] = df_bin["c"].astype(float)
+            
+            cb_data = res_cb.json()
+            df_cb = pd.DataFrame(cb_data, columns=["t", "low", "high", "open", "close", "volume"])
+            df_cb["t"] = pd.to_datetime(df_cb["t"].astype(float), unit='s')
+            df_cb["close_cb"] = df_cb["close"].astype(float)
+            
+            df_del = pd.DataFrame(res_del.json(), columns=["t", "o", "h", "l", "c", "v", "ct", "qv", "tr", "tbv", "tqav", "i"])
+            df_del["t"] = pd.to_datetime(df_del["t"].astype(float), unit='ms')
+            df_del["close_del"] = df_del["c"].astype(float)
+
+            # دمج الجداول
+            merged = pd.merge(df_bin[["t", "close_bin"]], df_cb[["t", "close_cb"]], on="t", how="inner")
+            merged = pd.merge(merged, df_del[["t", "close_del"]], on="t", how="inner")
+
+            merged["premium_pct"] = ((merged["close_cb"] - merged["close_bin"]) / merged["close_bin"]) * 100
+            merged["basis_pct"] = ((merged["close_del"] - merged["close_bin"]) / merged["close_bin"]) * 100
+
+            VANGUARD_STATS_CACHE["premium_mean"] = merged["premium_pct"].mean()
+            VANGUARD_STATS_CACHE["premium_std"] = max(merged["premium_pct"].std(), 0.001) 
+            VANGUARD_STATS_CACHE["basis_mean"] = merged["basis_pct"].mean()
+            VANGUARD_STATS_CACHE["basis_std"] = max(merged["basis_pct"].std(), 0.001)
+            VANGUARD_STATS_CACHE["last_update"] = current_time
+
+            return VANGUARD_STATS_CACHE["premium_mean"], VANGUARD_STATS_CACHE["premium_std"], \
+                   VANGUARD_STATS_CACHE["basis_mean"], VANGUARD_STATS_CACHE["basis_std"]
+
+    except Exception as e:
+        print(f"⚠️ Z-Score Baseline Error: {e}")
+        
+    return 0.0, 0.001, 0.0, 0.001
+
+async def get_live_zscores(client: httpx.AsyncClient):
+    """
+    [Live Engine] يسحب الـ Mid-Price اللحظي ويحوله لـ Z-Score.
+    """
+    try:
+        base_url = get_random_binance_base()
+        
+        bin_usdc_url = f"{base_url}/api/v3/ticker/bookTicker?symbol=BTCUSDC"
+        cb_usd_url = "https://api.exchange.coinbase.com/products/BTC-USD/book"
+        dapi_book_url = "https://dapi.binance.com/dapi/v1/ticker/bookTicker"
+
+        res_bin, res_cb, res_dapi = await asyncio.gather(
+            client.get(bin_usdc_url, timeout=3.0),
+            client.get(cb_usd_url, timeout=3.0),
+            client.get(dapi_book_url, timeout=3.0)
+        )
+
+        bin_mid, cb_mid, del_mid = 0.0, 0.0, 0.0
+
+        if res_bin.status_code == 200:
+            data = res_bin.json()
+            bin_mid = (float(data["bidPrice"]) + float(data["askPrice"])) / 2.0
+            
+        if res_cb.status_code == 200:
+            data = res_cb.json()
+            cb_mid = (float(data["bids"][0][0]) + float(data["asks"][0][0])) / 2.0
+
+        if res_dapi.status_code == 200:
+            data = res_dapi.json()
+            delivery_contracts = [item for item in data if "BTCUSD_" in item['symbol'] and "PERP" not in item['symbol']]
+            if delivery_contracts:
+                best_bid = float(delivery_contracts[0]['bidPrice'])
+                best_ask = float(delivery_contracts[0]['askPrice'])
+                del_mid = (best_bid + best_ask) / 2.0
+
+        if bin_mid > 0 and cb_mid > 0 and del_mid > 0:
+            current_premium_pct = ((cb_mid - bin_mid) / bin_mid) * 100
+            current_basis_pct = ((del_mid - bin_mid) / bin_mid) * 100
+
+            p_mean, p_std, b_mean, b_std = await fetch_historical_zscore_baselines(client)
+
+            premium_z = (current_premium_pct - p_mean) / p_std
+            basis_z = (current_basis_pct - b_mean) / b_std
+
+            return cb_mid, bin_mid, current_premium_pct, premium_z, basis_z
+
+    except Exception as e:
+        print(f"⚠️ Live Z-Score Fetch Error: {e}")
+        
+    return 0.0, 0.0, 0.0, 0.0, 0.0
+
+def evaluate_dynamic_intent(premium_z: float, basis_z: float, funding_z: float):
+    """
+    [The Brain] مصفوفة النوايا المؤسساتية
+    """
+    intent, verdict = "توازن سيولي (Market Equilibrium)", "⚖️ تذبذب هيكلي. غياب الشذوذ الإحصائي، الحيتان في وضع الانتظار."
+    
+    p_z = max(-5.0, min(5.0, premium_z))
+    b_z = max(-5.0, min(5.0, basis_z))
+    f_z = max(-5.0, min(5.0, funding_z))
+
+    if p_z > 2.0 and b_z > 1.5 and f_z < -1.0:
+        intent = "استحواذ كلي (Global Smart Money Accumulation)"
+        verdict = "🟢 وجهة نهائية. وول ستريت وحيتان الأوفشور يبتلعون البيع بتوافق تام."
+    elif p_z < -2.0 and b_z < -1.5 and f_z > 1.5:
+        intent = "تصريف مؤسساتي متزامن (Global Distribution)"
+        verdict = "🩸 قمة مرحلية (Macro Top). خروج مؤسساتي عنيف من السبوت وتخفيف للمراكز."
+    elif p_z < -1.5 and f_z > 1.5: 
+        intent = "فخ سيولة التجزئة (Retail Liquidity Trap)"
+        verdict = "🔴 ارتداد وهمي. الأفراد يدفعون السعر لأعلى، والمؤسسات تستخدمهم كسيولة خروج."
+    elif f_z < -2.0 and p_z > 0.5:
+        intent = "تصفية الخصوم (Aggressive Short Squeeze)"
+        verdict = "⚡ صعود تصفية. السعر يتجه لضرب مراكز الشورت المتكدسة، خطر انعكاس سريع بعد التصفية."
+    elif p_z > 1.5 and f_z > 1.0:
+        intent = "فومو مؤسساتي (Institutional FOMO)"
+        verdict = "🔥 اندفاع شرائي. وول ستريت تشتري بأي سعر بغض النظر عن ارتفاع تكلفة المشتقات."
+
+    return intent, verdict
+
+async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_price: float, old_price: float):
+    """
+    [The True Funding Z-Score Engine] (يُرجع 5 متغيرات)
+    """
+    fapi_base = "https://fapi.binance.com"
+    pair = f"{symbol}USDT"
+
+    try:
+        oi_url = f"{fapi_base}/futures/data/openInterestHist?symbol={pair}&period=15m&limit=2"
+        live_fund_url = f"{fapi_base}/fapi/v1/premiumIndex?symbol={pair}"
+        hist_fund_url = f"{fapi_base}/fapi/v1/fundingRate?symbol={pair}&limit=42"
+
+        await binance_rate_limit_event.wait()
+
+        oi_res, live_fund_res, hist_fund_res = await asyncio.gather(
+            client.get(oi_url, timeout=5.0),
+            client.get(live_fund_url, timeout=5.0),
+            client.get(hist_fund_url, timeout=5.0)
+        )
+
+        if oi_res.status_code == 200 and live_fund_res.status_code == 200 and hist_fund_res.status_code == 200:
+            oi_data = oi_res.json()
+            live_fund_data = live_fund_res.json()
+            hist_fund_data = hist_fund_res.json()
+
+            if len(oi_data) < 2 or not hist_fund_data: 
+                return 0.0, None, 0.0, 0.0, 0.0
+
+            old_oi = float(oi_data[0]["sumOpenInterest"])
+            current_oi = float(oi_data[-1]["sumOpenInterest"])
+            oi_change_pct = (current_oi - old_oi) / (old_oi + 1e-8)
+            price_change_pct = (float(current_price) - float(old_price)) / (float(old_price) + 1e-8)
+            
+            current_funding_rate = float(live_fund_data.get("lastFundingRate", 0.0))
+            
+            hist_rates = [float(item["fundingRate"]) for item in hist_fund_data]
+            mean_funding = np.mean(hist_rates)
+            std_funding = np.std(hist_rates, ddof=0)
+            
+            MIN_FUNDING_STD = 0.00005
+            safe_std = max(std_funding, MIN_FUNDING_STD)
+            funding_z_score = float((current_funding_rate - mean_funding) / safe_std)
+            
+            score_modifier = 0.0
+            futures_signal = None
+
+            if price_change_pct > 0.01 and oi_change_pct > 0.02: 
+                score_modifier += 15.0
+                futures_signal = "OI_Rising"
+            elif price_change_pct > 0.01 and oi_change_pct < -0.02:
+                score_modifier -= 25.0
+                futures_signal = "Short_Covering"
+            
+            if funding_z_score < -1.5: 
+                score_modifier += 12.0
+                if not futures_signal: futures_signal = "Short_Squeeze"
+            elif funding_z_score > 1.5:
+                score_modifier -= 10.0
+
+            return score_modifier, futures_signal, current_funding_rate, oi_change_pct, funding_z_score
+
+    except Exception as e: 
+        print(f"🚨 [Funding Engine] Error for {pair}: {str(e)}")
+    
+    return 0.0, None, 0.0, 0.0, 0.0
+
 @dp.message(Command("btc"))
-async def btc_vanguard_prediction_command(message: types.Message):
-    # 🛑 1. جدار الحماية: مسموح فقط للمستثمرين النخبة
-    ALLOWED_IDS = [565965404, 7146339698]
+async def btc_apex_vanguard_command(message: types.Message):
+    ALLOWED_IDS = [565965404, 7146339698, ADMIN_USER_ID]
     
     if message.from_user.id not in ALLOWED_IDS:
-        await message.reply(
-            "🚫 <b>عذراً، هذه الميزة مخصصة للمستثمرين فقط.</b>\nللحصول على صلاحية الوصول إلى استخبارات صانع السوق (Vanguard)، يرجى ترقية حسابك. 🏛", 
-            parse_mode=ParseMode.HTML
-        )
-        return
+        return await message.reply("🚫 <b>عذراً، هذه الاستخبارات مخصصة لغرف التداول المغلقة.</b>", parse_mode=ParseMode.HTML)
 
-    # رسالة التحميل
-    loading_text = "📡 <i>تهيئة محرك Vanguard المؤسساتي...\nسحب بيانات الماكرو الحية ومسح السيولة المظلمة للبيتكوين...</i> 🦅"
+    loading_text = "📡 <i>تهيئة الرادار المؤسساتي (Apex Vanguard)...\nمزامنة Z-Score اللحظي بين Coinbase Prime وعقود التحوط...</i> 🦅"
     processing_msg = await message.reply(loading_text, parse_mode=ParseMode.HTML)
 
     try:
         async with httpx.AsyncClient(timeout=25) as client:
-            # 📊 1. جلب السعر اللحظي
-            base_url = get_random_binance_base()
-            res_price = await client.get(f"{base_url}/api/v3/ticker/price", params={"symbol": "BTCUSDT"})
-            current_price = float(res_price.json()["price"])
+            live_data_task = get_live_zscores(client)
+            
+            bin_klines = await get_candles_binance("BTCUSDT", "15m", limit=3)
+            current_spot = float(bin_klines[-1][2]) if bin_klines else 60000.0
+            old_spot = float(bin_klines[0][2]) if bin_klines else current_spot
+            
+            funding_task = get_futures_liquidity("BTC", client, current_spot, old_spot)
 
-            # 🕯️ 2. جلب الشموع الحية (لتغذية الذكاء الاصطناعي ببيانات حقيقية بدلاً من الأرقام الوهمية)
-            candles_15m = await get_candles_binance("BTCUSDT", "15m", limit=750)
-            df, last_rsi, current_adx, current_z, _, _ = await asyncio.to_thread(process_dataframe_sync, candles_15m)
+            live_data, funding_data = await asyncio.gather(live_data_task, funding_task)
 
-            # 🦅 3. تشغيل محركات VANGUARD (السيولة المخفية)
+            cb_price, binance_price, premium_pct, premium_z, basis_z = live_data
+            
+            # استخراج Funding Z-Score الحقيقي
+            _, _, funding_val, _, funding_z = funding_data
+
+            ws_intent, ws_verdict = evaluate_dynamic_intent(premium_z, basis_z, funding_z)
+
             liq_data = await build_liquidation_heatmap("BTC", client)
-            com_data = await track_orderbook_center_of_mass("BTC", client, current_price)
-            lead_lag_data = await detect_global_derivatives_frontrunning("BTC", client)
+            target_price = liq_data['target'] if liq_data else binance_price * 1.05
+            target_type = liq_data['type'] if liq_data else "هدف ديناميكي (لا يوجد تكدس)"
 
-            # 🐋 4. سحب التدفق المالي اللحظي والمشتقات
-            whale_inflow = await get_whale_inflow_score()
-            ofi_score = 0.0
-            if "BTCUSDT" in INSTITUTIONAL_LOB:
-                ofi_window = INSTITUTIONAL_LOB["BTCUSDT"]["ofi_window"]
-                ofi_score = sum(ofi_window) / max(1, len(ofi_window))
-                
-            cvd_boost, cvd_sig, cvd_trend = await get_micro_cvd_absorption("BTCUSDT", client, "15m")
-            _, _, funding_val, _ = await get_futures_liquidity("BTC", client, current_price, float(df["close"].iloc[-3]))
-
-            # 🌍 5. سحب حالة الماكرو اللحظية
-            market_regime = await detect_market_regime(client)
-            regime_map = {"Trending_Bull": 1, "Trending_Bear": 2, "Ranging": 3}
-            current_regime = regime_map.get(market_regime.get('trend', 'Unknown'), 0)
-
-            # 🧠 6. التغذية الحقيقية والمباشرة لمحرك الذكاء الاصطناعي (MoE & XGB)
-            features = {
-                'market_regime': current_regime,
-                'sp500_trend': float(MACRO_CACHE.get("sp500_trend", 0.0)),
-                'sentiment_score': float(MACRO_CACHE.get("sentiment_score", 50.0)),
-                'z_score': float(current_z),
-                'cvd_to_vol_ratio': float((cvd_trend * current_price) / (df["volume"].tail(20).mean() * current_price + 1e-8)),
-                'ofi_imbalance': float(ofi_score),       
-                'whale_inflow': float(whale_inflow),
-                'adx': float(current_adx),
-                'rsi': float(last_rsi),
-                'micro_volatility': float(df['close'].tail(20).pct_change().std() * 100),
-                'cvd_divergence': 0.0,
-                'funding_rate': float(funding_val),
-                'weekly_liquidity_void': 0.0,
-                'macro_z_score_30d': 0.0,
-                'htf_whale_accumulation': 0.0,
-                'days_since_last_expansion': 0.0
-            }
-
-            # الإعدام السريع للفرص الوهمية عبر دمج النماذج
-            conf_deep, drop_deep, time_deep, pump_deep = await asyncio.to_thread(predict_deep_moe, features)
-            conf_xgb, drop_xgb, time_xgb, pump_xgb = await asyncio.to_thread(predict_signal_sync, features)
-
-            use_deep = conf_deep > 0 and pump_deep >= pump_xgb
-            confidence_pct = conf_deep if use_deep else conf_xgb
-            entry_drop_pct = drop_deep if use_deep else drop_xgb
-            time_to_target = time_deep if use_deep else time_xgb
+            cbp_icon = "🟢" if premium_z > 1.0 else ("🔴" if premium_z < -1.0 else "⚪")
+            basis_icon = "📈" if basis_z > 1.0 else ("📉" if basis_z < -1.0 else "⚪")
             
-            # حماية رياضة من الأرقام الصفرية
-            if confidence_pct <= 0:
-                confidence_pct, entry_drop_pct, time_to_target = 85.5, 1.2, 4.0
-
-            # 🎯 7. الحسابات الزمنية والسعرية النهائية
-            drop_price = current_price * (1 - (entry_drop_pct / 100))
-            # زمن صيد السيولة عادة ما يكون في الربع الأول من دورة الانفجار الزمنية
-            time_to_entry = max(0.5, time_to_target * 0.25) 
-            
-            if liq_data:
-                target_price = liq_data['target']
-                liq_type = liq_data['type']
-                move_icon = "🚀" if target_price > current_price else "📉"
-            else:
-                raw_expected_pump = pump_deep if use_deep else pump_xgb
-                
-                # 🛡️ القيد الكمّي (Quant Guardrail): كبح هلوسة الذكاء الاصطناعي بربطه بالتذبذب الفعلي للسوق
-                # حساب أقصى مدى تحرك فيه السعر خلال آخر 7 أيام (حوالي 672 شمعة ربع ساعة)
-                recent_high = df['high'].tail(672).max()
-                recent_low = df['low'].tail(672).min()
-                weekly_range_pct = ((recent_high - recent_low) / recent_low) * 100
-                
-                # الحد الأقصى المنطقي (Cap) للصعود في غياب سيولة المشتقات:
-                # نأخذ 60% من المدى الأسبوعي، ونضع حداً أدنى 3.5% كهدف منطقي لسكالبينج حيتان
-                realistic_pump_cap = max(3.5, weekly_range_pct * 0.6)
-                
-                # ترويض الرقم الفلكي: نأخذ الرقم الأقل بين توقع الـ AI والحد الأقصى لفيزياء السوق الحالية
-                realistic_pump = min(raw_expected_pump, realistic_pump_cap)
-                
-                target_price = current_price * (1 + (realistic_pump / 100))
-                liq_type = "استقرار عقود (الهدف مبني على التذبذب الديناميكي)"
-                move_icon = "⚖️"
-
-            # 📝 8. صياغة التقرير كما يُطلب في غرف التداول المغلقة
-            com_text = f"ارتفاع أرضية الطلبات بـ {com_data['com_growth_pct']:.1f}%" if com_data else "مستقرة"
-            lead_lag_text = f"المشتقات تسبق ({lead_lag_data['divergence']:.1f}%)" if lead_lag_data else "لا يوجد انحراف خفي"
-            
-            # تحديد لون الثقة
-            conf_color = "🟢" if confidence_pct >= 80 else ("🟡" if confidence_pct >= 60 else "🔴")
-
             final_report = f"""
-🏛 <b>Vanguard | النظرة الاستباقية لـ (BTC)</b> 🏛
+🏛 <b>APEX VANGUARD | استخبارات وول ستريت لـ (BTC)</b> 🏛
 ━━━━━━━━━━━━━━━━━━
-💰 السعر اللحظي: <code>${format_price(current_price)}</code>
-🌊 تدفق الحيتان (Inflow): <code>{whale_inflow:.2f}</code> | LOB: <code>{ofi_score:,.0f}</code>
-🧱 زحف الأوردر بوك (Dark Acc): {com_text}
-⚡ استباق المشتقات (Lead-Lag): {lead_lag_text}
+💰 <b>الأسعار العادلة (Mid-Price):</b>
+• Binance (USDC): <code>${format_price(binance_price)}</code>
+• Coinbase (USD): <code>${format_price(cb_price)}</code>
 
-🧲 <b>مغناطيس التصفية (Vanguard Target):</b>
-• نوع التمركز: {liq_type}
-• الهدف المؤسساتي القادم: <code>${format_price(target_price)}</code> {move_icon} (خلال {time_to_target:.1f} ساعة)
+📊 <b>بصمة الشذوذ الإحصائي (Z-Scores):</b>
+• علاوة المؤسسات (Coinbase Z): <code>{premium_z:+.2f}σ</code> {cbp_icon}
+• علاوة التحوط (Basis Z): <code>{basis_z:+.2f}σ</code> {basis_icon}
+• ضغط المشتقات (Funding Z): <code>{funding_z:+.2f}σ</code>
 
-🤖 <b>إجماع الذكاء الاصطناعي (AI Execution):</b>
-• درجة الثقة بالهيكلة: <code>{confidence_pct:.1f}%</code> {conf_color}
-• منطقة صيد السيولة (Entry): <code>${format_price(drop_price)}</code> (خلال {time_to_entry:.1f} ساعة)
+🧠 <b>تحليل نوايا صانع السوق (Market Maker Intent):</b>
+• <b>التكتيك الحالي:</b> {ws_intent}
+• <b>القرار الخوارزمي:</b> {ws_verdict}
+
+🧲 <b>مغناطيس السيولة القادم:</b>
+• نوع التمركز: {target_type}
+• نقطة الاصطدام المتوقعة: <code>${format_price(target_price)}</code>
+━━━━━━━━━━━━━━━━━━
+<i>* تتم قراءة البيانات باستخدام خوارزميات (Time-Alignment) لتجاوز وهم الفيات.</i>
 """
-            
             await processing_msg.edit_text(final_report, parse_mode=ParseMode.HTML)
             
     except Exception as e:
-        error_msg = f"⚠️ <b>انهيار في اتصال محرك Vanguard:</b> {e}"
+        error_msg = f"⚠️ <b>انهيار في محرك البيانات التاريخية:</b> {e}"
         await processing_msg.edit_text(error_msg, parse_mode=ParseMode.HTML)
 
 @dp.message(Command("sendphoto"))
@@ -6911,8 +7065,9 @@ async def run_analysis(cb: types.CallbackQuery):
                 is_spoofed = depth_data.get('is_spoofed', False)
 
                 # استخراج Futures الصحيح (بما في ذلك التمويل)
-                futures_data = results[2] if not isinstance(results[2], Exception) else (0.0, None, 0.0, 0.0)
-                _, fut_sig, funding_val, oi_change = futures_data
+                futures_data = results[2] if not isinstance(results[2], Exception) else (0.0, None, 0.0, 0.0, 0.0)
+                _, fut_sig, funding_val, oi_change, _ = futures_data
+
 
 
                 # استخراج Flow
