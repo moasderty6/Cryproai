@@ -4205,7 +4205,14 @@ async def ml_inspector_worker(pool):
                 
             async with httpx.AsyncClient(timeout=20) as client:
                 for row in pending:
-                    sym = f"{row['symbol']}USDT"
+                    sym_raw = row['symbol']
+                    
+                    # 🛡️ فلتر الحماية: تخطي أي صف تالف في الداتابيز يحتوي على علامات استفهام أو رموز
+                    if not sym_raw.isalnum():
+                        print(f"🗑️ [Inspector] تم تخطي عملة تالفة في الداتابيز: {sym_raw}")
+                        continue
+                        
+                    sym = f"{sym_raw}USDT"
                     entry = float(row['entry_price'])
                     start_time_ms = int(row['sig_ts'] * 1000)
                     
