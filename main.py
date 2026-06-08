@@ -25,6 +25,7 @@ BINANCE_BASES = [
     "https://binance-sain.mo-dahoh.workers.dev",
     "https://binance.mor-aghyad6.workers.dev",
     "https://binani.gsmyr800.workers.dev",
+    "https://holy-king-a16d.moooody-18-18-18.workers.dev",
     "https://old-recipe-c34d.m-aldahooh.workers.dev",
     "https://steep-art-7164.dahoohh1.workers.dev",
     "https://lucky-base-6c70.abedelqader02.workers.dev"
@@ -43,11 +44,6 @@ async def _patched_binance_get(self, url, *args, **kwargs):
     # 🛑 فلتر الأمان 1: إذا الطلب لـ Bybit، أو منصات أخرى، مشّيه فوراً
     if "binance" not in parsed_url.netloc and "workers.dev" not in parsed_url.netloc:
         print(f"⏩ [Network] تمرير طلب خارجي مباشرة إلى: {parsed_url.netloc}")
-        return await _original_httpx_get(self, url, *args, **kwargs)
-
-    # 🛑 فلتر الأمان 2: حماية طلبات الفيوتشرز (fapi) لكي لا تختلط مع السبوت
-    if "fapi" in parsed_url.netloc or "dapi" in parsed_url.netloc:
-        print(f"⏩ [Network] تمرير طلب فيوتشرز مباشرة إلى: {parsed_url.netloc}")
         return await _original_httpx_get(self, url, *args, **kwargs)
 
     # 🟢 المعالجة الذكية لطلبات Binance Spot:
@@ -661,9 +657,9 @@ async def smart_radar_watchdog(pool):
                         if not symbol.endswith("USDT"): continue
 
                         clean_sym = symbol.replace("USDT", "")
-                        # 🚫 الحظر الجذري قبل إدخالها للذاكرة اللحظية
+                        if not clean_sym.isalnum(): continue
                         if clean_sym in BLACKLISTED_COINS: continue
-
+                        
                         current_vol = float(ticker['q']) 
                         current_price = float(ticker['c'])
                         # ... باقي الكود كما هو ...
@@ -846,7 +842,9 @@ async def apex_short_watchdog(pool):
                         if not symbol.endswith("USDT"): continue
 
                         clean_sym = symbol.replace("USDT", "")
+                        if not clean_sym.isalnum(): continue
                         if clean_sym in BLACKLISTED_COINS: continue
+                        
 
                         current_vol = float(ticker['q']) 
                         current_price = float(ticker['c'])
@@ -1967,7 +1965,9 @@ async def institutional_vanguard_worker():
                     
                     for t in tickers:
                         sym = t['symbol'].replace("USDT", "")
+                        if not sym.isalnum(): continue
                         if sym in BLACKLISTED_COINS: continue
+                        
                         
                         price = float(t['lastPrice'])
                         
@@ -2430,6 +2430,7 @@ async def silent_data_harvester_worker(pool):
                     symbol = t["symbol"]
                     if not symbol.endswith("USDT"): continue
                     clean_sym = symbol.replace("USDT", "")
+                    if not clean_sym.isalnum(): continue
                     if clean_sym in BLACKLISTED_COINS: continue
                     
                     vol_usd = float(t["quoteVolume"])
@@ -4085,8 +4086,10 @@ async def institutional_incubator_worker(pool):
                     
                     for t in tickers:
                         sym = t['symbol']
-                        clean_sym = sym.replace("USDT", "")
+                        clean_sym = symbol.replace("USDT", "")
+                        if not clean_sym.isalnum(): continue
                         if clean_sym in BLACKLISTED_COINS: continue
+                        
 
                         await binance_rate_limit_event.wait()
                         # جلب شموع 4 ساعات للاحتضان
@@ -4520,8 +4523,14 @@ async def ai_opportunity_radar(pool):
                     if not symbol.endswith("USDT"): continue # نأخذ أزواج التيثر فقط
                     
                     clean_sym = symbol.replace("USDT", "")
+                    
+                    # 🛡️ فلتر حماية: تجاهل أي عملة تحتوي على علامات استفهام أو رموز غريبة
+                    if not clean_sym.isalnum():
+                        continue
+                    
                     if clean_sym in STABLE_COINS or clean_sym in ignored_symbols or clean_sym in BLACKLISTED_COINS: 
                         continue
+
                     
                     vol_usd = float(t["quoteVolume"])
                     price_change = float(t["priceChangePercent"])
