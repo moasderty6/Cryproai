@@ -1730,9 +1730,9 @@ import pandas as pd
 
 async def build_liquidation_heatmap(symbol: str, client: httpx.AsyncClient):
     """
-    [Tier-1 Quant] Directional Bias Liquidation Engine (True Heatmap)
-    يربط التدفق السعري بالتغير في الـ OI ومعدل التمويل لتحديد هوية الطرف 
-    "المحاصر" (Trapped Traders) بدقة، وكشف السكويز الحقيقي (Short/Long Squeeze).
+    [Tier-1 Quant] Cumulative Liquidation Heatmap Engine 🧲
+    تم تحديث المحرك من الداخل ليعمل بـ 3D Fusion (الشموع، OI، وعدوانية المتداولين)
+    مع الحفاظ التام على التوافق الرجعي (Backward Compatibility) لباقي دوال البوت.
     """
     import numpy as np
     import pandas as pd
@@ -1741,84 +1741,120 @@ async def build_liquidation_heatmap(symbol: str, client: httpx.AsyncClient):
     clean_sym = symbol.replace("USDT", "") + "USDT"
     
     try:
-        oi_url = f"{fapi_base}/futures/data/openInterestHist?symbol={clean_sym}&period=4h&limit=18"
-        klines_url = f"{get_random_binance_base()}/api/v3/klines?symbol={clean_sym}&interval=4h&limit=18"
-        funding_url = f"{fapi_base}/fapi/v1/premiumIndex?symbol={clean_sym}"
+        oi_url = f"{fapi_base}/futures/data/openInterestHist?symbol={clean_sym}&period=1h&limit=72"
+        klines_url = f"{get_random_binance_base()}/api/v3/klines?symbol={clean_sym}&interval=1h&limit=72"
+        taker_ls_url = f"{fapi_base}/futures/data/takerlongshortRatio?symbol={clean_sym}&period=1h&limit=72"
         
         await binance_rate_limit_event.wait()
-        # 🚀 الإطلاق المتزامن لثلاثة محركات معاً لضمان توحيد بيانات الزمن
-        res_oi, res_klines, res_fund = await asyncio.gather(
+        res_oi, res_klines, res_taker = await asyncio.gather(
             client.get(oi_url, timeout=5.0),
             client.get(klines_url, timeout=5.0),
-            client.get(funding_url, timeout=5.0)
+            client.get(taker_ls_url, timeout=5.0)
         )
         
-        if res_oi.status_code != 200 or res_klines.status_code != 200: 
+        if res_oi.status_code != 200 or res_klines.status_code != 200 or res_taker.status_code != 200:
             return None
             
         oi_data = res_oi.json()
         klines_data = res_klines.json()
+        taker_data = res_taker.json()
         
-        current_funding = 0.0
-        if res_fund.status_code == 200:
-            current_funding = float(res_fund.json().get("lastFundingRate", 0.0))
-        
-        if len(oi_data) != len(klines_data) or len(oi_data) < 10: return None
+        if len(oi_data) < 20 or len(klines_data) < 20: return None
 
         df = pd.DataFrame({
             'high': [float(k[2]) for k in klines_data],
             'low': [float(k[3]) for k in klines_data],
             'close': [float(k[4]) for k in klines_data],
             'vwap': [(float(k[2]) + float(k[3]) + float(k[4])) / 3 for k in klines_data],
-            'oi_value': [float(o['sumOpenInterestValue']) for o in oi_data]
+            'oi': [float(o['sumOpenInterestValue']) for o in oi_data],
+            'taker_buy_vol': [float(t['buyVol']) for t in taker_data],
+            'taker_sell_vol': [float(t['sellVol']) for t in taker_data]
         })
         
-        df['oi_delta'] = df['oi_value'].diff().fillna(0)
-        df['price_delta'] = df['close'].diff().fillna(0)
-        
-        # 1. فلترة العقد التي شهدت بناءً عنيفاً للسيولة
-        massive_build_ups = df[df['oi_delta'] > df['oi_delta'].std()].copy()
-        if massive_build_ups.empty: return None
-        
-        # 🧠 2. محرك كشف الانحياز (Directional Bias Logic):
-        # مَن الذي بنى هذه المراكز؟
-        # السعر يهبط + الـ OI يرتفع = هجوم بيعي (Shorts Building)
-        # السعر يصعد + الـ OI يرتفع = هجوم شرائي (Longs Building)
-        massive_build_ups['bias'] = np.where(massive_build_ups['price_delta'] > 0, 1, -1)
-        
-        # اختيار العقدة الأضخم لتكون هي البوصلة الرئيسية
-        biggest_node_idx = massive_build_ups['oi_delta'].idxmax()
-        biggest_node = massive_build_ups.loc[biggest_node_idx]
-        
-        pain_node = biggest_node['vwap']
-        trapped_side = biggest_node['bias']
-        
-        df['tr'] = df['high'] - df['low']
-        local_volatility_pct = (df['tr'].mean() / df['close'].mean())
-        liquidation_margin_pct = max(0.025, min(local_volatility_pct * 1.5, 0.10))
-        
+        df['oi_delta'] = df['oi'].diff().fillna(0)
         current_price = df['vwap'].iloc[-1]
         
-        # 🧠 3. التقييم المؤسساتي (Confluence Fusion):
-        # نحن ندمج سلوك السعر في نقطة الانفجار مع معدل التمويل اللحظي
+        build_ups = df[df['oi_delta'] > 0].copy()
+        short_liq_levels = []
+        long_liq_levels = []
         
-        # إذا كان الانحياز بيعي (Shorts) أو كان التمويل سلبياً بشكل ملحوظ
-        if trapped_side == -1 or current_funding < -0.0005:
-            liq_target = pain_node * (1.0 + liquidation_margin_pct)
-            type_liq = "Short Liquidation Magnet (Squeeze) 🧲"
-        # إذا كان الانحياز شرائي (Longs) أو التمويل إيجابي يميل للطمع
-        else:
-            liq_target = pain_node * (1.0 - liquidation_margin_pct)
-            type_liq = "Long Liquidation Magnet (Flush) 🧲"
+        for _, row in build_ups.iterrows():
+            oi_added = row['oi_delta']
+            vwap = row['vwap']
+            if row['taker_buy_vol'] > row['taker_sell_vol'] * 1.1:
+                long_liq_levels.append({'price': vwap * 0.985, 'weight': oi_added * 0.4})
+                long_liq_levels.append({'price': vwap * 0.965, 'weight': oi_added * 0.6})
+            elif row['taker_sell_vol'] > row['taker_buy_vol'] * 1.1:
+                short_liq_levels.append({'price': vwap * 1.015, 'weight': oi_added * 0.4})
+                short_liq_levels.append({'price': vwap * 1.035, 'weight': oi_added * 0.6})
+
+        def extract_thickest_cluster(levels, is_upper):
+            if not levels: return None, 0.0
+            cdf = pd.DataFrame(levels)
+            if is_upper: cdf = cdf[cdf['price'] > current_price]
+            else: cdf = cdf[cdf['price'] < current_price]
             
+            if cdf.empty: return None, 0.0
+            bin_size = current_price * 0.005
+            min_p, max_p = cdf['price'].min(), cdf['price'].max()
+            bins = np.arange(min_p, max_p + bin_size, bin_size)
+            
+            if len(bins) < 2: return [min_p, max_p], cdf['weight'].sum()
+            cdf['bin'] = pd.cut(cdf['price'], bins)
+            cluster = cdf.groupby('bin', observed=False)['weight'].sum()
+            if cluster.empty: return None, 0.0
+            
+            thickest_bin = cluster.idxmax()
+            return [thickest_bin.left, thickest_bin.right], cluster.max()
+
+        upper_pool, upper_weight = extract_thickest_cluster(short_liq_levels, is_upper=True)
+        lower_pool, lower_weight = extract_thickest_cluster(long_liq_levels, is_upper=False)
+        total_weight = upper_weight + lower_weight + 1e-8
+        
+        def format_pool(pool, weight):
+            if not pool: return "غير متاح", "⚪ ضعيف"
+            intensity = "🔥 مرعب" if weight / total_weight > 0.6 else ("🩸 عالي" if weight / total_weight > 0.4 else "🟡 متوسط")
+            return f"${format_price(pool[0])} - ${format_price(pool[1])}", intensity
+
+        up_range, up_int = format_pool(upper_pool, upper_weight)
+        low_range, low_int = format_pool(lower_pool, lower_weight)
+        
+        # 🧠 التوافق الرجعي (Backward Compatibility):
+        # توليد المتغيرات القديمة التي تحتاجها باقي دوال البوت لكي لا ينكسر الكود
+        pain_node = current_price # كقيمة افتراضية للمسار الآمن
+        if upper_weight > lower_weight * 1.5:
+            magnetic_bias = "استهداف علوي (Short Squeeze Magnet) 🚀"
+            legacy_target = upper_pool[0] if upper_pool else current_price * 1.05
+            legacy_type = "Short Liquidation Magnet (Squeeze) 🧲"
+        elif lower_weight > upper_weight * 1.5:
+            magnetic_bias = "استهداف سفلي (Long Flush Magnet) 🩸"
+            legacy_target = lower_pool[1] if lower_pool else current_price * 0.95
+            legacy_type = "Long Liquidation Magnet (Flush) 🧲"
+        else:
+            magnetic_bias = "تجاذب سيولي (Two-Way Liquidity) ⚖️"
+            legacy_target = current_price
+            legacy_type = "Dynamic Target (No Stack)"
+
+        legacy_distance_pct = abs(current_price - legacy_target) / current_price
+
+        # نرجع القاموس يضم المفاتيح القديمة (للرادارات) والمفاتيح الجديدة (لتقرير /btc)
         return {
-            "pain_node": pain_node, 
-            "target": liq_target, 
-            "type": type_liq, 
-            "distance_pct": abs(current_price - liq_target) / current_price
+            # ⬅️ المفاتيح القديمة لحماية النظام من الكراش
+            "pain_node": pain_node,
+            "target": legacy_target,
+            "type": legacy_type,
+            "distance_pct": legacy_distance_pct,
+            
+            # ⬅️ المفاتيح الجديدة العميقة لتقرير /btc
+            "upper_pool": up_range, 
+            "upper_intensity": up_int,
+            "lower_pool": low_range, 
+            "lower_intensity": low_int,
+            "magnetic_bias": magnetic_bias
         }
+
     except Exception as e:
-        print(f"🚨 [Liquidity Heatmap Engine] Error for {clean_sym}: {str(e)}")
+        print(f"🚨 [Cumulative Liquidity Engine] Error for {clean_sym}: {str(e)}")
         return None
 
 
@@ -4092,6 +4128,175 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             return None  
 
 
+async def apex_btc_tape_worker(pool):
+    """
+    [Institutional BTC Tape Recorder] 🦅
+    يسجل حالة النظام البيئي للبيتكوين بالكامل كل 5 دقائق لتدريب الذكاء الاصطناعي.
+    """
+    await asyncio.sleep(60) # انتظار استقرار السيرفر
+    print("📼 [BTC Tape] Continuous Institutional Data Recording is Online...")
+
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=25) as client:
+                await binance_rate_limit_event.wait()
+                
+                # 1. جلب السعر والشموع الفنية
+                bin_klines = await get_candles_binance("BTCUSDT", "15m", limit=30)
+                if not bin_klines:
+                    await asyncio.sleep(60)
+                    continue
+                
+                current_spot = float(bin_klines[-1][2])
+                old_spot = float(bin_klines[0][2])
+                
+                # حساب المؤشرات الكلاسيكية البسيطة
+                df = pd.DataFrame(bin_klines).iloc[:, :6]
+                df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+                df[["high", "low", "close", "volume"]] = df[["high", "low", "close", "volume"]].apply(pd.to_numeric)
+                
+                vol_z, _, _ = calculate_volume_zscore(df, window=24)
+                rsi_15m = 50.0 # افتراضي
+                adx_15m = 20.0
+                try:
+                    delta = df["close"].diff()
+                    gain = delta.clip(lower=0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+                    loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+                    rsi_15m = float((100 - (100 / (1 + (gain / loss)))).iloc[-1])
+                    adx_15m = float(ta.trend.ADXIndicator(df['high'], df['low'], df['close'], window=14).adx().iloc[-1])
+                except: pass
+
+                # 2. الإطلاق المتزامن للمحركات المؤسساتية العظمى
+                live_data, funding_data, ws_data, macro_data, liq_pools = await asyncio.gather(
+                    get_live_zscores(client),
+                    get_futures_liquidity("BTC", client, current_spot, old_spot),
+                    get_wall_street_macro_flows(client, current_spot),
+                    get_isolated_macro_for_btc_report(client),
+                    build_liquidation_heatmap("BTC", client)
+                )
+
+                _, _, _, premium_z, basis_z = live_data
+                _, _, _, _, funding_z = funding_data
+                cme_premium_pct, _, ibit_vol_surge, _ = ws_data
+                spy_trend, _, dxy_trend, _, us10y_trend, _ = macro_data
+
+                # 3. هندسة المسافات لمجمعات السيولة (لجعلها قابلة للفهم للذكاء الاصطناعي)
+                up_dist_pct = 0.0
+                dn_dist_pct = 0.0
+                mag_code = 0
+                
+                if liq_pools:
+                    up_str = liq_pools.get('upper_pool', '')
+                    dn_str = liq_pools.get('lower_pool', '')
+                    mag_bias = liq_pools.get('magnetic_bias', '')
+                    
+                    # استخراج السعر من النص (مثال: من "$63,000 - $63,500" نستخرج 63000)
+                    try:
+                        if " - " in up_str:
+                            up_price = float(up_str.split(" - ")[0].replace("$", "").replace(",", ""))
+                            up_dist_pct = ((up_price - current_spot) / current_spot) * 100
+                        if " - " in dn_str:
+                            dn_price = float(dn_str.split(" - ")[1].replace("$", "").replace(",", "")) # نأخذ الرقم الأعلى في الحوض السفلي
+                            dn_dist_pct = ((current_spot - dn_price) / current_spot) * 100
+                    except: pass
+                    
+                    if "Short Squeeze" in mag_bias: mag_code = 1
+                    elif "Long Flush" in mag_bias: mag_code = -1
+
+                # 4. التخزين الصامت في قاعدة البيانات
+                async with pool.acquire() as conn:
+                    await conn.execute("""
+                        INSERT INTO apex_btc_tape (
+                            spot_price, premium_z, basis_z, funding_z, cme_premium_pct, ibit_vol_surge,
+                            dxy_trend_pct, us10y_trend_pct, spy_trend_pct,
+                            upper_pool_dist_pct, lower_pool_dist_pct, magnetic_bias_code,
+                            vol_z_score, rsi_15m, adx_15m
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                    """, 
+                    current_spot, float(premium_z), float(basis_z), float(funding_z), float(cme_premium_pct), float(ibit_vol_surge),
+                    float(dxy_trend), float(us10y_trend), float(spy_trend),
+                    float(up_dist_pct), float(dn_dist_pct), int(mag_code),
+                    float(vol_z), float(rsi_15m), float(adx_15m))
+
+        except Exception as e:
+            print(f"⚠️ [BTC Tape Error]: {e}")
+            
+        # أخذ لقطة دقيقة كل 5 دقائق (300 ثانية) وهو التردد الذهبي في الصناديق الكمية
+        await asyncio.sleep(300) 
+async def apex_btc_inspector_worker(pool):
+    """
+    [Tier-1 Labeling Engine] 🕵️‍♂️
+    يقوم بمراجعة الشريط المسجل بعد مرور 24 ساعة، ويحسب العوائد وجودة مسار السعر
+    لتكوين التقييم النهائي (trade_quality_score) الجاهز لتدريب نماذج MoE و XGBoost.
+    """
+    await asyncio.sleep(200)
+    print("🕵️‍♂️ [Tape Inspector] BTC Historical Labeler is online...")
+    
+    while True:
+        try:
+            async with pool.acquire() as conn:
+                # نجلب اللقطات التي مر عليها 24 ساعة ولم يتم تقييمها
+                pending = await conn.fetch("""
+                    SELECT id, spot_price, EXTRACT(EPOCH FROM snapshot_timestamp) as sig_ts
+                    FROM apex_btc_tape 
+                    WHERE is_processed = 0 AND snapshot_timestamp <= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+                    LIMIT 100
+                """)
+                
+            if not pending:
+                await asyncio.sleep(1800) # ينام نصف ساعة إذا لم يجد شيئاً
+                continue
+                
+            async with httpx.AsyncClient(timeout=20) as client:
+                for row in pending:
+                    entry = float(row['spot_price'])
+                    start_time_ms = int(row['sig_ts'] * 1000)
+                    
+                    # جلب 96 شمعة (15 دقيقة) = 24 ساعة بالضبط
+                    res = await client.get(
+                        f"{get_random_binance_base()}/api/v3/klines",
+                        params={"symbol": "BTCUSDT", "interval": "15m", "startTime": start_time_ms, "limit": 96}
+                    )
+                    
+                    if res.status_code == 200:
+                        klines = res.json()
+                        if len(klines) < 90: continue # تجاوز إذا البيانات ناقصة
+                        
+                        # حساب العوائد الزمنية المستهدفة (Labels)
+                        ret_1h = ((float(klines[3][4]) - entry) / entry) * 100 
+                        ret_4h = ((float(klines[15][4]) - entry) / entry) * 100 
+                        ret_24h = ((float(klines[-1][4]) - entry) / entry) * 100
+                        
+                        # حساب التذبذب الكامل للمسار (MFE & MAE) لـ 24 ساعة
+                        mfe, mae = 0.0, 0.0
+                        safe_list = klines[1:] # تجاهل شمعة الدخول لمنع انحياز النظرة المستقبلية
+                        for k in safe_list:
+                            high, low = float(k[2]), float(k[3])
+                            profit = ((high - entry) / entry) * 100
+                            drawdown = ((entry - low) / entry) * 100
+                            if profit > mfe: mfe = profit
+                            if drawdown > mae: mae = drawdown
+                                
+                        # 🧠 معادلة شارب المعدلة (Modified Sharpe) لتقييم جودة الصفقة
+                        # تجمع بين أقصى صعود ممكن وبين العقاب على الانهيارات السعرية (Drawdowns)
+                        drawdown_penalty = mae * (0.2 if mfe > 3.0 else 0.8)
+                        trade_quality = (mfe - drawdown_penalty) / (mfe + drawdown_penalty + 0.1)
+                        trade_quality = max(-1.0, min(1.0, trade_quality))
+
+                        async with pool.acquire() as conn:
+                            await conn.execute("""
+                                UPDATE apex_btc_tape 
+                                SET ret_1h = $1, ret_4h = $2, ret_24h = $3, 
+                                    mfe_24h = $4, mae_24h = $5,
+                                    trade_quality_score = $6, is_processed = 1
+                                WHERE id = $7
+                            """, ret_1h, ret_4h, ret_24h, mfe, mae, float(trade_quality), row['id'])
+                            
+                    await asyncio.sleep(0.2) # استراحة بين الطلبات
+                    
+        except Exception as e:
+            print(f"⚠️ [Tape Inspector Error]: {e}")
+        await asyncio.sleep(60)
 
 async def institutional_incubator_worker(pool):
     """
@@ -5296,31 +5501,40 @@ async def get_live_zscores(client: httpx.AsyncClient):
         
     return 0.0, 0.0, 0.0, 0.0, 0.0
 
-def evaluate_dynamic_intent(premium_z: float, basis_z: float, funding_z: float):
+def evaluate_apex_matrix(premium_z: float, basis_z: float, funding_z: float, cme_premium: float, ibit_surge: float):
     """
-    [The Brain] مصفوفة النوايا المؤسساتية
+    [The Apex Matrix] مصفوفة النوايا المندمجة (Fusion Intent)
+    تدمج تدفقات الـ ETF وشيكاغو مع انحرافات منصات التجزئة.
     """
     intent, verdict = "توازن سيولي (Market Equilibrium)", "⚖️ تذبذب هيكلي. غياب الشذوذ الإحصائي، الحيتان في وضع الانتظار."
     
     p_z = max(-5.0, min(5.0, premium_z))
-    b_z = max(-5.0, min(5.0, basis_z))
     f_z = max(-5.0, min(5.0, funding_z))
 
-    if p_z > 2.0 and b_z > 1.5 and f_z < -1.0:
-        intent = "استحواذ كلي (Global Smart Money Accumulation)"
-        verdict = "🟢 وجهة نهائية. وول ستريت وحيتان الأوفشور يبتلعون البيع بتوافق تام."
-    elif p_z < -2.0 and b_z < -1.5 and f_z > 1.5:
-        intent = "تصريف مؤسساتي متزامن (Global Distribution)"
-        verdict = "🩸 قمة مرحلية (Macro Top). خروج مؤسساتي عنيف من السبوت وتخفيف للمراكز."
-    elif p_z < -1.5 and f_z > 1.5: 
+    # 1. حالة الاندفاع المؤسساتي المطلق (The Wall Street God Mode)
+    if p_z > 1.5 and cme_premium > 0.4 and ibit_surge > 1.5:
+        intent = "استحواذ أمريكي كلي (US Hegemony Accumulation)"
+        verdict = "🟢 وجهة نهائية. وول ستريت (CME + BlackRock + Coinbase) تبتلع المعروض بتوافق تام. الشراء هنا إجباري."
+        
+    # 2. حالة التفريغ المؤسساتي (Wall Street Distribution)
+    elif p_z < -1.5 and cme_premium < -0.1 and ibit_surge > 1.5:
+        intent = "تصريف مؤسساتي عنيف (Wall St. Distribution)"
+        verdict = "🩸 قمة مرحلية. صناديق ETF تفرّغ شحناتها، و Coinbase تقود الهبوط. خطر انهيار سريع."
+
+    # 3. فخ سيولة التجزئة (Retail Trap)
+    elif p_z < -1.0 and f_z > 1.5 and cme_premium <= 0: 
         intent = "فخ سيولة التجزئة (Retail Liquidity Trap)"
-        verdict = "🔴 ارتداد وهمي. الأفراد يدفعون السعر لأعلى، والمؤسسات تستخدمهم كسيولة خروج."
-    elif f_z < -2.0 and p_z > 0.5:
+        verdict = "🔴 ارتداد وهمي. الأفراد يدفعون السعر بالرافعة المالية، ومؤسسات أمريكا لا تشارك. (فرصة شورت)."
+
+    # 4. تصفية الخصوم (Squeeze)
+    elif f_z < -2.0 and (p_z > 0.5 or cme_premium > 0.2):
         intent = "تصفية الخصوم (Aggressive Short Squeeze)"
-        verdict = "⚡ صعود تصفية. السعر يتجه لضرب مراكز الشورت المتكدسة، خطر انعكاس سريع بعد التصفية."
-    elif p_z > 1.5 and f_z > 1.0:
-        intent = "فومو مؤسساتي (Institutional FOMO)"
-        verdict = "🔥 اندفاع شرائي. وول ستريت تشتري بأي سعر بغض النظر عن ارتفاع تكلفة المشتقات."
+        verdict = "⚡ صعود تصفية. المؤسسات تدفع السعر لضرب مراكز الشورت المتكدسة. هروب سريع بعد القمة."
+
+    # 5. تجميع صامت خارج أوقات الدوام (Off-Hours Accumulation)
+    elif p_z > 1.5 and ibit_surge < 0.5:
+        intent = "تجميع أوفشور (Offshore/OTC Accumulation)"
+        verdict = "🟡 شراء خفي بعيداً عن ساعات عمل الـ ETFs. سيولة تتجهز لانفجار قادم."
 
     return intent, verdict
 
@@ -5389,71 +5603,218 @@ async def get_futures_liquidity(symbol: str, client: httpx.AsyncClient, current_
         print(f"🚨 [Funding Engine] Error for {pair}: {str(e)}")
     
     return 0.0, None, 0.0, 0.0, 0.0
+async def get_wall_street_macro_flows(client: httpx.AsyncClient, spot_price: float):
+    """
+    [Tier-1 Wall Street Engine] 🦅
+    يجلب بيانات بورصة شيكاغو (CME) وصناديق الاستثمار المتداولة (BlackRock IBIT)
+    باستخدام Yahoo Finance كبديل مجاني ومستقر جداً ولا يحتاج API Key.
+    """
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        
+        # 1. جلب بيانات عقود شيكاغو (CME Bitcoin Futures: BTC=F)
+        cme_url = "https://query1.finance.yahoo.com/v8/finance/chart/BTC=F?interval=15m&range=1d"
+        
+        # 2. جلب بيانات أضخم ETF (BlackRock IBIT)
+        ibit_url = "https://query1.finance.yahoo.com/v8/finance/chart/IBIT?interval=15m&range=2d"
+        
+        res_cme, res_ibit = await asyncio.gather(
+            client.get(cme_url, headers=headers, timeout=5.0),
+            client.get(ibit_url, headers=headers, timeout=5.0),
+            return_exceptions=True
+        )
+        
+        cme_premium_pct = 0.0
+        cme_trend = "Neutral ⚪"
+        ibit_action = "Market Closed / Quiet 💤"
+        ibit_vol_surge = 0.0
+        
+        # --- تحليل CME (Institutional Futures) ---
+        if not isinstance(res_cme, Exception) and res_cme.status_code == 200:
+            cme_data = res_cme.json().get('chart', {}).get('result', [{}])[0]
+            if 'indicators' in cme_data and 'quote' in cme_data['indicators']:
+                cme_closes = cme_data['indicators']['quote'][0].get('close', [])
+                valid_cme = [c for c in cme_closes if c is not None]
+                if valid_cme:
+                    cme_price = float(valid_cme[-1])
+                    # حساب الفارق بين سعر شيكاغو والسعر الفوري (Premium/Discount)
+                    cme_premium_pct = ((cme_price - spot_price) / spot_price) * 100
+                    
+                    if cme_premium_pct > 0.4: cme_trend = "Bullish Contango 🟢"
+                    elif cme_premium_pct < -0.1: cme_trend = "Bearish Backwardation 🔴"
+                    else: cme_trend = "Neutral Basis ⚪"
+
+        # --- تحليل BlackRock ETF (IBIT) ---
+        if not isinstance(res_ibit, Exception) and res_ibit.status_code == 200:
+            ibit_data = res_ibit.json().get('chart', {}).get('result', [{}])[0]
+            if 'indicators' in ibit_data and 'quote' in ibit_data['indicators']:
+                vols = ibit_data['indicators']['quote'][0].get('volume', [])
+                valid_vols = [v for v in vols if v is not None and v > 0]
+                
+                if len(valid_vols) >= 10:
+                    # مقارنة فوليوم آخر 45 دقيقة بالمتوسط لاكتشاف "صدمة التدفق"
+                    recent_vol = sum(valid_vols[-3:]) 
+                    avg_vol = sum(valid_vols) / len(valid_vols)
+                    
+                    ibit_vol_surge = (recent_vol / (avg_vol * 3)) if avg_vol > 0 else 1.0
+                    
+                    if ibit_vol_surge > 2.0:
+                        ibit_action = "Aggressive Wall St. Inflow 🔥"
+                    elif ibit_vol_surge > 1.2:
+                        ibit_action = "Steady Accumulation 📈"
+                    elif ibit_vol_surge < 0.5:
+                        ibit_action = "Low Institutional Interest 💤"
+                        
+        return cme_premium_pct, cme_trend, ibit_vol_surge, ibit_action
+        
+    except Exception as e:
+        print(f"⚠️ Wall Street Data Error: {e}")
+        return 0.0, "Unknown", 0.0, "Unknown"
+async def get_isolated_macro_for_btc_report(client: httpx.AsyncClient):
+    """
+    [Isolated Macro Correlation Engine] 🌍
+    دالة معزولة تعمل عند طلب /btc فقط. تسحب حالة الاقتصاد الكلي 
+    (الدولار، السندات، الأسهم) دون التأثير على رادارات الذكاء الاصطناعي الأساسية.
+    """
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    try:
+        spy_url = "https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=1d&range=5d"
+        dxy_url = "https://query1.finance.yahoo.com/v8/finance/chart/DX-Y.NYB?interval=1d&range=5d"
+        us10y_url = "https://query1.finance.yahoo.com/v8/finance/chart/^TNX?interval=1d&range=5d"
+
+        res_spy, res_dxy, res_us10y = await asyncio.gather(
+            client.get(spy_url, headers=headers, timeout=5.0),
+            client.get(dxy_url, headers=headers, timeout=5.0),
+            client.get(us10y_url, headers=headers, timeout=5.0),
+            return_exceptions=True
+        )
+
+        def extract_trend(res):
+            if not isinstance(res, Exception) and res.status_code == 200:
+                chart_data = res.json().get('chart', {}).get('result', [{}])[0]
+                closes = chart_data.get('indicators', {}).get('quote', [{}])[0].get('close', [])
+                valid_closes = [c for c in closes if c is not None]
+                if len(valid_closes) >= 2:
+                    return ((valid_closes[-1] - valid_closes[-2]) / valid_closes[-2]) * 100
+            return 0.0
+
+        spy_trend = extract_trend(res_spy)
+        dxy_trend = extract_trend(res_dxy)
+        us10y_trend = extract_trend(res_us10y)
+        
+        # تحليل التأثير على البيتكوين (عكسي مع الدولار والسندات، طردي مع الأسهم)
+        dxy_impact = "🔴 ضغط سلبي" if dxy_trend > 0.15 else ("🟢 داعم للسيولة" if dxy_trend < -0.15 else "⚪ حيادي")
+        us10y_impact = "🔴 يسحب السيولة" if us10y_trend > 1.0 else ("🟢 يسهل الاقتراض" if us10y_trend < -1.0 else "⚪ حيادي")
+        spy_impact = "🟢 شهية مخاطر عالية" if spy_trend > 0.3 else ("🔴 هروب للملاذات" if spy_trend < -0.3 else "⚪ حيادي")
+
+        return spy_trend, spy_impact, dxy_trend, dxy_impact, us10y_trend, us10y_impact
+
+    except Exception as e:
+        print(f"⚠️ [Isolated Macro] Fetch Error: {e}")
+        return 0.0, "⚪", 0.0, "⚪", 0.0, "⚪"
 
 @dp.message(Command("btc"))
 async def btc_apex_vanguard_command(message: types.Message):
+    # 🛡️ حماية الغرفة المغلقة
     ALLOWED_IDS = [565965404, 7146339698, ADMIN_USER_ID]
-    
     if message.from_user.id not in ALLOWED_IDS:
-        return await message.reply("🚫 <b>عذراً، هذه الاستخبارات مخصصة لغرف التداول المغلقة.</b>", parse_mode=ParseMode.HTML)
+        return await message.reply("🚫 <b>عذراً، هذه الاستخبارات مخصصة لغرف التداول المغلقة (Tier-1).</b>", parse_mode=ParseMode.HTML)
 
-    loading_text = "📡 <i>تهيئة الرادار المؤسساتي (Apex Vanguard)...\nمزامنة Z-Score اللحظي بين Coinbase Prime وعقود التحوط...</i> 🦅"
+    loading_text = (
+        "📡 <i>تهيئة مصفوفة (Apex Vanguard) العظمى...</i>\n"
+        "<i>1️⃣ جلب بيانات BlackRock (IBIT) و CME...</i>\n"
+        "<i>2️⃣ مسح الارتباط الكلي (DXY, US10Y)...</i>\n"
+        "<i>3️⃣ بناء خريطة مجمعات التصفية التراكمية (3D Heatmap)...</i> 🦅"
+    )
     processing_msg = await message.reply(loading_text, parse_mode=ParseMode.HTML)
 
     try:
         async with httpx.AsyncClient(timeout=25) as client:
-            live_data_task = get_live_zscores(client)
-            
+            # 1. جلب بيانات بايننس اللحظية (السبوت)
             bin_klines = await get_candles_binance("BTCUSDT", "15m", limit=3)
             current_spot = float(bin_klines[-1][2]) if bin_klines else 60000.0
             old_spot = float(bin_klines[0][2]) if bin_klines else current_spot
             
+            # 2. 🚀 الإطلاق المتزامن للأسطول الكمّي (Simultaneous Quant Fleet Execution)
+            live_data_task = get_live_zscores(client)
             funding_task = get_futures_liquidity("BTC", client, current_spot, old_spot)
+            wall_street_task = get_wall_street_macro_flows(client, current_spot)
+            macro_corr_task = get_isolated_macro_for_btc_report(client) 
+            liq_pool_task = build_liquidation_heatmap("BTC", client) # المحرك التراكمي الهجين
 
-            live_data, funding_data = await asyncio.gather(live_data_task, funding_task)
+            # انتظار عودة جميع البيانات معاً
+            live_data, funding_data, ws_data, macro_data, liq_pools = await asyncio.gather(
+                live_data_task, funding_task, wall_street_task, macro_corr_task, liq_pool_task
+            )
 
+            # 3. فك تشفير البيانات (Unpacking)
             cb_price, binance_price, premium_pct, premium_z, basis_z = live_data
-            
-            # استخراج Funding Z-Score الحقيقي
             _, _, funding_val, _, funding_z = funding_data
+            cme_premium_pct, cme_trend, ibit_vol_surge, ibit_action = ws_data
+            spy_trend, spy_impact, dxy_trend, dxy_impact, us10y_trend, us10y_impact = macro_data
 
-            ws_intent, ws_verdict = evaluate_dynamic_intent(premium_z, basis_z, funding_z)
+            # 4. 🧠 تغذية مصفوفة النوايا (Fusion Matrix)
+            apex_intent, apex_verdict = evaluate_apex_matrix(
+                premium_z, basis_z, funding_z, cme_premium_pct, ibit_vol_surge
+            )
 
-            liq_data = await build_liquidation_heatmap("BTC", client)
-            target_price = liq_data['target'] if liq_data else binance_price * 1.05
-            target_type = liq_data['type'] if liq_data else "هدف ديناميكي (لا يوجد تكدس)"
+            # 5. 🧲 هندسة المغناطيس والهدف (Target & Liquidity Architecture)
+            if liq_pools:
+                target_price = liq_pools.get('target', binance_price * 1.05)
+                target_type = liq_pools.get('type', "ديناميكي (غياب التكدس)")
+                pool_up = f"{liq_pools.get('upper_pool', 'غير متاح')} ({liq_pools.get('upper_intensity', '⚪')})"
+                pool_dn = f"{liq_pools.get('lower_pool', 'غير متاح')} ({liq_pools.get('lower_intensity', '⚪')})"
+                mag_bias = liq_pools.get('magnetic_bias', "تجاذب سيولي ⚖️")
+            else:
+                target_price, target_type = binance_price, "غير متاح حالياً"
+                pool_up, pool_dn, mag_bias = "غير متاح", "غير متاح", "غير متاح"
 
+            # أيقونات الحالة البصرية لتسهيل القراءة السريعة
             cbp_icon = "🟢" if premium_z > 1.0 else ("🔴" if premium_z < -1.0 else "⚪")
             basis_icon = "📈" if basis_z > 1.0 else ("📉" if basis_z < -1.0 else "⚪")
+            fund_icon = "🔥" if funding_z > 1.0 else ("🩸" if funding_z < -1.0 else "⚪")
             
+            # 6. 📊 طباعة التقرير التنفيذي (The Executive Wall Street Brief)
             final_report = f"""
-🏛 <b>APEX VANGUARD | استخبارات وول ستريت لـ (BTC)</b> 🏛
+🏛 <b>APEX VANGUARD | تقرير وول ستريت التنفيذي (BTC)</b> 🏛
 ━━━━━━━━━━━━━━━━━━
-💰 <b>الأسعار العادلة (Mid-Price):</b>
-• Binance (USDC): <code>${format_price(binance_price)}</code>
-• Coinbase (USD): <code>${format_price(cb_price)}</code>
+💰 <b>الأسعار العادلة (Institutional Mid-Price):</b>
+• <b>Binance (التجزئة العالمية):</b> <code>${format_price(binance_price)}</code>
+• <b>Coinbase (السيولة الأمريكية):</b> <code>${format_price(cb_price)}</code>
 
-📊 <b>بصمة الشذوذ الإحصائي (Z-Scores):</b>
-• علاوة المؤسسات (Coinbase Z): <code>{premium_z:+.2f}σ</code> {cbp_icon}
-• علاوة التحوط (Basis Z): <code>{basis_z:+.2f}σ</code> {basis_icon}
-• ضغط المشتقات (Funding Z): <code>{funding_z:+.2f}σ</code>
+🗽 <b>تدفقات وول ستريت (Wall St. Macro Flows):</b>
+• <b>عقود شيكاغو (CME):</b> <code>{cme_trend} ({cme_premium_pct:+.2f}%)</code>
+• <b>صناديق ETF (BlackRock IBIT):</b> <b>{ibit_action}</b>
 
-🧠 <b>تحليل نوايا صانع السوق (Market Maker Intent):</b>
-• <b>التكتيك الحالي:</b> {ws_intent}
-• <b>القرار الخوارزمي:</b> {ws_verdict}
+🌍 <b>الارتباط الكلي (Macro Correlation Matrix):</b>
+• <b>مؤشر الدولار (DXY):</b> <code>{dxy_trend:+.2f}%</code> ({dxy_impact})
+• <b>عوائد السندات (US10Y):</b> <code>{us10y_trend:+.2f}%</code> ({us10y_impact})
+• <b>مؤشر S&P500 (SPY):</b> <code>{spy_trend:+.2f}%</code> ({spy_impact})
 
-🧲 <b>مغناطيس السيولة القادم:</b>
-• نوع التمركز: {target_type}
-• نقطة الاصطدام المتوقعة: <code>${format_price(target_price)}</code>
+📊 <b>البصمة الإحصائية (Z-Scores Signatures):</b>
+• <b>علاوة المؤسسات (Coinbase Z):</b> <code>{premium_z:+.2f}σ</code> {cbp_icon}
+• <b>علاوة التحوط (Basis Z):</b> <code>{basis_z:+.2f}σ</code> {basis_icon}
+• <b>ضغط المشتقات (Funding Z):</b> <code>{funding_z:+.2f}σ</code> {fund_icon}
+
+🧠 <b>قرار صانع السوق (Market Maker Verdict):</b>
+• <b>التكتيك اللحظي:</b> {apex_intent}
+• <b>الخلاصة:</b> {apex_verdict}
+
+🧲 <b>خريطة السيولة العميقة (Liquidation 3D Heatmap):</b>
+• <b>الاتجاه المغناطيسي الحرج:</b> <b>{mag_bias}</b>
+• 🎯 <b>نقطة الاصطدام الدقيقة:</b> <code>${format_price(target_price)}</code>
+• ⚠️ <b>طبيعة الهدف:</b> {target_type}
+• 📈 <b>حوض تصفية الشورت (Upper Pool):</b> <code>{pool_up}</code>
+• 📉 <b>حوض تصفية اللونج (Lower Pool):</b> <code>{pool_dn}</code>
 ━━━━━━━━━━━━━━━━━━
-<i>* تتم قراءة البيانات باستخدام خوارزميات (Time-Alignment) لتجاوز وهم الفيات.</i>
+<i>* تم دمج بيانات CME و ETFs وخريطة التصفية التراكمية لتوفير رؤية 3D معزولة.</i>
 """
             await processing_msg.edit_text(final_report, parse_mode=ParseMode.HTML)
             
     except Exception as e:
-        error_msg = f"⚠️ <b>انهيار في محرك البيانات التاريخية:</b> {e}"
+        error_msg = f"⚠️ <b>حدث خطأ في محرك البيانات الفائقة:</b>\n<code>{str(e)}</code>\n<i>يرجى المحاولة بعد قليل.</i>"
         await processing_msg.edit_text(error_msg, parse_mode=ParseMode.HTML)
-
+ 
 @dp.message(Command("sendphoto"))
 async def send_photo_to_trials(m: types.Message):
     if m.from_user.id != ADMIN_USER_ID:
@@ -7694,6 +8055,50 @@ async def on_startup(app):
                 last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # 🧠 The Ultimate BTC Quant Tape Schema
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS apex_btc_tape (
+                id SERIAL PRIMARY KEY,
+                snapshot_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                spot_price DOUBLE PRECISION NOT NULL,
+                
+                -- 1. بصمة الشذوذ الإحصائي (Z-Scores)
+                premium_z DOUBLE PRECISION,
+                basis_z DOUBLE PRECISION,
+                funding_z DOUBLE PRECISION,
+                cme_premium_pct DOUBLE PRECISION,
+                ibit_vol_surge DOUBLE PRECISION,
+                
+                -- 2. الارتباط الكلي (Macro Correlation)
+                dxy_trend_pct DOUBLE PRECISION,
+                us10y_trend_pct DOUBLE PRECISION,
+                spy_trend_pct DOUBLE PRECISION,
+                
+                -- 3. مجمعات السيولة (Liquidation Heatmap Distances)
+                upper_pool_dist_pct DOUBLE PRECISION,
+                lower_pool_dist_pct DOUBLE PRECISION,
+                magnetic_bias_code INTEGER, -- 1 للعلوي، -1 للسفلي، 0 للتوازن
+                
+                -- 4. البنية المجهرية للسبوت (Microstructure)
+                vol_z_score DOUBLE PRECISION,
+                rsi_15m DOUBLE PRECISION,
+                adx_15m DOUBLE PRECISION,
+                
+                -- ==========================================================
+                -- 🎯 آفاق المستقبل (Labels for AI Training)
+                -- ==========================================================
+                ret_1h DOUBLE PRECISION DEFAULT NULL,
+                ret_4h DOUBLE PRECISION DEFAULT NULL,
+                ret_24h DOUBLE PRECISION DEFAULT NULL,
+                
+                mfe_24h DOUBLE PRECISION DEFAULT NULL, -- أقصى صعود 
+                mae_24h DOUBLE PRECISION DEFAULT NULL, -- أقصى هبوط
+                
+                trade_quality_score DOUBLE PRECISION DEFAULT NULL,
+                is_processed INTEGER DEFAULT 0
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_apex_tape_process ON apex_btc_tape(is_processed, snapshot_timestamp)")
 
         # 🟢 الجديد: إنشاء جدول تتبع العملات المكتشفة في الرادار
         await conn.execute("""
@@ -7777,7 +8182,8 @@ async def on_startup(app):
         initial_paid_users = {1317225334, 5527572646}
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
-
+    asyncio.create_task(apex_btc_tape_worker(pool))⁠
+    asyncio.create_task(apex_btc_inspector_worker(pool))
     asyncio.create_task(apex_short_watchdog(pool))
     asyncio.create_task(short_radar_worker_process(pool))
     asyncio.create_task(smart_radar_watchdog(pool))
