@@ -5778,16 +5778,16 @@ load_btc_models()
 
 async def predict_btc_specific_ai(features: dict):
     """
-    [Isolated BTC Inference]
+    [Isolated BTC Inference - With VIX]
     يقوم بالمعالجة بـ Scaling مطابق 100% لبيئة التدريب
-    ويستخرج القيم الحقيقية من النماذج المدربة للبيتكوين حصراً.
+    ويستخرج القيم الحقيقية من النماذج المدربة.
     """
     if not BTC_XGB_MODELS or not BTC_DEEP_MODEL:
-        # حماية في حال لم يتم تحميل النماذج
         return -1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0
 
     try:
-        X_scaled = np.zeros((1, 14), dtype=np.float32)
+        # 🟢 التعديل الأهم: رفع عدد المدخلات إلى 16
+        X_scaled = np.zeros((1, 16), dtype=np.float32)
         X_scaled[0, 0] = np.tanh(np.clip(float(features.get('premium_z', 0)), -5.0, 5.0) / 2.0)
         X_scaled[0, 1] = np.tanh(np.clip(float(features.get('basis_z', 0)), -5.0, 5.0) / 2.0)
         X_scaled[0, 2] = np.tanh(np.clip(float(features.get('funding_z', 0)), -5.0, 5.0) / 2.0)
@@ -5802,6 +5802,10 @@ async def predict_btc_specific_ai(features: dict):
         X_scaled[0, 11] = np.tanh(np.clip(float(features.get('vol_z_score', 0)), -5.0, 5.0) / 2.0)
         X_scaled[0, 12] = np.clip(float(features.get('rsi_15m', 50.0)) / 100.0, 0.0, 1.0)
         X_scaled[0, 13] = np.clip(float(features.get('adx_15m', 20.0)) / 100.0, 0.0, 1.0)
+        
+        # 🟢 الإضافة الجراحية: حقن مؤشرات الخوف VIX بمعادلات المطابقة التامة لبيئة التدريب
+        X_scaled[0, 14] = np.tanh(np.clip(float(features.get('vix_value', 15.0)) - 15.0, -5.0, 50.0) / 10.0)
+        X_scaled[0, 15] = np.tanh(np.clip(float(features.get('vix_trend_pct', 5.02)), -50.0, 50.0) / 20.0)
 
         # 1. نتائج الكلاسيكي (XGBoost)
         raw_q = float(BTC_XGB_MODELS['quality'].predict(X_scaled)[0])
@@ -5826,6 +5830,7 @@ async def predict_btc_specific_ai(features: dict):
     except Exception as e:
         print(f"⚠️ [BTC AI Execution Error]: {e}")
         return -1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0
+
 @dp.message(Command("btc_admin"))
 async def btc_admin_supreme_command(message: types.Message):
     ALLOWED_IDS = [565965404, 7146339698, ADMIN_USER_ID]
@@ -5879,13 +5884,16 @@ async def btc_admin_supreme_command(message: types.Message):
             live_data = results[0] if not isinstance(results[0], Exception) else (current_spot, current_spot, 0, 0, 0)
             funding_data = results[1] if not isinstance(results[1], Exception) else (0, None, 0, 0, 0)
             ws_data = results[2] if not isinstance(results[2], Exception) else (0, "⚪", 0, "⚪")
-            macro_data = results[3] if not isinstance(results[3], Exception) else (0,"⚪", 0,"⚪", 0,"⚪")
+            # 🟢 تعديل القيمة الاحتياطية لتشمل 9 متغيرات بدل 6
+            macro_data = results[3] if not isinstance(results[3], Exception) else (0,"⚪", 0,"⚪", 0,"⚪", 15.0, 0.0, "⚪")
             liq_pools = results[4] if not isinstance(results[4], Exception) else {}
             
             cb_price, binance_price, premium_pct, premium_z, basis_z = live_data
             _, fut_sig, funding_val, oi_change, funding_z = funding_data
             cme_premium_pct, cme_trend, ibit_vol_surge, ibit_action = ws_data
-            spy_trend, spy_impact, dxy_trend, dxy_impact, us10y_trend, us10y_impact = macro_data
+            # 🟢 سحب قيم الـ VIX الجديدة
+            spy_trend, spy_impact, dxy_trend, dxy_impact, us10y_trend, us10y_impact, vix_current, vix_trend, vix_impact = macro_data
+
 
             # ==========================================================
             # 2. 🧠 عزل وتغذية الذكاء الاصطناعي الخاص بالبيتكوين (Features)
@@ -5916,8 +5924,11 @@ async def btc_admin_supreme_command(message: types.Message):
                 'dxy_trend_pct': dxy_trend, 'us10y_trend_pct': us10y_trend, 'spy_trend_pct': spy_trend,
                 'upper_pool_dist_pct': up_dist_pct, 'lower_pool_dist_pct': dn_dist_pct,
                 'magnetic_bias_code': mag_code, 'vol_z_score': vol_z,
-                'rsi_15m': rsi_val, 'adx_15m': adx_val
+                'rsi_15m': rsi_val, 'adx_15m': adx_val,
+                # 🟢 تمرير قيم الـ VIX لتدخل إلى الذكاء الاصطناعي
+                'vix_value': vix_current, 'vix_trend_pct': vix_trend
             }
+
 
             # الإطلاق للمحرك المعزول
             xgb_conf, xgb_drop, xgb_time, xgb_pump, moe_conf, moe_drop, moe_time, moe_pump = await predict_btc_specific_ai(btc_specific_features)
