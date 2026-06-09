@@ -8424,7 +8424,7 @@ async def on_startup(app):
         initial_paid_users = {1317225334, 5527572646}
         for uid in initial_paid_users:
             await conn.execute("INSERT INTO paid_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", uid)
-    asyncio.create_task(apex_btc_tape_worker(pool))⁠
+    asyncio.create_task(apex_btc_tape_worker(pool))
     asyncio.create_task(apex_btc_inspector_worker(pool))
     asyncio.create_task(apex_short_watchdog(pool))
     asyncio.create_task(short_radar_worker_process(pool))
