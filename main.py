@@ -4205,19 +4205,23 @@ async def apex_btc_tape_worker(pool):
                     elif "Long Flush" in mag_bias: mag_code = -1
 
                 # 4. التخزين الصامت في قاعدة البيانات
+                # 4. التخزين الصامت في قاعدة البيانات
                 async with pool.acquire() as conn:
                     await conn.execute("""
                         INSERT INTO apex_btc_tape (
                             spot_price, premium_z, basis_z, funding_z, cme_premium_pct, ibit_vol_surge,
                             dxy_trend_pct, us10y_trend_pct, spy_trend_pct,
                             upper_pool_dist_pct, lower_pool_dist_pct, magnetic_bias_code,
-                            vol_z_score, rsi_15m, adx_15m
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                            vol_z_score, rsi_15m, adx_15m,
+                            vix_value, vix_trend_pct -- 🟢 الإضافة هنا
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
                     """, 
                     current_spot, float(premium_z), float(basis_z), float(funding_z), float(cme_premium_pct), float(ibit_vol_surge),
                     float(dxy_trend), float(us10y_trend), float(spy_trend),
                     float(up_dist_pct), float(dn_dist_pct), int(mag_code),
-                    float(vol_z), float(rsi_15m), float(adx_15m))
+                    float(vol_z), float(rsi_15m), float(adx_15m),
+                    float(MACRO_CACHE.get("vix_value", 19.8)),      # 🟢 سحب القيمة من الذاكرة اللحظية
+                    float(MACRO_CACHE.get("vix_trend_pct", 0.0)))   # 🟢 سحب القيمة من الذاكرة اللحظية
 
         except Exception as e:
             import traceback
@@ -4560,7 +4564,10 @@ MACRO_CACHE = {
     "btc_liquidity_health": 0.0, 
     "onchain_liquidity_score": 0.0, 
     "onchain_net_flow_usd": 0.0,
-    "alt_regime_score": 50.0      # 👈 المحرك الجديد: يقيس تدفق السيولة للعملات البديلة مقابل البيتكوين
+    "alt_regime_score": 50.0,
+    # 🟢 الإضافة الجديدة للـ VIX
+    "vix_value": 19.8, 
+    "vix_trend_pct": 0.0
 }
 
 
@@ -4698,7 +4705,31 @@ async def macro_data_worker():
                 MACRO_CACHE["sentiment_score"] = round(max(0.0, min(100.0, final_macro_score)), 1)
 
                 print(f"🔄 [Macro Updated] Inst_Risk: {MACRO_CACHE['sentiment_score']} | S&P500: {MACRO_CACHE['sp500_trend']}% | On-Chain Flow: ${net_usd:,.0f} | Funding: {MACRO_CACHE['global_funding_health']:.1f}")
-                
+                                # 1. حالة السوق الأمريكي (SPY)
+                try:
+                    spy_res = await client.get("https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=1d&range=2d", headers=headers)
+                    if spy_res.status_code == 200:
+                        chart_data = spy_res.json()['chart']['result'][0]['indicators']['quote'][0]
+                        closes = chart_data['close']
+                        if len(closes) >= 2 and closes[-1] and closes[-2]:
+                            MACRO_CACHE["sp500_trend"] = round(((closes[-1] - closes[-2]) / closes[-2]) * 100, 2)
+                except Exception as e:
+                    print(f"⚠️ [Macro] S&P 500 API Error: {e}")
+
+                # 🟢 1.5 سحب حالة مؤشر الخوف (VIX)
+                try:
+                    vix_res = await client.get("https://query1.finance.yahoo.com/v8/finance/chart/^VIX?interval=1d&range=2d", headers=headers)
+                    if vix_res.status_code == 200:
+                        vix_data = vix_res.json()['chart']['result'][0]['indicators']['quote'][0]
+                        vix_closes = [c for c in vix_data['close'] if c is not None]
+                        if len(vix_closes) >= 2:
+                            MACRO_CACHE["vix_value"] = round(float(vix_closes[-1]), 2)
+                            MACRO_CACHE["vix_trend_pct"] = round(((vix_closes[-1] - vix_closes[-2]) / vix_closes[-2]) * 100, 2)
+                        elif len(vix_closes) == 1:
+                            MACRO_CACHE["vix_value"] = round(float(vix_closes[-1]), 2)
+                except Exception as e:
+                    print(f"⚠️ [Macro] VIX API Error: {e}")
+
         except Exception as e:
             print(f"⚠️ [Macro Engine] Critical Background Error: {e}")
             
@@ -8414,6 +8445,10 @@ async def on_startup(app):
         await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS macro_z_score_30d DOUBLE PRECISION DEFAULT 0.0")
         await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS htf_whale_accumulation DOUBLE PRECISION DEFAULT 0.0")
         await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS days_since_last_expansion DOUBLE PRECISION DEFAULT 0.0")
+        # 🟢 إضافة أعمدة الـ VIX للصفقات المسجلة ولشريط البيتكوين (Tape)
+        await conn.execute("ALTER TABLE apex_btc_tape ADD COLUMN IF NOT EXISTS vix_value DOUBLE PRECISION DEFAULT 19.8")
+        await conn.execute("ALTER TABLE apex_btc_tape ADD COLUMN IF NOT EXISTS vix_trend_pct DOUBLE PRECISION DEFAULT 0.0")
+
 
         # 3. 🎯 التكتيك الذهبي: إعادة الصفقات القديمة إلى محكمة التفتيش
         # هذا السطر سيجعل البوت يعيد تقييم كل الصفقات القديمة بالمنطق الجديد!
