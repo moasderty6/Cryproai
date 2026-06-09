@@ -3521,77 +3521,76 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                         # ====================================================================
             # 🧠 محرك التقييم الديناميكي المؤسساتي (Dynamic Quant Scoring Engine)
             # ====================================================================
-            
-            tags = [] # قائمة لتجميع نوع الحركات
-                        # ====================================================================
-            # 🛡️ THE RUTHLESS FILTER: Liquidity Absorption Ratio (LAR) & Spot Lead
+            tags = [] 
+            toxicity_score = 0.0  # 🧠 المحرك الجديد: تجميع سمية السيولة
+
             # ====================================================================
-            # أضف هذا السطر أينما كنت تحسب Z-Score للفوليوم
+            # 🛡️ THE RUTHLESS FILTER: Liquidity Absorption Ratio (LAR)
+            # ====================================================================
             current_vwap_z, current_vwap_price = calculate_vwap_zscore(df, window=24)
-            # 1. حساب نسبة التذبذب للشمعة الحالية ومتوسط آخر 5 شموع
             current_high = df["high"].iloc[-1]
             current_low = df["low"].iloc[-1]
             candle_spread_pct = ((current_high - current_low) / current_low) * 100
             
-            # [تعديل صانع السوق]: حماية رياضية من الشموع حديثة الولادة لمنع تضخم الـ LAR الوهمي
             avg_spread = (abs(df["high"] - df["low"]) / df["low"]).tail(5).mean() * 100
-            safe_spread = max(candle_spread_pct, avg_spread, 0.15) # العتبة الأدنى 0.15%
-            
+            safe_spread = max(candle_spread_pct, avg_spread, 0.15) 
             lar_score = current_z / safe_spread
+            
             # ==========================================================
-            # 🛑 المرحلة الأولى: جدار الإعدام الرياضي والأساسي (Fail-Fast Veto)
+            # 🛑 المرحلة الأولى: تراكم المخاطر الأساسية (Soft Penalty Accumulation)
             # ==========================================================
             
             # 🧬 1. فحص اقتصاديات التوكن (Tokenomics Exit-Liquidity Check)
             tokenomics_risk = await evaluate_tokenomics_overhang(symbol, client)
             if tokenomics_risk['is_vetoed']:
                 tags.append(tokenomics_risk['tag'])
-                print(f"🗑️ {symbol} - قُتلت مبكراً (فخ سيولة الخروج: {tokenomics_risk['reason']})")
-                return None 
+                toxicity_score += 45.0 # عقاب شديد بدلاً من القتل
             
-            # تعديل عتبة Z-Score ديناميكياً بناءً على تقلبات الماكرو
             current_regime_trend = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
             volatility_state = market_regime['volatility'] if isinstance(market_regime, dict) else "Normal"
 
-            # عتبة مرنة (Dynamic Threshold)
             z_threshold = 2.0 if volatility_state == "Low_Vol" else (3.0 if volatility_state == "High_Vol" else 2.5)
             lar_threshold = 0.6 if current_regime_trend == "Trending_Bull" else 0.8
 
-            # أ. الهروب من الفومو (Late FOMO Veto):
+            # أ. الهروب من الفومو (Late FOMO Penalty):
             if current_z > z_threshold and candle_spread_pct > 4.0:
                 tags.append("Late_FOMO_Pump")
-                return None 
+                toxicity_score += 30.0 
 
-            # ب. فلتر العملات الميتة (Dead Asset Veto):
+            # ب. فلتر العملات الميتة (Dead Asset Penalty):
             if lar_score < lar_threshold and current_z < (z_threshold - 1.0):
-                print(f"🗑️ {symbol} - قُتلت مبكراً (انعدام الامتصاص)") 
-                return None 
+                tags.append("Dead_Asset_Risk")
+                toxicity_score += 40.0 
 
-            # إضافة الـ Tag للعملات القوية
+            # إضافة الـ Tag للعملات القوية وتخفيف السمية
             if lar_score >= 2.0 and current_z > 1.5:
                 tags.append("High_Liquidity_Absorption")
+                toxicity_score = max(0.0, toxicity_score - 15.0) 
 
             # ==========================================================
-            # 🟢 المرحلة الثانية: فحص المشتقات (للعملات الناجية فقط)
-            # ==========================================================
-            # لم نصل إلى هذا السطر إلا والعملة تستحق دفع ثمن الـ API Call
-            
-                        # ==========================================================
-            # 🟢 المرحلة الثانية: جلب البيانات المؤسساتية أولاً (Data Fetching Block)
+            # 🟢 المرحلة الثانية: فحص المشتقات وجلب البيانات المؤسساتية
             # ==========================================================
             spot_lead_score = await detect_spot_perp_divergence(symbol, client)
             if spot_lead_score < -3.0:
                 tags.append("Spot_Dumping_Fakeout")
-                return None 
+                toxicity_score += 35.0 
 
             old_price_val = df["close"].iloc[-3] if len(df) > 3 else df["open"].iloc[0]
             approx_24h_vol_usd = df["volume"].tail(24).sum() * price 
-
-            # 🚀 جلب جميع المتغيرات اللحظية من الـ API لتجنب أي NameError لاحقاً
-            micro_cvd_boost, micro_cvd_signal, micro_cvd_trend = await get_micro_cvd_absorption(f"{symbol}USDT", client, "1h")
+            # ==========================================================
+            # 🚀 جلب البيانات المؤسساتية لصفقات السوينغ (Swing-Grade Data Fetching)
+            # تم توسيع العدسة لتتجاهل ضجيج الدقائق وتركز على الساعات لتنقية عقل الـ AI
+            # ==========================================================
+            
+            # 1. إجبار الـ CVD على قراءة الفريم الأكبر (بتمرير "1d" ستعمل الدالة على 15 دقيقة بدلاً من 1m)
+            micro_cvd_boost, micro_cvd_signal, micro_cvd_trend = await get_micro_cvd_absorption(f"{symbol}USDT", client, "1d")
+            
             global_ob_pressure = await get_aggregated_orderbook(client, symbol)
             depth_data = await analyze_orderbook_spoofing_instant(symbol, client, price)
-            tick_delta, tick_buy, tick_sell, limit_abs_signal = await get_institutional_orderflow(f"{symbol}USDT", client)
+            
+            # 2. 🧠 التعديل الأهم: قراءة تدفق الأوامر (Orderflow) لآخر 4 ساعات (240 دقيقة) بدلاً من 15 دقيقة!
+            tick_delta, tick_buy, tick_sell, limit_abs_signal = await get_institutional_orderflow(f"{symbol}USDT", client, minutes=240)
+            
             _, futures_signal, funding_val, oi_change_pct, _ = await get_futures_liquidity(symbol, client, price, old_price_val)
             whale_score, phantom_tags = await detect_phantom_liquidity_ws(symbol, client, price, approx_24h_vol_usd)
             rs_score = await detect_btc_relative_strength(symbol, client)
@@ -3701,15 +3700,21 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             tech_base += quant_sigmoid_score(rs_score, sensitivity=0.5, limit=20.0)
             dir_tech = max(0.0, min(100.0, tech_base)) # حماية من النزول تحت الصفر
 
+            # 🧠 محرك الأوزان الديناميكية (Dynamic Information-Theoretic Weighting)
+            total_strength = dir_cvd + dir_deriv + dir_tech + 1e-8
+            
+            # حساب الأوزان ذاتياً: المؤشر الأقوى يأخذ الوزن الأكبر
+            w_cvd = dir_cvd / total_strength
+            w_deriv = dir_deriv / total_strength
+            w_tech = dir_tech / total_strength
+            
+            # دمج التقييم بناءً على الأوزان الذكية الجديدة
+            directional_score = (dir_cvd * w_cvd) + (dir_deriv * w_deriv) + (dir_tech * w_tech)
+            
+            # 🎯 مكافأة الإجماع: إذا اتفقت السيولة مع المشتقات بقوة، نرفع التقييم
+            if dir_cvd > 65.0 and dir_deriv > 65.0:
+                directional_score = min(100.0, directional_score * 1.15)
 
-            # 🛡️ استرجاع أوزان حالة السوق بدقة (Regime-based Weighting)
-            current_regime_trend = market_regime['trend'] if isinstance(market_regime, dict) else "Unknown"
-            if current_regime_trend == "Trending_Bull":
-                directional_score = (dir_cvd * 0.55) + (dir_deriv * 0.25) + (dir_tech * 0.20)
-            elif current_regime_trend == "Trending_Bear":
-                directional_score = (dir_cvd * 0.50) + (dir_deriv * 0.35) + (dir_tech * 0.15)
-            else: # Ranging & Unknown
-                directional_score = (dir_cvd * 0.45) + (dir_deriv * 0.25) + (dir_tech * 0.30)
 
             # --- البُعد الثاني: التوقيت (Timing & Execution) ---
             imbalance = depth_data.get('imbalance', 0.0)
@@ -3789,16 +3794,20 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 structural_alpha_boost = min(1.0, alt_flow_multiplier)
             # --- ⚖️ الدمج الهندسي المؤسساتي (Weighted Geometric Fusion) ---
             # استخدام الضرب التبادلي: إذا كان التوقيت سيئاً (يقترب من الصفر)، السكور ينهار لحماية المشترك
+            # --- ⚖️ الدمج الهندسي المؤسساتي (Weighted Geometric Fusion) ---
             base_conviction = (directional_score ** 0.70) * (timing_score ** 0.30)
             
-            # 🛡️ تطبيق عقاب التوكنوميكس المخفي (Toxic FDV Overhang Penalty)
+            # 🧠 تفعيل تأثير السمية الناعم (Toxicity Discount Multiplier)
+            # خصم تصاعدي للفرص المشبوهة التي نجت من الإعدام
+            toxicity_discount = max(0.1, 1.0 - (toxicity_score / 100.0))
+            
+            # 🛡️ تطبيق عقاب التوكنوميكس
             tokenomics_multiplier = tokenomics_risk.get("penalty_multiplier", 1.0)
             if tokenomics_multiplier < 1.0:
                 tags.append(tokenomics_risk.get("tag", "High_Inflation"))
             
-            # تطبيق محفزات الدارك بول (VCA)، وغرفة الاحتضان، وعبء التوكنوميكس
-            enhanced_conviction = base_conviction * structural_alpha_boost * tokenomics_multiplier
-
+            # تطبيق محفزات الدارك بول (VCA)، وغرفة الاحتضان، وخصم السمية التراكمي
+            enhanced_conviction = base_conviction * structural_alpha_boost * tokenomics_multiplier * toxicity_discount
             
             # البوابة النهائية (Volume Multiplier) تصفي الفرصة
             final_raw_score = enhanced_conviction * volume_multiplier
@@ -3877,35 +3886,41 @@ async def analyze_radar_coin(c, client, market_regime, sem):
             elif macro_adx > 40:
                 dyn_imbalance_req = 0.08 
                 dyn_ob_req = 1.10 
-
             # ==========================================
-            # 🛡️ الفيتو الإجباري المتكيف (Adaptive Institutional Veto)
+            # 🛡️ الفيتو الناعم المتكيف (Adaptive Soft Penalties)
             # ==========================================
-            # 🌟 هنا تتدخل الإستراتيجية العظمى: إذا كانت العملة محتضنة، نتساهل مع الفيتو اللحظي!
-            veto_tolerance = 1.3 if is_incubated else 1.0 # نسبة تساهل 30% للمحتضنة
-                        # 🛑 فلتر VPIN: إعدام الاختراقات الوهمية اللحظية (Retail Noise)
+            veto_tolerance = 1.3 if is_incubated else 1.0 
+            
+            # 🛑 فلتر VPIN: ضجيج الأفراد
             if vpin_score < 0.25 and micro_cvd_trend > 0:
                 tags.append("VPIN_Retail_Noise_Trap")
-                print(f"🗑️ {symbol} - مرفوض: اختراق وهمي مدفوع بقطيع الأفراد (VPIN: {vpin_score:.2f}).")
-                return None
-            
-            # إذا كانت السيولة شديدة السمية (تدخل مؤسساتي شرس) نعطيها تاج داعم
-            if vpin_score > 0.65:
+                toxicity_score += 25.0
+            elif vpin_score > 0.65:
                 tags.append("VPIN_Toxic_Inflow")
+                toxicity_score = max(0.0, toxicity_score - 10.0) 
 
+            # انحراف VWAP
             if current_vwap_z > (dyn_vwap_z * veto_tolerance):
                 tags.append("Late_FOMO_Pump_VWAP")
-                print(f"🗑️ {symbol} - مرفوض: انحراف قوي عن VWAP (متجاوزاً عتبة الاحتضان {veto_tolerance}).")
-                return None 
+                toxicity_score += min(40.0, (current_vwap_z - dyn_vwap_z) * 15.0) 
                 
             if is_orderbook_hollow_flag and current_cvd < 0:
                 tags.append("Liquidity_Void_Trap")
-                print(f"🗑️ {symbol} - مرفوض: جدران شراء وهمية والعمق الداعم فارغ تماماً!")
-                return None 
+                toxicity_score += 30.0 
 
             if global_ob_pressure > dyn_ob_req and current_cvd < 0:
                 tags.append("Spoofing_Distribution_Trap")
+                toxicity_score += 20.0 
+
+            # ==========================================================
+            # 🛑 جدار الإعدام المؤسساتي (The Ultimate Sieve)
+            # ==========================================================
+            max_allowed_toxicity = 90.0 if is_incubated else 70.0
+            
+            if toxicity_score > max_allowed_toxicity:
+                print(f"🗑️ {symbol} - تم الاستبعاد: تراكمت مخاطر التلاعب والسيولة (Toxicity: {toxicity_score:.1f}/{max_allowed_toxicity}).")
                 return None 
+
 
             # ==========================================
             avg_vol_usd = avg_vol_20 * price if avg_vol_20 > 0 else 1.0
@@ -3972,9 +3987,14 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                 avg_vol_usd_for_depth = avg_vol_20 * price if avg_vol_20 > 0 else 15000.0
                 ws_depth_check = await analyze_orderbook_advanced_manual(symbol, client, price, avg_vol_usd_for_depth)
 
+                # 🧠 محرك السوينغ (Swing Execution Logic):
+                # في الصفقات التي تستمر لأيام، التلاعب اللحظي (Spoofing) هو ضجيج لا يجب أن يقتل الصفقة الكلية.
+                ob_skewness_val = float(depth_data.get('bid_pressure_ratio', 1.0))
+                
                 if ws_depth_check.get('is_spoofed', False) or ws_depth_check.get('is_hollow', False):
-                    print(f"🗑️ {symbol} - تم الإلغاء في اللحظة الأخيرة! الرادار اكتشف جدران وهمية عبر الـ WebSocket.")
-                    return None 
+                    print(f"⚠️ {symbol} - تلاعب لحظي (HFT Noise). الصفقة السوينغ مستمرة لكن سيتم تحييد تأثير الأوردر بوك للذكاء الاصطناعي.")
+                    # نحيّد تأثير الأوردر بوك لكي لا يخدع الذكاء الاصطناعي (نجعله محايداً = 1.0)
+                    ob_skewness_val = 1.0 
                 
                 whale_inflow = await get_whale_inflow_score()
                 micro_volatility = df['close'].tail(20).pct_change().std() * 100
@@ -3993,7 +4013,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     'z_score': float(current_z),
                     'cvd_to_vol_ratio': float(cvd_ratio_pct), 
                     'ofi_imbalance': float(current_imbalance),
-                    'ob_skewness': float(depth_data.get('bid_pressure_ratio', 1.0)),
+                    ⁠'ob_skewness': float(ob_skewness_val),
                     'whale_inflow': float(whale_inflow),
                     'adx': float(current_adx),
                     'rsi': float(last_rsi),
@@ -4031,9 +4051,23 @@ async def analyze_radar_coin(c, client, market_regime, sem):
 
                 # نمرر كلا الحالتين لطباعتهما
                 ai_status = f"{xgb_status}\n🤖 {deep_status}"
-
-                # 🛡️ إجبار البوت على استخدام سكور الرادار الكلاسيكي فقط دون أي تغيير
-                final_score = score 
+                # 🧠 تسليم القيادة للذكاء الاصطناعي (Ensemble AI Takeover)
+                valid_ai_scores = []
+                if ai_confidence != -1.0: valid_ai_scores.append(ai_confidence)
+                if ai_confidence_deep != -1.0: valid_ai_scores.append(ai_confidence_deep)
+                
+                if valid_ai_scores:
+                    # نأخذ أعلى تقييم من نماذج الذكاء الاصطناعي
+                    best_ai_score = max(valid_ai_scores)
+                    
+                    # ⚖️ القرار النهائي: 75% للذكاء الاصطناعي و 25% للمحرك الكلاسيكي كشبكة أمان
+                    final_score = (best_ai_score * 0.75) + (score * 0.25)
+                else:
+                    # في حال فشل نماذج AI أو عدم تحميلها، نعود للمحرك الكلاسيكي كخطة طوارئ
+                    final_score = score 
+                
+                # تنعيم الرقم النهائي وحمايته
+                final_score = round(max(0.0, min(final_score, 99.5)), 1)
                 
                 return {
                     "symbol": symbol, "price": price, "score": final_score,
