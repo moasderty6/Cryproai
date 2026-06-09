@@ -4141,21 +4141,23 @@ async def apex_btc_tape_worker(pool):
             async with httpx.AsyncClient(timeout=25) as client:
                 await binance_rate_limit_event.wait()
                 
-                # 1. جلب السعر والشموع الفنية
-                bin_klines = await get_candles_binance("BTCUSDT", "15m", limit=30)
-                if not bin_klines:
+                # 1. جلب السعر والشموع الفنية (تم الرفع إلى 750 شمعة لإشباع الـ Z-Score)
+                bin_klines = await get_candles_binance("BTCUSDT", "15m", limit=750)
+                if not bin_klines or len(bin_klines) < 100:
                     await asyncio.sleep(60)
                     continue
                 
                 current_spot = float(bin_klines[-1][2])
-                old_spot = float(bin_klines[0][2])
+                old_spot = float(bin_klines[-3][2]) # السعر قبل 45 دقيقة (ليتطابق مع قراءة الفيوتشرز)
                 
                 # حساب المؤشرات الكلاسيكية البسيطة
                 df = pd.DataFrame(bin_klines).iloc[:, :6]
                 df.columns = ["timestamp", "volume", "close", "high", "low", "open"]
                 df[["high", "low", "close", "volume"]] = df[["high", "low", "close", "volume"]].apply(pd.to_numeric)
                 
-                vol_z, _, _ = calculate_volume_zscore(df, window=24)
+                # إزالة window=24 ليعمل المحرك على 720 شمعة (أسبوع) لاكتشاف الشذوذ الحقيقي
+                vol_z, _, _ = calculate_volume_zscore(df)
+                
                 rsi_15m = 50.0 # افتراضي
                 adx_15m = 20.0
                 try:
@@ -4190,13 +4192,12 @@ async def apex_btc_tape_worker(pool):
                     dn_str = liq_pools.get('lower_pool', '')
                     mag_bias = liq_pools.get('magnetic_bias', '')
                     
-                    # استخراج السعر من النص (مثال: من "$63,000 - $63,500" نستخرج 63000)
                     try:
                         if " - " in up_str:
                             up_price = float(up_str.split(" - ")[0].replace("$", "").replace(",", ""))
                             up_dist_pct = ((up_price - current_spot) / current_spot) * 100
                         if " - " in dn_str:
-                            dn_price = float(dn_str.split(" - ")[1].replace("$", "").replace(",", "")) # نأخذ الرقم الأعلى في الحوض السفلي
+                            dn_price = float(dn_str.split(" - ")[1].replace("$", "").replace(",", "")) 
                             dn_dist_pct = ((current_spot - dn_price) / current_spot) * 100
                     except: pass
                     
@@ -4219,10 +4220,12 @@ async def apex_btc_tape_worker(pool):
                     float(vol_z), float(rsi_15m), float(adx_15m))
 
         except Exception as e:
+            import traceback
             print(f"⚠️ [BTC Tape Error]: {e}")
             
         # أخذ لقطة دقيقة كل 5 دقائق (300 ثانية) وهو التردد الذهبي في الصناديق الكمية
-        await asyncio.sleep(300) 
+        await asyncio.sleep(300)
+
 async def apex_btc_inspector_worker(pool):
     """
     [Tier-1 Labeling Engine] 🕵️‍♂️
