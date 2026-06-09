@@ -4332,7 +4332,7 @@ async def institutional_incubator_worker(pool):
                     
                     for t in tickers:
                         sym = t['symbol']
-                        clean_sym = symbol.replace("USDT", "")
+                        clean_sym = sym.replace("USDT", "")
                         if not clean_sym.isalnum(): continue
                         if clean_sym in BLACKLISTED_COINS: continue
                         
@@ -4567,7 +4567,7 @@ MACRO_CACHE = {
     "alt_regime_score": 50.0,
     # 🟢 الإضافة الجديدة للـ VIX
     "vix_value": 19.8, 
-    "vix_trend_pct": 0.0
+    "vix_trend_pct": 5.02
 }
 
 
@@ -8446,8 +8446,13 @@ async def on_startup(app):
         await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS htf_whale_accumulation DOUBLE PRECISION DEFAULT 0.0")
         await conn.execute("ALTER TABLE ml_training_data ADD COLUMN IF NOT EXISTS days_since_last_expansion DOUBLE PRECISION DEFAULT 0.0")
         # 🟢 إضافة أعمدة الـ VIX للصفقات المسجلة ولشريط البيتكوين (Tape)
+        # 1. تغيير الإعداد الافتراضي للعمود ليصبح 5.02
         await conn.execute("ALTER TABLE apex_btc_tape ADD COLUMN IF NOT EXISTS vix_value DOUBLE PRECISION DEFAULT 19.8")
-        await conn.execute("ALTER TABLE apex_btc_tape ADD COLUMN IF NOT EXISTS vix_trend_pct DOUBLE PRECISION DEFAULT 0.0")
+        await conn.execute("ALTER TABLE apex_btc_tape ADD COLUMN IF NOT EXISTS vix_trend_pct DOUBLE PRECISION DEFAULT 5.02")
+
+        # 🟢 2. التحديث الإجباري: هذا السطر سيبحث عن أي صفقة قديمة أخذت 0.0 ويحولها فوراً إلى 5.02
+        await conn.execute("UPDATE apex_btc_tape SET vix_trend_pct = 5.02 WHERE vix_trend_pct = 0.0")
+
 
 
         # 3. 🎯 التكتيك الذهبي: إعادة الصفقات القديمة إلى محكمة التفتيش
