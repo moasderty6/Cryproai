@@ -5712,6 +5712,248 @@ async def get_isolated_macro_for_btc_report(client: httpx.AsyncClient):
     except Exception as e:
         print(f"⚠️ [Isolated Macro] Fetch Error: {e}")
         return 0.0, "⚪", 0.0, "⚪", 0.0, "⚪"
+import xgboost as xgb
+import onnxruntime as ort
+
+# ====================================================================
+# 📥 تهيئة نماذج البيتكوين المعزولة (Global Scope)
+# ====================================================================
+BTC_XGB_MODELS = {}
+BTC_DEEP_MODEL = None
+
+def load_btc_models():
+    global BTC_XGB_MODELS, BTC_DEEP_MODEL
+    try:
+        targets = ['quality', 'drop', 'time', 'pump']
+        for t in targets:
+            model_path = f"btc_xgb_{t}.json"
+            if os.path.exists(model_path):
+                m = xgb.XGBRegressor()
+                m.load_model(model_path)
+                BTC_XGB_MODELS[t] = m
+                
+        if os.path.exists("btc_moe_model.onnx"):
+            sess_options = ort.SessionOptions()
+            sess_options.intra_op_num_threads = 1
+            BTC_DEEP_MODEL = ort.InferenceSession("btc_moe_model.onnx", sess_options)
+            print("✅ [BTC AI] Native Models Loaded Successfully.")
+    except Exception as e:
+        print(f"⚠️ [BTC AI] Failed to load models: {e}")
+
+load_btc_models()
+
+async def predict_btc_specific_ai(features: dict):
+    """
+    [Isolated BTC Inference]
+    يقوم بالمعالجة بـ Scaling مطابق 100% لبيئة التدريب
+    ويستخرج القيم الحقيقية من النماذج المدربة للبيتكوين حصراً.
+    """
+    if not BTC_XGB_MODELS or not BTC_DEEP_MODEL:
+        # حماية في حال لم يتم تحميل النماذج
+        return -1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0
+
+    try:
+        X_scaled = np.zeros((1, 14), dtype=np.float32)
+        X_scaled[0, 0] = np.tanh(np.clip(float(features.get('premium_z', 0)), -5.0, 5.0) / 2.0)
+        X_scaled[0, 1] = np.tanh(np.clip(float(features.get('basis_z', 0)), -5.0, 5.0) / 2.0)
+        X_scaled[0, 2] = np.tanh(np.clip(float(features.get('funding_z', 0)), -5.0, 5.0) / 2.0)
+        X_scaled[0, 3] = np.clip(float(features.get('cme_premium_pct', 0)), -2.0, 2.0) / 2.0
+        X_scaled[0, 4] = np.tanh(np.clip(float(features.get('ibit_vol_surge', 0)), 0.0, 10.0) / 3.0)
+        X_scaled[0, 5] = np.tanh(np.clip(float(features.get('dxy_trend_pct', 0)), -2.0, 2.0) / 0.5)
+        X_scaled[0, 6] = np.tanh(np.clip(float(features.get('us10y_trend_pct', 0)), -5.0, 5.0) / 1.5)
+        X_scaled[0, 7] = np.tanh(np.clip(float(features.get('spy_trend_pct', 0)), -5.0, 5.0) / 1.5)
+        X_scaled[0, 8] = np.clip(float(features.get('upper_pool_dist_pct', 0)), 0.0, 15.0) / 15.0
+        X_scaled[0, 9] = np.clip(float(features.get('lower_pool_dist_pct', 0)), 0.0, 15.0) / 15.0
+        X_scaled[0, 10] = float(features.get('magnetic_bias_code', 0))
+        X_scaled[0, 11] = np.tanh(np.clip(float(features.get('vol_z_score', 0)), -5.0, 5.0) / 2.0)
+        X_scaled[0, 12] = np.clip(float(features.get('rsi_15m', 50.0)) / 100.0, 0.0, 1.0)
+        X_scaled[0, 13] = np.clip(float(features.get('adx_15m', 20.0)) / 100.0, 0.0, 1.0)
+
+        # 1. نتائج الكلاسيكي (XGBoost)
+        raw_q = float(BTC_XGB_MODELS['quality'].predict(X_scaled)[0])
+        xgb_conf = max(0.0, min(100.0, ((raw_q + 1.0) / 2.0) * 100.0))
+        xgb_drop = max(0.0, float(BTC_XGB_MODELS['drop'].predict(X_scaled)[0]))
+        xgb_time = max(0.1, float(BTC_XGB_MODELS['time'].predict(X_scaled)[0]))
+        xgb_pump = max(0.0, float(BTC_XGB_MODELS['pump'].predict(X_scaled)[0]))
+
+        # 2. نتائج الذكاء العميق (ONNX MoE)
+        input_name = BTC_DEEP_MODEL.get_inputs()[0].name
+        output_name = BTC_DEEP_MODEL.get_outputs()[0].name
+        pred = BTC_DEEP_MODEL.run([output_name], {input_name: X_scaled})[0][0]
+        
+        raw_q_moe = float(pred[0])
+        moe_conf = max(0.0, min(100.0, ((raw_q_moe + 1.0) / 2.0) * 100.0))
+        moe_drop = max(0.0, float(pred[1]))
+        moe_time = max(0.1, float(pred[2]))
+        moe_pump = max(0.0, float(pred[3]))
+
+        return xgb_conf, xgb_drop, xgb_time, xgb_pump, moe_conf, moe_drop, moe_time, moe_pump
+
+    except Exception as e:
+        print(f"⚠️ [BTC AI Execution Error]: {e}")
+        return -1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0
+@dp.message(Command("btc_admin"))
+async def btc_admin_supreme_command(message: types.Message):
+    ALLOWED_IDS = [565965404, 7146339698, ADMIN_USER_ID]
+    if message.from_user.id not in ALLOWED_IDS:
+        return await message.reply("🚫 <b>Access Denied. Tier-1 Clearance Required.</b>", parse_mode=ParseMode.HTML)
+
+    loading_text = (
+        "📡 <i>Initiating Apex Vanguard Supreme Matrix...</i>\n"
+        "<i>1️⃣ Synchronizing Wall Street Flows (CME & IBIT)...</i>\n"
+        "<i>2️⃣ Constructing 3D Cumulative Liquidation Pools...</i>\n"
+        "<i>3️⃣ Executing Isolated BTC Dual-AI Inference...</i> 🧠"
+    )
+    processing_msg = await message.reply(loading_text, parse_mode=ParseMode.HTML)
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            # ==========================================================
+            # 1. 🌐 البنية التحتية والمحركات العظمى
+            # ==========================================================
+            bin_klines_15m = await get_candles_binance("BTCUSDT", "15m", limit=30)
+            if not bin_klines_15m:
+                return await processing_msg.edit_text("⚠️ <b>خطأ في جلب بيانات البنية التحتية من Binance.</b>")
+                
+            current_spot = float(bin_klines_15m[-1][2])
+            old_spot = float(bin_klines_15m[0][2])
+            
+            df_15m = pd.DataFrame(bin_klines_15m).iloc[:, :6]
+            df_15m.columns = ["timestamp", "volume", "close", "high", "low", "open"]
+            df_15m[["high", "low", "close", "volume"]] = df_15m[["high", "low", "close", "volume"]].apply(pd.to_numeric)
+            
+            vol_z, _, _ = calculate_volume_zscore(df_15m, window=24)
+            try:
+                adx_val = float(ta.trend.ADXIndicator(df_15m['high'], df_15m['low'], df_15m['close'], window=14).adx().iloc[-1])
+                delta = df_15m["close"].diff()
+                gain = delta.clip(lower=0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+                loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+                rsi_val = float((100 - (100 / (1 + (gain / loss)))).iloc[-1])
+            except:
+                adx_val, rsi_val = 20.0, 50.0
+
+            tasks = [
+                get_live_zscores(client),
+                get_futures_liquidity("BTC", client, current_spot, old_spot),
+                get_wall_street_macro_flows(client, current_spot),
+                get_isolated_macro_for_btc_report(client),
+                build_liquidation_heatmap("BTC", client) 
+            ]
+            
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            live_data = results[0] if not isinstance(results[0], Exception) else (current_spot, current_spot, 0, 0, 0)
+            funding_data = results[1] if not isinstance(results[1], Exception) else (0, None, 0, 0, 0)
+            ws_data = results[2] if not isinstance(results[2], Exception) else (0, "⚪", 0, "⚪")
+            macro_data = results[3] if not isinstance(results[3], Exception) else (0,"⚪", 0,"⚪", 0,"⚪")
+            liq_pools = results[4] if not isinstance(results[4], Exception) else {}
+            
+            cb_price, binance_price, premium_pct, premium_z, basis_z = live_data
+            _, fut_sig, funding_val, oi_change, funding_z = funding_data
+            cme_premium_pct, cme_trend, ibit_vol_surge, ibit_action = ws_data
+            spy_trend, spy_impact, dxy_trend, dxy_impact, us10y_trend, us10y_impact = macro_data
+
+            # ==========================================================
+            # 2. 🧠 عزل وتغذية الذكاء الاصطناعي الخاص بالبيتكوين (Features)
+            # ==========================================================
+            up_dist_pct, dn_dist_pct, mag_code = 0.0, 0.0, 0
+            if liq_pools and isinstance(liq_pools, dict):
+                pool_up = f"{liq_pools.get('upper_pool', 'غير متاح')} ({liq_pools.get('upper_intensity', '⚪')})"
+                pool_dn = f"{liq_pools.get('lower_pool', 'غير متاح')} ({liq_pools.get('lower_intensity', '⚪')})"
+                mag_bias = liq_pools.get('magnetic_bias', "تجاذب سيولي ⚖️")
+                
+                try:
+                    up_str = liq_pools.get('upper_pool', '')
+                    dn_str = liq_pools.get('lower_pool', '')
+                    if " - " in up_str: up_dist_pct = ((float(up_str.split(" - ")[0].replace("$", "").replace(",", "")) - current_spot) / current_spot) * 100
+                    if " - " in dn_str: dn_dist_pct = ((current_spot - float(dn_str.split(" - ")[1].replace("$", "").replace(",", ""))) / current_spot) * 100
+                except: pass
+                
+                if "Short Squeeze" in mag_bias: mag_code = 1
+                elif "Long Flush" in mag_bias: mag_code = -1
+            else:
+                pool_up, pool_dn, mag_bias = "غير متاح", "غير متاح", "غير متاح"
+
+            apex_intent, apex_verdict = evaluate_apex_matrix(premium_z, basis_z, funding_z, cme_premium_pct, ibit_vol_surge)
+
+            btc_specific_features = {
+                'premium_z': premium_z, 'basis_z': basis_z, 'funding_z': funding_z,
+                'cme_premium_pct': cme_premium_pct, 'ibit_vol_surge': ibit_vol_surge,
+                'dxy_trend_pct': dxy_trend, 'us10y_trend_pct': us10y_trend, 'spy_trend_pct': spy_trend,
+                'upper_pool_dist_pct': up_dist_pct, 'lower_pool_dist_pct': dn_dist_pct,
+                'magnetic_bias_code': mag_code, 'vol_z_score': vol_z,
+                'rsi_15m': rsi_val, 'adx_15m': adx_val
+            }
+
+            # الإطلاق للمحرك المعزول
+            xgb_conf, xgb_drop, xgb_time, xgb_pump, moe_conf, moe_drop, moe_time, moe_pump = await predict_btc_specific_ai(btc_specific_features)
+
+            # ==========================================================
+            # 3. 📊 التقرير التنفيذي النهائي (The Ultimate Brief)
+            # ==========================================================
+            cbp_icon = "🟢" if premium_z > 1.0 else ("🔴" if premium_z < -1.0 else "⚪")
+            basis_icon = "📈" if basis_z > 1.0 else ("📉" if basis_z < -1.0 else "⚪")
+            fund_icon = "🔥" if funding_z > 1.0 else ("🩸" if funding_z < -1.0 else "⚪")
+
+            # صياغة النطاقات بصرامة (رقم كلاسيكي - رقم عميق)
+            if xgb_conf != -1.0 and moe_conf != -1.0:
+                min_entry = current_spot * (1 - (max(xgb_drop, moe_drop) / 100))
+                max_entry = current_spot * (1 - (min(xgb_drop, moe_drop) / 100))
+                
+                min_target = current_spot * (1 + (min(xgb_pump, moe_pump) / 100))
+                max_target = current_spot * (1 + (max(xgb_pump, moe_pump) / 100))
+                
+                ai_status_text = f"""
+🤖 <b>إجماع الذكاء الاصطناعي (BTC Isolated Models):</b>
+• <b>الكلاسيكي (XGB):</b> الجودة <b>{xgb_conf:.1f}%</b>
+• <b>العميق (MoE):</b> الجودة <b>{moe_conf:.1f}%</b>
+• <b>منطقة الشراء (Limit):</b> <code>${format_price(min_entry)}</code> ➖ <code>${format_price(max_entry)}</code>
+• <b>نطاق جني الأرباح (TP):</b> <code>${format_price(min_target)}</code> ➖ <code>${format_price(max_target)}</code>
+• <b>الزمن المقدر:</b> <code>{min(xgb_time, moe_time):.1f} - {max(xgb_time, moe_time):.1f} ساعة</code>
+"""
+            else:
+                ai_status_text = "🤖 <b>إجماع الذكاء الاصطناعي:</b> النماذج المخصصة قيد التجميع والتدريب ⏳"
+
+            final_report = f"""
+🏛 <b>APEX VANGUARD SUPREME | محطة الاستخبارات الكميّة (BTC)</b> 🏛
+━━━━━━━━━━━━━━━━━━
+💰 <b>الأسعار العادلة (Mid-Price):</b>
+• <b>Binance (التجزئة):</b> <code>${format_price(binance_price)}</code>
+• <b>Coinbase (أمريكا):</b> <code>${format_price(cb_price)}</code>
+
+🗽 <b>تدفقات الماكرو الأمريكية (US Macro Flows):</b>
+• <b>عقود شيكاغو (CME):</b> <code>{cme_trend} ({cme_premium_pct:+.2f}%)</code>
+• <b>صناديق ETF (BlackRock):</b> <b>{ibit_action}</b>
+
+🌍 <b>مصفوفة الارتباط الكلي (Macro Correlation):</b>
+• <b>مؤشر الدولار (DXY):</b> <code>{dxy_trend:+.2f}%</code> ({dxy_impact})
+• <b>عوائد السندات (US10Y):</b> <code>{us10y_trend:+.2f}%</code> ({us10y_impact})
+
+📊 <b>بصمة الشذوذ الإحصائي للصناع (Market Maker Z-Scores):</b>
+• <b>علاوة الشراء (Coinbase Z):</b> <code>{premium_z:+.2f}σ</code> {cbp_icon}
+• <b>علاوة التحوط (Basis Z):</b> <code>{basis_z:+.2f}σ</code> {basis_icon}
+• <b>ضغط المشتقات (Funding Z):</b> <code>{funding_z:+.2f}σ</code> {fund_icon}
+
+🧲 <b>مجمعات السيولة التراكمية (Cumulative 3D Heatmap):</b>
+• <b>الاتجاه المغناطيسي الحرج:</b> <b>{mag_bias}</b>
+• 📈 <b>حوض تصفية الشورت:</b> <code>{pool_up}</code>
+• 📉 <b>حوض تصفية اللونج:</b> <code>{pool_dn}</code>
+
+{ai_status_text}
+
+📝 <b>تحليل نوايا صانع السوق (MM Intent):</b>
+{apex_verdict}
+━━━━━━━━━━━━━━━━━━
+<i>* الدالة تعمل الآن بشكل معزول تماماً ببيانات مخصصة للبيتكوين.</i>
+"""
+            await processing_msg.edit_text(final_report, parse_mode=ParseMode.HTML)
+            
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Apex Vanguard Error Details:\n{error_details}")
+        error_msg = f"⚠️ <b>حدث خطأ في محرك البيانات الفائقة:</b>\n<code>{str(e)}</code>"
+        await processing_msg.edit_text(error_msg, parse_mode=ParseMode.HTML)
 
 @dp.message(Command("btc"))
 async def btc_apex_vanguard_command(message: types.Message):
