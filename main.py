@@ -4013,7 +4013,7 @@ async def analyze_radar_coin(c, client, market_regime, sem):
                     'z_score': float(current_z),
                     'cvd_to_vol_ratio': float(cvd_ratio_pct), 
                     'ofi_imbalance': float(current_imbalance),
-                    ⁠'ob_skewness': float(ob_skewness_val),
+                    'ob_skewness': float(ob_skewness_val),
                     'whale_inflow': float(whale_inflow),
                     'adx': float(current_adx),
                     'rsi': float(last_rsi),
