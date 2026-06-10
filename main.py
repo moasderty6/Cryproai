@@ -909,9 +909,8 @@ async def analyze_short_radar_coin(c, client, market_regime, sem):
             df["vol_usd"] = df["volume"] * df["close"]
             avg_vol_usd_20 = max(df["vol_usd"].tail(20).mean(), 1.0)
             real_cvd_usd_eval = float(micro_cvd_trend) * price 
-            
             # ====================================================================
-            # 🧠 2. محرك الانعكاس الاصطناعي (Synthetic Feature Inversion - SFI)
+            # 🧠 1. تجهيز المدخلات الطبيعية والنقية (Normal Features)
             # ====================================================================
             enhanced_cvd_ratio = float((tick_delta / avg_vol_usd_20) * 100)
             if spot_lead_score < -5.0: enhanced_cvd_ratio -= 15.0 
@@ -919,31 +918,30 @@ async def analyze_short_radar_coin(c, client, market_regime, sem):
             whale_ratio = await get_whale_inflow_score()
             imbalance = depth_data.get('imbalance', 0.0)
             
-            inverse_ml_features = {
-                'market_regime': 2 if int(MACRO_CACHE.get("market_regime", 0)) == 1 else (1 if int(MACRO_CACHE.get("market_regime", 0)) == 2 else 0), 
-                'sp500_trend': float(MACRO_CACHE.get("sp500_trend", 0.0)) * -1.0, 
-                'sentiment_score': 100.0 - float(MACRO_CACHE.get("sentiment_score", 50.0)),
+            # 🟢 هذا هو المتغير الناقص: يتم تمرير البيانات بحالتها الحقيقية تماماً دون أي قلب
+            normal_ml_features = {
+                'market_regime': int(MACRO_CACHE.get("market_regime", 0)), 
+                'sp500_trend': float(MACRO_CACHE.get("sp500_trend", 0.0)), 
+                'sentiment_score': float(MACRO_CACHE.get("sentiment_score", 50.0)),
                 'z_score': float(current_z), 
-                'cvd_to_vol_ratio': enhanced_cvd_ratio * -1.0, 
-                'ofi_imbalance': float(imbalance) * -1.0, 
-                'ob_skewness': 1.0 / max(float(depth_data.get('bid_pressure_ratio', 1.0)), 1e-4), 
-                'whale_inflow': 1.0 / max(whale_ratio, 1e-4), 
+                'cvd_to_vol_ratio': float(enhanced_cvd_ratio), 
+                'ofi_imbalance': float(imbalance), 
+                'ob_skewness': float(depth_data.get('bid_pressure_ratio', 1.0)), 
+                'whale_inflow': float(whale_ratio), 
                 'adx': float(current_adx), 
-                'rsi': 100.0 - float(last_rsi), 
-                'micro_volatility': float(df['close'].tail(20).pct_change().std() * 100),
-                'cvd_divergence': float(MACRO_CACHE.get("cvd_divergence", 0.0)) * -1.0, 
-                'funding_rate': float(funding_val) * -1.0, 
-                'weekly_liquidity_void': float(MACRO_CACHE.get("weekly_liquidity_void", 0.0)) * -1.0,
+                'rsi': float(last_rsi), 
+                'micro_volatility': float(df['close'].tail(20).pct_change().std() * 100) if len(df) > 20 else 0.0,
+                'cvd_divergence': float(MACRO_CACHE.get("cvd_divergence", 0.0)), 
+                'funding_rate': float(funding_val), 
+                'weekly_liquidity_void': float(MACRO_CACHE.get("weekly_liquidity_void", 0.0)),
                 'macro_z_score_30d': float(MACRO_CACHE.get("macro_z_score_30d", 0.0)),
-                'htf_whale_accumulation': float(MACRO_CACHE.get("htf_whale_accumulation", 0.0)) * -1.0,
+                'htf_whale_accumulation': float(MACRO_CACHE.get("htf_whale_accumulation", 0.0)),
                 'days_since_last_expansion': float(MACRO_CACHE.get("days_since_last_expansion", 0.0))
             }
             
-            # 🚀 استدعاء النماذج وتمرير "البيانات المعكوسة"            # ====================================================================
+            # ====================================================================
             # 🧠 2. محرك الانعكاس الاصطناعي (The Quant Flip Engine)
             # ====================================================================
-            # ⚠️ ملاحظة: يجب تعريف normal_ml_features هنا بنفس الطريقة العادية للونج تماماً (بدون قلب أي قيم)
-            
             # 🚀 استدعاء النماذج بالبيانات الطبيعية
             ai_conf_long_xgb, xgb_drop, xgb_time, xgb_pump = await asyncio.to_thread(predict_signal_sync, normal_ml_features)
             ai_conf_long_deep, deep_drop, deep_time, deep_pump = await asyncio.to_thread(predict_deep_moe, normal_ml_features)
@@ -957,30 +955,24 @@ async def analyze_short_radar_coin(c, client, market_regime, sem):
                 return None # إعدام الصفقة إذا فشلت النماذج في العمل
 
             # ⚖️ قلب الرؤية (The Quant Flip)
-            # نأخذ أعلى نسبة تفاؤل للونج، ونطرحها من 100 لضمان أننا لا نبيع إلا إذا كانت فرصة الشراء شبه معدومة
             best_long_conf = max(valid_long_confs)
             true_short_ai_conf = 100.0 - best_long_conf
 
             # 🩸 هندسة الأهداف والمخاطر
-            # ما كان يُرعب المشتري (الانهيار) هو ربح البائع، وما كان يُفرح المشتري (الصعود) هو خطر على البائع
             best_short_profit = max(xgb_drop, deep_drop)  # Take Profit
             worst_short_risk = max(xgb_pump, deep_pump)   # Stop Loss
 
             # ====================================================================
-            # 🛑 3. فيتو الذكاء الاصطناعي الإلزامي
+            # 🛑 3. فيتو الذكاء الاصطناعي الإلزامي للشورت
             # ====================================================================
-            # 1. إذا كانت الجودة أقل من 75%، تجاهل.
             if true_short_ai_conf < 75.0: 
                 return None
                 
-            # 2. إذا كان الخطر الصعودي أعلى من 5%، تجاهل فوراً (حماية من الـ Short Squeeze).
             if worst_short_risk > 7.0: 
                 return None
 
             # 🎯 تحديد الأهداف ووقف الخسارة بناءً على عقل النموذج 100%
             sl = price * (1 + (worst_short_risk / 100))
-            
-            # تقسيم مسافة الانهيار إلى أهداف منطقية
             tp1 = price * (1 - ((best_short_profit / 100) * 0.4)) 
             tp2 = price * (1 - ((best_short_profit / 100) * 0.8)) 
             tp3 = price * (1 - (best_short_profit / 100))         
@@ -992,11 +984,12 @@ async def analyze_short_radar_coin(c, client, market_regime, sem):
                 "macd": current_z, "vol_ratio": float((df["volume"].iloc[-1] / vol_mean) if vol_mean > 0 else 1.0),
                 "ob_pressure": float(depth_data.get('bid_pressure_ratio', 1.0)),
                 "signal_type": "🩸 قمة تصريف (Pure AI Short)",
-                "confluence": 5, "ml_features": normal_ml_features, # إرسال البيانات الطبيعية 
+                "confluence": 5, "ml_features": normal_ml_features, 
                 "cvd_usd": float(real_cvd_usd_eval),
                 "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3,
                 "ai_conf": true_short_ai_conf
             }
+
 
 
         except Exception as e:
